@@ -819,7 +819,9 @@ static void execHierVerilation() {
 }
 
 //######################################################################
-
+#include <emscripten.h>
+extern "C" {
+  EMSCRIPTEN_KEEPALIVE
 int main(int argc, char** argv) {
     // General initialization
     std::ios::sync_with_stdio();
@@ -873,4 +875,6 @@ int main(int argc, char** argv) {
     }
 
     UINFO(1, "Done, Exiting...\n");
+}
+
 }
