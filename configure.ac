@@ -670,8 +670,9 @@ AC_DEFUN([_MY_CXX_CHECK_CXX_VER],
      ]])],
      [_my_result=yes],
      [_my_result=no],
-     [_my_result=no])
+     [_my_result=yes])
    ])
+# NOTE: In cross-compile, we assume yes.
 
 # Add $CFG_CXXFLAGS_STD only if can't compile correctly otherwise,
 # as adding std= when not needed can cause errors with the C++ std library.

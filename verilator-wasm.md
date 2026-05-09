@@ -14,12 +14,14 @@ cd ..
 
 # make clean
 export EXPORTED_RUNTIME_METHODS=addRunDependency,removeRunDependency,FS_createPath,FS_createDataFile,FS_createPreloadedFile,FS_createLazyFile,FS_createDevice,FS_unlink,FS,callMain,writeStackCookie,checkStackCookie
-export SFLAGS="-s EXPORTED_RUNTIME_METHODS=$EXPORTED_RUNTIME_METHODS -s INVOKE_RUN=0 -s MAIN_MODULE=0 -s MODULARIZE=1 -s EXPORT_NAME=verilator_bin -s EXPORT_ES6=1 -s EXIT_RUNTIME=0 -s ALLOW_MEMORY_GROWTH=1"
+export SFLAGS="-s EXPORTED_RUNTIME_METHODS=$EXPORTED_RUNTIME_METHODS -s INVOKE_RUN=0 -s MAIN_MODULE=0 -s MODULARIZE=1 -s EXPORT_NAME=verilator_bin -s EXPORT_ES6=1 -s EXIT_RUNTIME=0 -s ALLOW_MEMORY_GROWTH=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0"
 export CFLAGS="-I$(pwd)/flex-2.6.4/src $SFLAGS"
 export CPPFLAGS="-I$(pwd)/flex-2.6.4/src $SFLAGS"
 export LDFLAGS="$SFLAGS"
 emconfigure ./configure --prefix=/ --host i686-pc-linux-gnu
 emmake make -j20 verilator_bin
+
+sed -i "s|return verilator_bin.ready|return verilator_bin //.ready|g" bin/verilator_bin
 
 # Copy to vga-playground
 cp bin/verilator_bin ../tt_maze/test/vga-playground/src/verilator/verilator_bin.js
