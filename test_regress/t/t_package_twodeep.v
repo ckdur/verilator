@@ -1,28 +1,28 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed into the Public Domain, for any use,
-// without warranty, 2012 by Jeremy Bennett
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2012 Jeremy Bennett
 // SPDX-License-Identifier: CC0-1.0
 
 // See issue #591
 
 package pkg2;
-   parameter PARAM2 = 16;
-endpackage // pkg2
+  parameter PARAM2 = 16;
+endpackage  // pkg2
 
 package pkg1;
-   import pkg2::*;
-   parameter PARAM1 = 8;
-endpackage // pkg1
+  import pkg2::*;
+  parameter PARAM1 = 8;
+endpackage  // pkg1
 
 module t
-  import pkg1::*;   // Test SV 2012 import format
-  (/*AUTOARG*/);
+  import pkg1::*;  // Test SV 2012 import format
+;
 
-   reg [PARAM1:0] bus1;
+  reg [PARAM1:0] bus1;
 
-   initial begin
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+  initial begin
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 endmodule

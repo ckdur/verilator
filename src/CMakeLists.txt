@@ -4,10 +4,10 @@
 #
 #*****************************************************************************
 #
-# Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2025-2026 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 #
 #****************************************************************************/
@@ -42,12 +42,15 @@ set(HEADERS
     V3Active.h
     V3ActiveTop.h
     V3Assert.h
+    V3AssertNfa.h
     V3AssertPre.h
     V3Ast.h
+    V3AstAttr.h
     V3AstInlines.h
     V3AstNodeDType.h
     V3AstNodeExpr.h
     V3AstNodeOther.h
+    V3AstNodeStmt.h
     V3AstUserAllocator.h
     V3Begin.h
     V3Branch.h
@@ -56,47 +59,51 @@ set(HEADERS
     V3CUse.h
     V3Case.h
     V3Cast.h
+    V3Cfg.h
     V3Class.h
     V3Clean.h
     V3Clock.h
     V3Combine.h
     V3Common.h
-    V3Config.h
     V3Const.h
+    V3Container.h
+    V3Control.h
     V3Coverage.h
     V3CoverageJoin.h
     V3Dead.h
+    V3DebugBisect.h
     V3Delayed.h
     V3Depth.h
     V3DepthBlock.h
     V3Descope.h
     V3Dfg.h
     V3DfgCache.h
+    V3DfgContext.h
+    V3DfgDataType.h
     V3DfgOptimizer.h
     V3DfgPasses.h
-    V3DfgPatternStats.h
-    V3DfgPeephole.h
+    V3DfgPeepholePatterns.h
     V3DfgVertices.h
+    V3DiagSarif.h
     V3DupFinder.h
     V3EmitC.h
     V3EmitCBase.h
     V3EmitCConstInit.h
     V3EmitCFunc.h
     V3EmitCMain.h
-    V3EmitCMake.h
     V3EmitMk.h
     V3EmitMkJson.h
     V3EmitV.h
-    V3EmitXml.h
     V3Error.h
     V3ExecGraph.h
     V3Expand.h
     V3File.h
     V3FileLine.h
     V3Force.h
+    V3FsmDetect.h
     V3Fork.h
-    V3FunctionTraits.h
     V3FuncOpt.h
+    V3FunctionTraits.h
     V3Gate.h
     V3Global.h
     V3Graph.h
@@ -107,6 +114,7 @@ set(HEADERS
     V3Hasher.h
     V3HierBlock.h
     V3Inline.h
+    V3InlineCFuncs.h
     V3Inst.h
     V3InstrCount.h
     V3Interface.h
@@ -114,14 +122,17 @@ set(HEADERS
     V3LanguageWords.h
     V3Life.h
     V3LifePost.h
+    V3LiftExpr.h
     V3LinkCells.h
     V3LinkDot.h
+    V3LinkDotIfaceCapture.h
     V3LinkInc.h
     V3LinkJump.h
     V3LinkLValue.h
     V3LinkLevel.h
     V3LinkParse.h
     V3LinkResolve.h
+    V3LinkWith.h
     V3List.h
     V3Localize.h
     V3MemberMap.h
@@ -133,15 +144,14 @@ set(HEADERS
     V3OptionParser.h
     V3Options.h
     V3Order.h
-    V3OrderInternal.h
     V3OrderGraph.h
+    V3OrderInternal.h
     V3OrderMoveGraph.h
     V3Os.h
     V3PairingHeap.h
     V3Param.h
     V3Parse.h
     V3ParseImp.h
-    V3ParseSym.h
     V3PchAstMT.h
     V3PchAstNoMT.h
     V3PreExpr.h
@@ -150,8 +160,10 @@ set(HEADERS
     V3PreShell.h
     V3Premit.h
     V3ProtectLib.h
+    V3RandSequence.h
     V3Randomize.h
     V3Reloop.h
+    V3Reorder.h
     V3Rtti.h
     V3Sampled.h
     V3Sched.h
@@ -180,6 +192,7 @@ set(HEADERS
     V3Tristate.h
     V3Udp.h
     V3Undriven.h
+    V3UndrivenCapture.h
     V3UniqueNames.h
     V3Unknown.h
     V3Unroll.h
@@ -201,6 +214,7 @@ set(COMMON_SOURCES
     V3Active.cpp
     V3ActiveTop.cpp
     V3Assert.cpp
+    V3AssertNfa.cpp
     V3AssertPre.cpp
     V3Ast.cpp
     V3AstNodes.cpp
@@ -211,12 +225,15 @@ set(COMMON_SOURCES
     V3CUse.cpp
     V3Case.cpp
     V3Cast.cpp
+    V3Cfg.cpp
+    V3CfgBuilder.cpp
+    V3CfgLiveVariables.cpp
     V3Class.cpp
     V3Clean.cpp
     V3Clock.cpp
     V3Combine.cpp
     V3Common.cpp
-    V3Config.cpp
+    V3Control.cpp
     V3Const__gen.cpp
     V3Coverage.cpp
     V3CoverageJoin.cpp
@@ -227,15 +244,21 @@ set(COMMON_SOURCES
     V3Descope.cpp
     V3Dfg.cpp
     V3DfgAstToDfg.cpp
-    V3DfgCache.cpp
+    V3DfgBreakCycles.cpp
+    V3DfgColorSCCs.cpp
+    V3DfgCse.cpp
+    V3DfgDataType.cpp
     V3DfgDecomposition.cpp
     V3DfgDfgToAst.cpp
+    V3DfgDumpPatterns.cpp
     V3DfgOptimizer.cpp
     V3DfgPasses.cpp
     V3DfgPeephole.cpp
+    V3DfgPushDownSels.cpp
     V3DfgRegularize.cpp
+    V3DfgSynthesize.cpp
+    V3DiagSarif.cpp
     V3DupFinder.cpp
-    V3Timing.cpp
     V3EmitCBase.cpp
     V3EmitCConstPool.cpp
     V3EmitCFunc.cpp
@@ -243,20 +266,19 @@ set(COMMON_SOURCES
     V3EmitCImp.cpp
     V3EmitCInlines.cpp
     V3EmitCMain.cpp
-    V3EmitCMake.cpp
     V3EmitCModel.cpp
     V3EmitCPch.cpp
     V3EmitCSyms.cpp
     V3EmitMk.cpp
     V3EmitMkJson.cpp
     V3EmitV.cpp
-    V3EmitXml.cpp
     V3Error.cpp
     V3ExecGraph.cpp
     V3Expand.cpp
     V3File.cpp
     V3FileLine.cpp
     V3Force.cpp
+    V3FsmDetect.cpp
     V3Fork.cpp
     V3FuncOpt.cpp
     V3Gate.cpp
@@ -270,19 +292,24 @@ set(COMMON_SOURCES
     V3Hasher.cpp
     V3HierBlock.cpp
     V3Inline.cpp
+    V3InlineCFuncs.cpp
     V3Inst.cpp
     V3InstrCount.cpp
     V3Interface.cpp
+    V3LibMap.cpp
     V3Life.cpp
     V3LifePost.cpp
+    V3LiftExpr.cpp
     V3LinkCells.cpp
     V3LinkDot.cpp
+    V3LinkDotIfaceCapture.cpp
     V3LinkInc.cpp
     V3LinkJump.cpp
     V3LinkLValue.cpp
     V3LinkLevel.cpp
     V3LinkParse.cpp
     V3LinkResolve.cpp
+    V3LinkWith.cpp
     V3Localize.cpp
     V3MergeCond.cpp
     V3Name.cpp
@@ -297,17 +324,25 @@ set(COMMON_SOURCES
     V3OrderSerial.cpp
     V3Os.cpp
     V3Param.cpp
+    V3ParseGrammar.cpp
+    V3ParseImp.cpp
+    V3ParseLex.cpp
+    V3PreProc.cpp
     V3PreShell.cpp
     V3Premit.cpp
     V3ProtectLib.cpp
+    V3RandSequence.cpp
     V3Randomize.cpp
     V3Reloop.cpp
+    V3Reorder.cpp
     V3Sampled.cpp
     V3Sched.cpp
     V3SchedAcyclic.cpp
     V3SchedPartition.cpp
     V3SchedReplicate.cpp
     V3SchedTiming.cpp
+    V3SchedTrigger.cpp
+    V3SchedUtil.cpp
     V3SchedVirtIface.cpp
     V3Scope.cpp
     V3Scoreboard.cpp
@@ -320,26 +355,25 @@ set(COMMON_SOURCES
     V3StatsReport.cpp
     V3String.cpp
     V3Subst.cpp
+    V3TSP.cpp
     V3Table.cpp
     V3Task.cpp
     V3ThreadPool.cpp
+    V3Timing.cpp
     V3Trace.cpp
     V3TraceDecl.cpp
     V3Tristate.cpp
-    V3TSP.cpp
     V3Udp.cpp
     V3Undriven.cpp
+    V3UndrivenCapture.cpp
     V3Unknown.cpp
     V3Unroll.cpp
+    V3UnrollGen.cpp
     V3VariableOrder.cpp
     V3Waiver.cpp
     V3Width.cpp
     V3WidthCommit.cpp
     V3WidthSel.cpp
-    V3ParseImp.cpp
-    V3ParseGrammar.cpp
-    V3ParseLex.cpp
-    V3PreProc.cpp
 )
 
 set(COVERAGE_SOURCES VlcMain.cpp)
@@ -368,12 +402,11 @@ add_custom_command(
     COMMAND ${PYTHON3}
     ARGS
         ${ASTGEN} -I "${srcdir}" --astdef V3AstNodeDType.h --astdef
-        V3AstNodeExpr.h --astdef V3AstNodeOther.h --dfgdef V3DfgVertices.h
-        --classes
+        V3AstNodeExpr.h --astdef V3AstNodeOther.h --astdef V3AstNodeStmt.h
+        --dfgdef V3DfgVertices.h --classes
 )
 list(
-    APPEND
-    GENERATED_FILES
+    APPEND GENERATED_FILES
     V3Ast__gen_forward_class_decls.h
     V3Dfg__gen_forward_class_decls.h
 )
@@ -481,8 +514,8 @@ foreach(astgen_name ${ASTGENERATED_NAMES})
         COMMAND ${PYTHON3}
         ARGS
             ${ASTGEN} -I "${srcdir}" --astdef V3AstNodeDType.h --astdef
-            V3AstNodeExpr.h --astdef V3AstNodeOther.h --dfgdef V3DfgVertices.h
-            ${astgen_name}.cpp
+            V3AstNodeExpr.h --astdef V3AstNodeOther.h --astdef V3AstNodeStmt.h
+            --dfgdef V3DfgVertices.h ${astgen_name}.cpp
     )
     list(APPEND GENERATED_FILES ${astgen_name}__gen.cpp)
 endforeach()

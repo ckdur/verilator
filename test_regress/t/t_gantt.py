@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 # Test for bin/verilator_gantt,
 
 import vltest_bootstrap
 
+test.priority(30)
 test.scenarios('vlt_all')
-test.top_filename = "t/t_gen_alw.v"  # Any, as long as runs a few cycles
+test.top_filename = "t/t_gantt.v"
+test.pli_filename = "t/t_gantt_c.cpp"
 
 test.compile(
-    v_flags2=["--prof-exec"],
+    verilator_flags2=["--prof-exec", test.pli_filename],
     # Checks below care about thread count, so use 2 (minimum reasonable)
     threads=(2 if test.vltmt else 1))
 
@@ -35,13 +37,13 @@ test.run(cmd=[
 ])
 
 if test.vltmt:
-    test.file_grep(gantt_log, r'Total threads += 2')
-    test.file_grep(gantt_log, r'Total mtasks += 7')
+    test.file_grep(gantt_log, r'Total threads += +(\d+)', 2)
+    test.file_grep(gantt_log, r'Total mtasks += +(\d+)', 6)
     # Predicted thread utilization should be less than 100%
     test.file_grep_not(gantt_log, r'Thread utilization =\s*\d\d\d+\.\d+%')
 else:
-    test.file_grep(gantt_log, r'Total threads += 1')
-    test.file_grep(gantt_log, r'Total mtasks += 0')
+    test.file_grep(gantt_log, r'Total threads += +(\d+)', 1)
+    test.file_grep(gantt_log, r'Total mtasks += +(\d+)', 0)
 
 test.file_grep(gantt_log, r'\|\s+2\s+\|\s+2\.0+\s+\|\s+eval')
 

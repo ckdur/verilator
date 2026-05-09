@@ -5,10 +5,10 @@
 # This calls the object directory makefile.  That allows the objects to
 # be placed in the "current directory" which simplifies the Makefile.
 #
-# Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2025-2026 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 #
 #****************************************************************************/
@@ -36,7 +36,7 @@ endif
 
 # Run tests in parallel.
 ifeq ($(CFG_WITH_LONGTESTS),yes)
- DRIVER_FLAGS ?= -j 0 --quiet --rerun
+  DRIVER_FLAGS ?= -j 0 --quiet --rerun
 endif
 
 .SUFFIXES:
@@ -49,16 +49,6 @@ DRIVER_HASHSET ?=
 .PHONY: test
 test:
 	$(PYTHON3) driver.py $(DRIVER_FLAGS) $(SCENARIOS) $(DRIVER_HASHSET)
-
-######################################################################
-
-vcs:
-	$(PYTHON3) driver.py $(DRIVER_FLAGS) --vcs --stop
-
-######################################################################
-
-nc:
-	$(PYTHON3) driver.py $(DRIVER_FLAGS) --nc --stop
 
 ######################################################################
 
@@ -99,19 +89,28 @@ distclean::
 # Can be overridden for multiple snapshots
 TEST_SNAP_DIR ?= snapshot
 
-# Command to diff directories
-TEST_DIFF_TOOL ?= $(if $(shell which icdiff), icdiff -N -r, diff -r)
+define CMD_EXISTS
+$(shell which $(1) > /dev/null 2>&1 && echo ok)
+endef
 
-TEST_SNAP_IGNORE := *.status *.log *.dat *.d *.o *.a *.so *stats*.txt *.html \
-                    *.includecache *.out *.fst *.fst.vcd *.tree *.tree*.json \
-                    *.dot *.csv *.xml *.hash *.cmake gmon.out.* CMakeFiles \
-                    profile_exec.vcd t_pgo_threads
+# GNU find
+GNU_FIND := $(if $(call CMD_EXISTS, gfind), gfind, find)
+# Command to diff directories
+TEST_DIFF_TOOL ?= $(if $(call CMD_EXISTS, icdiff), icdiff -N -r --cols=$(shell tput cols), diff -r)
+
+TEST_SNAP_IGNORE := \
+  *.status *.log *.dat *.d *.o *.a *.so *stats*.txt *.html *.includecache \
+  *.out *.fst *.fst.vcd *.tree *.tree*.json *.dot *.csv *.xml *.hash \
+  *.cmake gmon.out.* CMakeFiles profile_exec.vcd *line-coverage*.txt \
+  profile.vlt *linkdot.txt *linkcells.txt *.log.sort *.vpp *.sarif \
+  t_flag_debugi9 t_flag_decorations_node t_flag_runtime_debug t_mod_empty \
+  t_pgo_threads t_pgo_threads_hier t_trace_ub_misaligned_address \
 
 define TEST_SNAP_template
 mkdir -p $(TEST_SNAP_DIR)
 rm -rf $(TEST_SNAP_DIR)/obj_$(1)
 cp -r obj_$(1) $(TEST_SNAP_DIR)/
-find $(TEST_SNAP_DIR)/obj_$(1) \( $(TEST_SNAP_IGNORE:%=-name "%" -o) \
+$(GNU_FIND) $(TEST_SNAP_DIR)/obj_$(1) \( $(TEST_SNAP_IGNORE:%=-name "%" -o) \
   -type f -executable \) -prune | xargs rm -r
 endef
 
@@ -123,11 +122,11 @@ test-snap:
 
 .PHONY: impl-test-diff
 impl-test-diff:
-	$(TEST_DIFF_TOOL) $(TEST_SNAP_DIR)/obj_vlt   obj_vlt
-	$(TEST_DIFF_TOOL) $(TEST_SNAP_DIR)/obj_vltmt obj_vltmt
-	$(TEST_DIFF_TOOL) $(TEST_SNAP_DIR)/obj_dist  obj_dist
+	$(TEST_DIFF_TOOL) $(TEST_SNAP_DIR)/obj_vlt   obj_vlt || true
+	$(TEST_DIFF_TOOL) $(TEST_SNAP_DIR)/obj_vltmt obj_vltmt || true
+	$(TEST_DIFF_TOOL) $(TEST_SNAP_DIR)/obj_dist  obj_dist || true
 
 .PHONY: test-diff
 test-diff:
-	$(MAKE) impl-test-diff | grep -v "Only in obj_" | \
-    $$(git config --default less --global --get core.pager)
+	$(MAKE) impl-test-diff | grep -v "Only in obj_" \
+	| $$(git config --default less --global --get core.pager)

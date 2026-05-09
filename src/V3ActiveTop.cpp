@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -61,18 +61,18 @@ class ActiveTopVisitor final : public VNVisitor {
     void visit(AstNodeModule* nodep) override {
         // Create required actives and add to module
         // We can start ordering at a module, or a scope
-        UINFO(4, " MOD   " << nodep << endl);
+        UINFO(4, " MOD   " << nodep);
         iterateChildren(nodep);
     }
     void visit(AstActive* nodep) override {
-        UINFO(4, "   ACTIVE " << nodep << endl);
+        UINFO(4, "   ACTIVE " << nodep);
         // Remove duplicate clocks and such; sensesp() may change!
         V3Const::constifyExpensiveEdit(nodep);
-        AstSenTree* sensesp = nodep->sensesp();
-        UASSERT_OBJ(sensesp, nodep, "nullptr");
-        if (sensesp->sensesp() && sensesp->sensesp()->isNever()) {
+        AstSenTree* sentreep = nodep->sentreep();
+        UASSERT_OBJ(sentreep, nodep, "nullptr");
+        if (sentreep->sensesp() && sentreep->sensesp()->isNever()) {
             // Never executing.  Kill it.
-            UASSERT_OBJ(!sensesp->sensesp()->nextp(), nodep,
+            UASSERT_OBJ(!sentreep->sensesp()->nextp(), nodep,
                         "Never senitem should be alone, else the never should be eliminated.");
             VL_DO_DANGLING(nodep->unlinkFrBack()->deleteTree(), nodep);
             return;
@@ -94,21 +94,21 @@ class ActiveTopVisitor final : public VNVisitor {
 
         // Move the SENTREE for each active up to the global level.
         // This way we'll easily see what clock domains are identical
-        AstSenTree* const wantp = m_finder.getSenTree(sensesp);
-        UINFO(4, "   lookdone\n");
-        if (wantp != sensesp) {
+        AstSenTree* const wantp = m_finder.getSenTree(sentreep);
+        UINFO(4, "   lookdone");
+        if (wantp != sentreep) {
             // Move the active's contents to the other active
-            UINFO(4, "   merge active " << sensesp << " into " << wantp << endl);
-            if (nodep->sensesStorep()) {
-                UASSERT_OBJ(sensesp == nodep->sensesStorep(), nodep,
+            UINFO(4, "   merge active " << sentreep << " into " << wantp);
+            if (nodep->senTreeStorep()) {
+                UASSERT_OBJ(sentreep == nodep->senTreeStorep(), nodep,
                             "sensesStore should have been deleted earlier if different");
-                sensesp->unlinkFrBack();
+                sentreep->unlinkFrBack();
                 // There may be other references to same sense tree,
                 // we'll be removing all references when we get to them,
                 // but don't dangle our pointer yet!
-                VL_DO_DANGLING(pushDeletep(sensesp), sensesp);
+                VL_DO_DANGLING(pushDeletep(sentreep), sentreep);
             }
-            nodep->sensesp(wantp);
+            nodep->sentreep(wantp);
         }
 
         // If this is combinational logic that does not read any variables, then it really is an
@@ -116,7 +116,7 @@ class ActiveTopVisitor final : public VNVisitor {
         // prune these otherwise.
         // TODO: we should warn for these if they were 'always @*' as some (including strictly
         //       compliant) simulators will never execute these.
-        if (nodep->sensesp()->hasCombo()) {
+        if (nodep->sentreep()->hasCombo()) {
             FileLine* const flp = nodep->fileline();
             AstActive* initialp = nullptr;
             for (AstNode *logicp = nodep->stmtsp(), *nextp; logicp; logicp = nextp) {
@@ -129,15 +129,6 @@ class ActiveTopVisitor final : public VNVisitor {
         }
     }
     void visit(AstNodeProcedure* nodep) override {  // LCOV_EXCL_LINE
-        nodep->v3fatalSrc("Node should have been under ACTIVE");
-    }
-    void visit(AstAssignAlias* nodep) override {  // LCOV_EXCL_LINE
-        nodep->v3fatalSrc("Node should have been under ACTIVE");
-    }
-    void visit(AstAssignW* nodep) override {  // LCOV_EXCL_LINE
-        nodep->v3fatalSrc("Node should have been under ACTIVE");
-    }
-    void visit(AstAlwaysPublic* nodep) override {  // LCOV_EXCL_LINE
         nodep->v3fatalSrc("Node should have been under ACTIVE");
     }
     //--------------------
@@ -155,7 +146,7 @@ public:
 // Active class functions
 
 void V3ActiveTop::activeTopAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { ActiveTopVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("activetop", 0, dumpTreeEitherLevel() >= 3);
 }

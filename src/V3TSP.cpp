@@ -11,10 +11,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -41,7 +41,7 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 // Support classes
 
 namespace V3TSP {
-static uint32_t edgeIdNext = 0;
+static uint32_t s_edgeIdNext = 0;
 
 static void selfTestStates();
 static void selfTestString();
@@ -105,13 +105,14 @@ public:
         // The only time we may create duplicate edges is when
         // combining the MST with the perfect-matched pairs,
         // and in that case, we want to permit duplicate edges.
-        const uint32_t edgeId = ++V3TSP::edgeIdNext;
+        const uint32_t edgeId = ++V3TSP::s_edgeIdNext;
 
         // We want to be able to compare edges quickly for a total
         // ordering, so pre-compute a sorting key and store it in
         // the edge user field. We also want easy access to the 'id'
         // which uniquely identifies a single bidir edge. Luckily we
         // can do both efficiently.
+        // cppcheck-suppress badBitmaskCheck
         const uint64_t userValue = (static_cast<uint64_t>(cost) << 32) | edgeId;
         (new V3GraphEdge{this, fp, tp, cost})->user(userValue);
         (new V3GraphEdge{this, tp, fp, cost})->user(userValue);
@@ -121,6 +122,7 @@ public:
         return static_cast<uint32_t>(edgep->user());
     }
 
+    // cppcheck-suppress duplInheritedMember
     bool empty() const { return m_vertices.empty(); }
 
     const std::list<Vertex*> keysToVertexList(const std::vector<T_Key>& odds) {
@@ -334,7 +336,7 @@ public:
         // Go on a random tour. Fun!
         std::vector<Vertex*> tour;
         do {
-            UINFO(6, "Adding " << cur_vertexp->key() << " to tour.\n");
+            UINFO(6, "Adding " << cur_vertexp->key() << " to tour.");
             tour.push_back(cur_vertexp);
 
             // Look for an arbitrary edge we've not yet marked
@@ -345,7 +347,7 @@ public:
                     markedEdgesp->insert(edgeId);
                     Vertex* const neighborp = castVertexp(edge.top());
                     UINFO(6, "following edge " << edgeId << " from " << cur_vertexp->key()
-                                               << " to " << neighborp->key() << endl);
+                                               << " to " << neighborp->key());
                     cur_vertexp = neighborp;
                     goto found;
                 }
@@ -353,7 +355,7 @@ public:
             v3fatalSrc("No unmarked edges found in tour");
         found:;
         } while (cur_vertexp != startp);
-        UINFO(6, "stopped, got back to start of tour @ " << cur_vertexp->key() << endl);
+        UINFO(6, "stopped, got back to start of tour @ " << cur_vertexp->key());
 
         // Look for nodes on the tour that still have
         // un-marked edges. If we find one, recurse.
@@ -365,7 +367,7 @@ public:
                 for (V3GraphEdge& edge : vxp->outEdges()) {
                     const uint32_t edgeId = getEdgeId(&edge);
                     if (markedEdgesp->end() == markedEdgesp->find(edgeId)) {
-                        UINFO(6, "Recursing.\n");
+                        UINFO(6, "Recursing.");
                         findEulerTourRecurse(markedEdgesp, vxp, sortedOutp);
                         recursed = true;
                         goto recursed;
@@ -376,9 +378,11 @@ public:
             sortedOutp->push_back(vxp->key());
         }
 
-        UINFO(6, "Tour was: ");
-        for (const Vertex* vxp : tour) UINFONL(6, "- " << vxp->key());
-        UINFONL(6, "-\n");
+        if (debug() >= 6) {
+            UINFO(0, "Tour was:");
+            for (const Vertex* vxp : tour) std::cout << "- " << vxp->key() << '\n';
+            std::cout << "-\n";
+        }
     }
 
     void dumpGraph(std::ostream& os, const string& nameComment) const {

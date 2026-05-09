@@ -1,9 +1,9 @@
 // DESCRIPTION: Verilator: Verilog Test
 //
-// Copyright 2003-2020 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2020 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 // clang-format off
@@ -12,7 +12,7 @@
 #include "Vt_trace_two_b.h"
 #include "verilated.h"
 #ifdef TEST_HDR_TRACE
-# include "verilated_vcd_sc.h"
+#  include VL_STRINGIFY(TRACE_HEADER_SC)
 #endif
 // clang-format on
 
@@ -41,11 +41,11 @@ int sc_main(int argc, char** argv) {
     bp->clk(clk);
 
 #ifdef TEST_HDR_TRACE
-    VerilatedVcdSc* tfp = new VerilatedVcdSc;
+    VERILATED_TRACE_SC* tfp = new VERILATED_TRACE_SC;
     sc_core::sc_start(sc_core::SC_ZERO_TIME);
     ap->trace(tfp, 99);
     bp->trace(tfp, 99);
-    tfp->open(VL_STRINGIFY(TEST_OBJ_DIR) "/simx.vcd");
+    tfp->open(VL_STRINGIFY(TEST_OBJ_DIR) "/simx." VL_STRINGIFY(TRACE_FMT));
 #endif
     {
         clk = false;

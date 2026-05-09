@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -19,6 +19,7 @@
 #include "V3Active.h"
 #include "V3ActiveTop.h"
 #include "V3Assert.h"
+#include "V3AssertNfa.h"
 #include "V3AssertPre.h"
 #include "V3Ast.h"
 #include "V3Begin.h"
@@ -34,6 +35,7 @@
 #include "V3Combine.h"
 #include "V3Common.h"
 #include "V3Const.h"
+#include "V3Control.h"
 #include "V3Coverage.h"
 #include "V3CoverageJoin.h"
 #include "V3Dead.h"
@@ -42,47 +44,53 @@
 #include "V3DepthBlock.h"
 #include "V3Descope.h"
 #include "V3DfgOptimizer.h"
+#include "V3DiagSarif.h"
 #include "V3EmitC.h"
 #include "V3EmitCMain.h"
-#include "V3EmitCMake.h"
 #include "V3EmitMk.h"
 #include "V3EmitMkJson.h"
 #include "V3EmitV.h"
-#include "V3EmitXml.h"
 #include "V3ExecGraph.h"
 #include "V3Expand.h"
 #include "V3File.h"
 #include "V3Force.h"
 #include "V3Fork.h"
+#include "V3FsmDetect.h"
 #include "V3FuncOpt.h"
 #include "V3Gate.h"
 #include "V3Global.h"
 #include "V3Graph.h"
 #include "V3HierBlock.h"
 #include "V3Inline.h"
+#include "V3InlineCFuncs.h"
 #include "V3Inst.h"
 #include "V3Interface.h"
+#include "V3LibMap.h"
 #include "V3Life.h"
 #include "V3LifePost.h"
+#include "V3LiftExpr.h"
 #include "V3LinkDot.h"
+#include "V3LinkDotIfaceCapture.h"
 #include "V3LinkInc.h"
 #include "V3LinkJump.h"
 #include "V3LinkLValue.h"
 #include "V3LinkLevel.h"
 #include "V3LinkParse.h"
 #include "V3LinkResolve.h"
+#include "V3LinkWith.h"
 #include "V3Localize.h"
 #include "V3MergeCond.h"
 #include "V3Name.h"
 #include "V3Order.h"
 #include "V3Os.h"
 #include "V3Param.h"
-#include "V3ParseSym.h"
 #include "V3PreShell.h"
 #include "V3Premit.h"
 #include "V3ProtectLib.h"
+#include "V3RandSequence.h"
 #include "V3Randomize.h"
 #include "V3Reloop.h"
+#include "V3Reorder.h"
 #include "V3Sampled.h"
 #include "V3Sched.h"
 #include "V3Scope.h"
@@ -119,6 +127,7 @@ V3Global v3Global;
 
 static void reportStatsIfEnabled() {
     if (v3Global.opt.stats()) {
+        FileLine::stats();
         V3Stats::statsFinalAll(v3Global.rootp());
         V3Stats::statsReport();
     }
@@ -132,21 +141,20 @@ static void emitJson() VL_MT_DISABLED {
     v3Global.rootp()->dumpTreeJsonFile(filename);
 }
 
-static void emitXmlOrJson() VL_MT_DISABLED {
-    if (v3Global.opt.xmlOnly()) V3EmitXml::emitxml();
+static void emitSerialized() VL_MT_DISABLED {
     if (v3Global.opt.jsonOnly()) emitJson();
 }
 
 static void process() {
     {
-        VlOs::DeltaWallTime elabWallTime{true};
+        const VlOs::DeltaWallTime elabWallTime{true};
 
         // Sort modules by level so later algorithms don't need to care
         V3LinkLevel::modSortByLevel();
         V3Error::abortIfErrors();
         if (v3Global.opt.debugExitParse()) {
             cout << "--debug-exit-parse: Exiting after parse\n";
-            std::exit(0);
+            v3Global.vlExit(0);
         }
 
         // Convert parseref's to varrefs, and other directly post parsing fixups
@@ -168,19 +176,25 @@ static void process() {
         V3Error::abortIfErrors();
 
         if (v3Global.opt.stats()) V3Stats::statsStageAll(v3Global.rootp(), "Link");
-        if (v3Global.opt.debugExitUvm23()) {
-            V3Error::abortIfErrors();
-            if (v3Global.opt.serializeOnly()) emitXmlOrJson();
-            cout << "--debug-exit-uvm23: Exiting after UVM-supported pass\n";
-            std::exit(0);
-        }
 
         // Remove parameters by cloning modules to de-parameterized versions
         //   This requires some width calculations and constant propagation
+        // No more AstGenCase/AstGenFor/AstGenIf after this
         V3Param::param(v3Global.rootp());
+
         V3LinkDot::linkDotParamed(v3Global.rootp());  // Cleanup as made new modules
+        V3Param::finalizeDeferredParams(v3Global.rootp());
         V3LinkLValue::linkLValue(v3Global.rootp());  // Resolve new VarRefs
+
+        // Link cleanup of 'with' as final link phase before V3Width
+        // (called only once, not when width a single params)
+        V3LinkWith::linkWith(v3Global.rootp());
+
         V3Error::abortIfErrors();
+
+        // Fix any remaining cross-interface refs created during V3Width::widthParamsEdit
+        // that weren't captured earlier. Must run before V3Dead deletes template modules.
+        V3LinkDotIfaceCapture::finalizeIfaceCapture();
 
         // Remove any modules that were parameterized and are no longer referenced.
         V3Dead::deadifyModules(v3Global.rootp());
@@ -190,20 +204,14 @@ static void process() {
 
         // Create a hierarchical Verilation plan
         if (!v3Global.opt.lintOnly() && !v3Global.opt.serializeOnly()
-            && v3Global.opt.hierarchical()) {
-            V3HierBlockPlan::createPlan(v3Global.rootp());
+            && v3Global.opt.hierarchical() && !v3Global.opt.hierChild()) {
+            V3Hierarchical::createGraph(v3Global.rootp());
             // If a plan is created, further analysis is not necessary.
             // The actual Verilation will be done based on this plan.
-            if (v3Global.hierPlanp()) {
+            if (v3Global.hierGraphp()) {
                 reportStatsIfEnabled();
                 return;
             }
-        }
-        if (v3Global.opt.debugExitUvm()) {
-            V3Error::abortIfErrors();
-            if (v3Global.opt.serializeOnly()) emitXmlOrJson();
-            cout << "--debug-exit-uvm: Exiting after UVM-supported pass\n";
-            std::exit(0);
         }
 
         // Calculate and check widths, edit tree to TRUNC/EXTRACT any width mismatches
@@ -218,11 +226,22 @@ static void process() {
 
         // End of elaboration
         V3Stats::addStatPerf(V3Stats::STAT_WALLTIME_ELAB, elabWallTime.deltaTime());
-        VlOs::DeltaWallTime cvtWallTime{true};
+        const VlOs::DeltaWallTime cvtWallTime{true};
+        if (v3Global.opt.debugExitElab()) {
+            V3Error::abortIfErrors();
+            if (v3Global.opt.serializeOnly()) emitSerialized();
+            cout << "--debug-exit-elab: Exiting after elaboration pass\n";
+            v3Global.vlExit(0);
+        }
 
-        // Coverage insertion
-        //    Before we do dead code elimination and inlining, or we'll lose it.
-        if (v3Global.opt.coverage()) V3Coverage::coverage(v3Global.rootp());
+        // Insert generic non-FSM coverage before dead code elimination and
+        // inlining, or those opportunities may be optimized away. FSM
+        // coverage is handled later in V3FsmDetect, after scoping has created
+        // the AST context needed to recover and lower FSMs reliably.
+        if (v3Global.opt.coverageNonFsm()) V3Coverage::coverage(v3Global.rootp());
+
+        // Resolve randsequence if they are used by the design
+        if (v3Global.useRandSequence()) V3RandSequence::randSequenceNetlist(v3Global.rootp());
 
         // Add randomize() class methods if they are used by the design
         if (v3Global.useRandomizeMethods()) V3Randomize::randomizeNetlist(v3Global.rootp());
@@ -237,6 +256,9 @@ static void process() {
 
         // Assertion insertion
         //    After we've added block coverage, but before other nasty transforms
+        V3AssertNfa::assertNfaAll(v3Global.rootp());
+        // V3AssertProp removed: NFA subsumes multi-cycle property lowering.
+        // Unsupported constructs fall through to V3AssertPre.
         V3AssertPre::assertPreAll(v3Global.rootp());
         //
         V3Assert::assertAll(v3Global.rootp());
@@ -246,6 +268,8 @@ static void process() {
             // Move packages to under new top
             // Must do this after we know parameters and dtypes (as don't clone dtype decls)
             V3LinkLevel::wrapTop(v3Global.rootp());
+        } else {
+            V3LinkLevel::nonWrapTop(v3Global.rootp());
         }
 
         // Propagate constants into expressions
@@ -269,6 +293,7 @@ static void process() {
 
             // Task inlining & pushing BEGINs names to variables/cells
             // Begin processing must be after Param, before module inlining
+            // No more AstGenBlocks after this
             V3Begin::debeginAll(v3Global.rootp());  // Flatten cell names, before inliner
 
             // Expand inouts, stage 2
@@ -277,21 +302,14 @@ static void process() {
         }
 
         if (!v3Global.opt.serializeOnly()) {
+            // Lift expressions out of statements.
+            if (v3Global.opt.fLiftExpr()) V3LiftExpr::liftExprAll(v3Global.rootp());
+
             // Move assignments from X into MODULE temps.
             // (Before flattening, so each new X variable is shared between all scopes of that
             // module.)
             V3Unknown::unknownAll(v3Global.rootp());
             v3Global.constRemoveXs(true);
-        }
-
-        if (v3Global.opt.fDfgPreInline() || v3Global.opt.fDfgPostInline()) {
-            // If doing DFG optimization, extract some additional candidates
-            V3DfgOptimizer::extract(v3Global.rootp());
-        }
-
-        if (v3Global.opt.fDfgPreInline()) {
-            // Pre inline DFG optimization
-            V3DfgOptimizer::optimize(v3Global.rootp(), "pre inline");
         }
 
         if (!(v3Global.opt.serializeOnly() && !v3Global.opt.flatten())) {
@@ -306,15 +324,10 @@ static void process() {
 
         if (v3Global.opt.trace()) V3Interface::interfaceAll(v3Global.rootp());
 
-        if (v3Global.opt.fDfgPostInline()) {
-            // Post inline DFG optimization
-            V3DfgOptimizer::optimize(v3Global.rootp(), "post inline");
-        }
-
         // --PRE-FLAT OPTIMIZATIONS------------------
 
         // Initial const/dead to reduce work for ordering code
-        V3Const::constifyAll(v3Global.rootp());
+        if (v3Global.opt.fConstBeforeDfg()) V3Const::constifyAll(v3Global.rootp());
         v3Global.checkTree();
 
         V3Dead::deadifyDTypes(v3Global.rootp());
@@ -332,11 +345,18 @@ static void process() {
             V3Inst::instAll(v3Global.rootp());
 
             // Inst may have made lots of concats; fix them
-            V3Const::constifyAll(v3Global.rootp());
+            if (v3Global.opt.fConstBeforeDfg()) V3Const::constifyAll(v3Global.rootp());
 
             // Flatten hierarchy, creating a SCOPE for each module's usage as a cell
+            // No more AstAlias after linkDotScope
             V3Scope::scopeAll(v3Global.rootp());
             V3LinkDot::linkDotScope(v3Global.rootp());
+            // FSM coverage needs scopes, but should otherwise run as early as
+            // possible before later lowering rewrites user-visible clocked
+            // case structure. This entry point runs two adjacent phases:
+            // detect into local graph state, then lower that completed state
+            // into the concrete coverage machinery.
+            if (v3Global.opt.coverageFsm()) V3FsmDetect::detect(v3Global.rootp());
 
             // Relocate classes (after linkDot)
             V3Class::classAll(v3Global.rootp());
@@ -346,7 +366,7 @@ static void process() {
 
         if (!(v3Global.opt.serializeOnly() && !v3Global.opt.flatten())) {
             // Cleanup
-            V3Const::constifyAll(v3Global.rootp());
+            if (v3Global.opt.fConstBeforeDfg()) V3Const::constifyAll(v3Global.rootp());
             V3Dead::deadifyDTypesScoped(v3Global.rootp());
             v3Global.checkTree();
         }
@@ -367,14 +387,14 @@ static void process() {
             // After V3Task so task internal variables will get renamed
             V3Name::nameAll(v3Global.rootp());
 
-            // Loop unrolling & convert FORs to WHILEs
+            // Loop unrolling
             V3Unroll::unrollAll(v3Global.rootp());
 
             // Expand slices of arrays
             V3Slice::sliceAll(v3Global.rootp());
 
             // Push constants across variables and remove redundant assignments
-            V3Const::constifyAll(v3Global.rootp());
+            if (v3Global.opt.fConstBeforeDfg()) V3Const::constifyAll(v3Global.rootp());
 
             if (v3Global.opt.fLife()) V3Life::lifeAll(v3Global.rootp());
 
@@ -385,7 +405,7 @@ static void process() {
             }
 
             // Cleanup
-            V3Const::constifyAll(v3Global.rootp());
+            if (v3Global.opt.fConstBeforeDfg()) V3Const::constifyAll(v3Global.rootp());
             V3Dead::deadifyDTypesScoped(v3Global.rootp());
             v3Global.checkTree();
 
@@ -394,7 +414,7 @@ static void process() {
             V3Active::activeAll(v3Global.rootp());
 
             // Split single ALWAYS blocks into multiple blocks for better ordering chances
-            if (v3Global.opt.fSplit()) V3Split::splitAlwaysAll(v3Global.rootp());
+            if (v3Global.opt.fSplit()) V3Split::splitAll(v3Global.rootp());
             V3SplitAs::splitAsAll(v3Global.rootp());
 
             // Create tracing sample points, before we start eliminating signals
@@ -404,6 +424,13 @@ static void process() {
             // After V3TraceDecl so we don't trace additional signals inserted to implement
             // forcing.
             V3Force::forceAll(v3Global.rootp());
+
+            // Convert assign/deassign statements to forces on generated variables, so they can be
+            // handled by the same logic as regular force/release statements.
+            V3Force::assignAll(v3Global.rootp());
+
+            // DFG optimization
+            if (v3Global.opt.fDfg()) V3DfgOptimizer::optimize(v3Global.rootp());
 
             // Gate-based logic elimination; eliminate signals and push constant across cell
             // boundaries Instant propagation makes lots-o-constant reduction possibilities.
@@ -415,15 +442,16 @@ static void process() {
                        "This may cause ordering problems.");
             }
 
-            // Combine COVERINCs with duplicate terms
-            if (v3Global.opt.coverage()) V3CoverageJoin::coverageJoin(v3Global.rootp());
+            // Combine generic COVERINCs with duplicate terms. FSM coverage is
+            // already lowered separately inside V3FsmDetect.
+            if (v3Global.opt.coverageNonFsm()) V3CoverageJoin::coverageJoin(v3Global.rootp());
 
             // Remove unused vars
             V3Const::constifyAll(v3Global.rootp());
             V3Dead::deadifyAllScoped(v3Global.rootp());
 
             // Reorder assignments in pipelined blocks
-            if (v3Global.opt.fReorder()) V3Split::splitReorderAll(v3Global.rootp());
+            if (v3Global.opt.fReorder()) V3Reorder::reorderAll(v3Global.rootp());
 
             if (v3Global.opt.timing().isSetTrue()) {
                 // Convert AST for timing if requested
@@ -434,7 +462,7 @@ static void process() {
             }
 
             // Create delayed assignments
-            // This creates lots of duplicate ACTIVES so ActiveTop needs to be after this step
+            // This creates lots of duplicate ACTIVES so ActiveTop needs to be after this step.
             V3Delayed::delayedAll(v3Global.rootp());
 
             // Make Active's on the top level.
@@ -449,8 +477,9 @@ static void process() {
 
             // Schedule the logic
             V3Sched::schedule(v3Global.rootp());
+            V3Sched::transformForks(v3Global.rootp());
 
-            // Convert sense lists into IF statements.
+            // Post scheduling transformations - TODO: this should at least be renamed
             V3Clock::clockAll(v3Global.rootp());
 
             // Cleanup any dly vars or other temps that are simple assignments
@@ -510,10 +539,11 @@ static void process() {
             V3Dead::deadifyAll(v3Global.rootp());
 
             // Here down, widthMin() is the Verilog width, and width() is the C++ width
-            // Bits between widthMin() and width() are irrelevant, but may be non zero.
+            // Bits between widthMin() and width() are irrelevant, but may be non-zero.
             v3Global.widthMinUsage(VWidthMinUsage::VERILOG_WIDTH);
 
-            // Make all expressions either 8, 16, 32 or 64 bits
+            // Make all expressions 32, 64, or 32*N bits
+            // Variables and selects-of-variables remain verilog-width
             V3Clean::cleanAll(v3Global.rootp());
 
             // Move wide constants to BLOCK temps / ConstPool.
@@ -550,6 +580,11 @@ static void process() {
                 V3Reloop::reloopAll(v3Global.rootp());
             }
 
+            if (v3Global.opt.inlineCFuncs()) {
+                // Inline small CFuncs to reduce function call overhead
+                V3InlineCFuncs::inlineAll(v3Global.rootp());
+            }
+
             // Fix very deep expressions
             // Mark evaluation functions as member functions, if needed.
             V3Depth::depthAll(v3Global.rootp());
@@ -584,6 +619,11 @@ static void process() {
 
             // Create AstCUse to determine what class forward declarations/#includes needed in C
             V3CUse::cUseAll();
+
+            // Evaluate cost of a current hierarchical block
+            if (!v3Global.opt.libCreate().empty()) {
+                v3Global.currentHierBlockCost(V3Control::getCurrentHierBlockCost());
+            }
         }
 
         // Output the text
@@ -608,11 +648,10 @@ static void process() {
         V3EmitC::emitcImp();
     }
     if (v3Global.opt.serializeOnly()) {
-        emitXmlOrJson();
+        emitSerialized();
     } else if (v3Global.opt.debugCheck() && !v3Global.opt.lintOnly()
                && !v3Global.opt.dpiHdrOnly()) {
-        // Check XML/JSON when debugging to make sure no missing node types
-        V3EmitXml::emitxml();
+        // Check JSON when debugging to make sure no missing node types
         emitJson();
     }
 
@@ -629,7 +668,7 @@ static void process() {
     if (!v3Global.opt.lintOnly() && !v3Global.opt.serializeOnly() && !v3Global.opt.dpiHdrOnly()) {
         if (v3Global.opt.main()) V3EmitCMain::emit();
 
-        // V3EmitMk/V3EmitCMake/V3EmitMkJson must be after all other emitters,
+        // V3EmitMk/V3EmitMkJson must be after all other emitters,
         // as they and below code visits AstCFiles added earlier
         size_t src_f_cnt = 0;
         for (AstNode* nodep = v3Global.rootp()->filesp(); nodep; nodep = nodep->nextp()) {
@@ -637,18 +676,17 @@ static void process() {
                 src_f_cnt += cfilep->source() ? 1 : 0;
         }
         if (src_f_cnt >= V3EmitMk::PARALLEL_FILE_CNT_THRESHOLD) v3Global.useParallelBuild(true);
-        if (v3Global.opt.cmake()) V3EmitCMake::emit();
         if (v3Global.opt.makeJson()) V3EmitMkJson::emit();
         if (v3Global.opt.gmake()) V3EmitMk::emitmk();
     }
 
     // Final statistics
     if (v3Global.opt.stats()) V3Stats::statsStage("emit");
-    reportStatsIfEnabled();
 }
 
-static void verilate(const string& argString) {
-    UINFO(1, "Option --verilate: Start Verilation\n");
+static bool verilate(const string& argString) {
+    // Run verilation, and return false if skipped
+    UINFO(1, "Option --verilate: Start Verilation");
 
     // Can we skip doing everything if times are ok?
     V3File::addSrcDepend(v3Global.opt.buildDepBin());
@@ -656,8 +694,8 @@ static void verilate(const string& argString) {
         && V3File::checkTimes(v3Global.opt.hierTopDataDir() + "/" + v3Global.opt.prefix()
                                   + "__verFiles.dat",
                               argString)) {
-        UINFO(1, "--skip-identical: No change to any source files, exiting\n");
-        return;
+        UINFO(1, "--skip-identical: No change to any source files, exiting");
+        return false;
     }
     // Undocumented debugging - cannot be a switch as then command line
     // would mismatch forcing non-identicalness when we set it
@@ -686,6 +724,8 @@ static void verilate(const string& argString) {
     if (v3Global.opt.debugSelfTest()) {
         V3Os::selfTest();
         V3Number::selfTest();
+        VCMethod::selfTest();
+        VString::selfTest();
         VHashSha256::selfTest();
         VSpellCheck::selfTest();
         V3Graph::selfTest();
@@ -695,8 +735,9 @@ static void verilate(const string& argString) {
         V3ExecGraph::selfTest();
         V3PreShell::selfTest();
         V3Broken::selfTest();
+        V3Control::selfTest();
         V3ThreadPool::selfTest();
-        UINFO(2, "selfTest done\n");
+        UINFO(2, "selfTest done");
     }
 
     // Read first filename
@@ -727,23 +768,20 @@ static void verilate(const string& argString) {
 
     V3Error::abortIfWarnings();
 
-    if (v3Global.hierPlanp()) {  // This run is for just write a makefile
+    if (const V3HierGraph* const hierGraphp
+        = v3Global.hierGraphp()) {  // This run is for just write a makefile
         UASSERT(v3Global.opt.hierarchical(), "hierarchical must be set");
         UASSERT(!v3Global.opt.hierChild(), "This must not be a hierarchical-child run");
         UASSERT(v3Global.opt.hierBlocks().empty(), "hierarchical-block must not be set");
         if (v3Global.opt.gmake()) {
-            v3Global.hierPlanp()->writeCommandArgsFiles(false);
-            V3EmitMk::emitHierVerilation(v3Global.hierPlanp());
-        }
-        if (v3Global.opt.cmake()) {
-            v3Global.hierPlanp()->writeCommandArgsFiles(true);
-            V3EmitCMake::emit();
+            hierGraphp->writeCommandArgsFiles(false);
+            V3EmitMk::emitHierVerilation(hierGraphp);
         }
         if (v3Global.opt.makeJson()) {
-            v3Global.hierPlanp()->writeCommandArgsFiles(true);
+            hierGraphp->writeCommandArgsFiles(true);
             V3EmitMkJson::emit();
         }
-        v3Global.hierPlanp()->writeParametersFiles();
+        hierGraphp->writeParametersFiles();
     }
     if (v3Global.opt.makeDepend().isTrue()) {
         string filename = v3Global.opt.makeDir() + "/" + v3Global.opt.prefix();
@@ -755,7 +793,8 @@ static void verilate(const string& argString) {
                                  + "__idmap.xml");
     }
 
-    if (v3Global.opt.skipIdentical().isTrue() || v3Global.opt.makeDepend().isTrue()) {
+    if ((v3Global.opt.skipIdentical().isTrue() || v3Global.opt.makeDepend().isTrue())
+        && !V3Error::isErrorOrWarn()) {
         V3File::writeTimes(v3Global.opt.hierTopDataDir() + "/" + v3Global.opt.prefix()
                                + "__verFiles.dat",
                            argString);
@@ -763,13 +802,23 @@ static void verilate(const string& argString) {
 
     V3Os::filesystemFlushBuildDir(v3Global.opt.makeDir());
     if (v3Global.opt.hierTop()) V3Os::filesystemFlushBuildDir(v3Global.opt.hierTopDataDir());
+    if (v3Global.opt.stats()) V3Stats::statsStageAll(v3Global.rootp(), "WroteAll");
+    if (v3Global.opt.stats()) V3Stats::statsStageAll(v3Global.rootp(), "WroteFast");
 
     // Final writing shouldn't throw warnings, but...
     V3Error::abortIfWarnings();
+
+    // Free memory so compiler has more for --build
+    // No need to do this if skipped (above) as didn't alloc much
+    UINFO(1, "Releasing netlist memory");
+    v3Global.rootp()->deleteContents();
+    V3Os::releaseMemory();
+    if (v3Global.opt.stats()) V3Stats::statsStage("released");
+    return true;
 }
 
 static string buildMakeCmd(const string& makefile, const string& target) {
-    const V3StringList& makeFlags = v3Global.opt.makeFlags();
+    const VStringList& makeFlags = v3Global.opt.makeFlags();
     const int jobs = v3Global.opt.buildJobs();
     UASSERT(jobs >= 0, "-j option parser in V3Options.cpp filters out negative value");
 
@@ -778,6 +827,7 @@ static string buildMakeCmd(const string& makefile, const string& target) {
     cmd << " -C " << v3Global.opt.makeDir();
     cmd << " -f " << makefile;
     // Unless using make's jobserver, do a -j
+    if (v3Global.opt.quietBuild()) cmd << " -s --no-print-directory";
     if (v3Global.opt.getenvMAKEFLAGS().find("-jobserver-auth") == string::npos) {
         if (jobs > 0) cmd << " -j " << jobs;
     }
@@ -790,9 +840,9 @@ static string buildMakeCmd(const string& makefile, const string& target) {
 static void execBuildJob() {
     UASSERT(v3Global.opt.build(), "--build is not specified.");
     UASSERT(v3Global.opt.gmake(), "--build requires GNU Make.");
-    UASSERT(!v3Global.opt.cmake(), "--build cannot use CMake.");
-    VlOs::DeltaWallTime buildWallTime{true};
-    UINFO(1, "Start Build\n");
+    UASSERT(!v3Global.opt.makeJson(), "--build cannot use json build.");
+    const VlOs::DeltaWallTime buildWallTime{true};
+    UINFO(1, "Start Build");
 
     const string cmdStr = buildMakeCmd(v3Global.opt.prefix() + ".mk", "");
     V3Os::filesystemFlushBuildDir(v3Global.opt.hierTopDataDir());
@@ -800,13 +850,13 @@ static void execBuildJob() {
     V3Stats::addStatPerf(V3Stats::STAT_WALLTIME_BUILD, buildWallTime.deltaTime());
 
     if (exit_code != 0) {
-        v3error(cmdStr << " exited with " << exit_code << std::endl);
-        std::exit(exit_code);
+        v3error("'" << cmdStr << "' exited with " << exit_code << std::endl);
+        v3Global.vlExit(exit_code);
     }
 }
 
 static void execHierVerilation() {
-    UASSERT(v3Global.hierPlanp(), "must be called only when plan exists");
+    UASSERT(v3Global.hierGraphp(), "must be called only when plan exists");
     const string makefile = v3Global.opt.prefix() + "_hier.mk ";
     const string target = v3Global.opt.build() ? " hier_build" : " hier_verilation";
     const string cmdStr = buildMakeCmd(makefile, target);
@@ -814,7 +864,7 @@ static void execHierVerilation() {
     const int exit_code = V3Os::system(cmdStr);
     if (exit_code != 0) {
         v3error(cmdStr << " exited with " << exit_code << std::endl);
-        std::exit(exit_code);
+        v3Global.vlExit(exit_code);
     }
 }
 
@@ -825,8 +875,8 @@ extern "C" {
 int main(int argc, char** argv) {
     // General initialization
     std::ios::sync_with_stdio();
-    VlOs::DeltaWallTime wallTimeTotal{true};
-    VlOs::DeltaCpuTime cpuTimeTotal{true};
+    const VlOs::DeltaWallTime wallTimeTotal{true};
+    const VlOs::DeltaCpuTime cpuTimeTotal{true};
 
     time_t randseed;
     time(&randseed);
@@ -851,22 +901,24 @@ int main(int argc, char** argv) {
 
     V3Error::abortIfErrors();
 
+    bool didVerilate = false;
     if (v3Global.opt.verilate()) {
-        verilate(argString);
+        didVerilate = verilate(argString);
     } else {
-        UINFO(1, "Option --no-verilate: Skip Verilation\n");
+        UINFO(1, "Option --no-verilate: Skip Verilation");
     }
 
-    if (v3Global.hierPlanp() && v3Global.opt.gmake()) {
+    if (v3Global.hierGraphp() && v3Global.opt.gmake()) {
         execHierVerilation();  // execHierVerilation() takes care of --build too
     } else if (v3Global.opt.build()) {
         execBuildJob();
     }
 
+    if (didVerilate) reportStatsIfEnabled();
+    V3DiagSarif::output(true);
+
     // Explicitly release resources
-    V3PreShell::shutdown();
     v3Global.shutdown();
-    FileLine::deleteAllRemaining();
 
     if (!v3Global.opt.quietStats() && !v3Global.opt.preprocOnly()) {
         V3Stats::addStatPerf(V3Stats::STAT_CPUTIME, cpuTimeTotal.deltaTime());
@@ -874,7 +926,7 @@ int main(int argc, char** argv) {
         V3Stats::summaryReport();
     }
 
-    UINFO(1, "Done, Exiting...\n");
+    UINFO(1, "Done, Exiting...");
 }
 
 }

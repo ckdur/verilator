@@ -1,19 +1,19 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2012 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2012 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
-module t (/*AUTOARG*/
-   // Outputs
-   a, b
-   );
+module t (  /*AUTOARG*/
+  // Outputs
+  a, b
+  );
 
-   // verilator lint_off UNOPTFLAT
+  // verilator lint_off UNOPTFLAT
 
-   output logic a, b;
+  output logic a, b;
 
-   always_comb b = ~a;
-   always_comb a = b;
+  always_comb b = ~a;
+  always_comb a = b;
 
 endmodule

@@ -10,7 +10,7 @@ import re
 ######################################################################
 
 
-def profcfunc(filename):
+def profcfunc(filename: str) -> None:
     funcs = {}
 
     with open(filename, "r", encoding="utf8") as fh:
@@ -26,7 +26,7 @@ def profcfunc(filename):
                 calls = float(match.group(3))
                 func = match.group(4)
                 if func not in funcs:
-                    funcs[func] = {'pct': 0, 'sec': 0, 'calls': 0}
+                    funcs[func] = {'pct': 0.0, 'sec': 0.0, 'calls': 0}
                 funcs[func]['pct'] += pct
                 funcs[func]['sec'] += sec
                 funcs[func]['calls'] += calls
@@ -150,7 +150,7 @@ def profcfunc(filename):
     print((" time   seconds   seconds      calls   %-" + str(design_width) +
            "s  type      filename and line number") % "design")
 
-    cume = 0
+    cume = 0.0
     for func in sorted(vfuncs.keys(), key=lambda f: vfuncs[f]['sec'], reverse=True):
         cume += vfuncs[func]['sec']
         print(("%6.2f %9.2f %8.2f %10d   %-" + str(design_width) + "s  %s") %
@@ -173,12 +173,13 @@ in each Verilog block.
 
 For documentation see
 https://verilator.org/guide/latest/exe_verilator_profcfunc.html""",
-    epilog="""Copyright 2002-2025 by Wilson Snyder. This program is free software; you
-can redistribute it and/or modify it under the terms of either the GNU
-Lesser General Public License Version 3 or the Perl Artistic License
-Version 2.0.
+    epilog="""This program is free software; you can redistribute it and/or modify it
+under the terms of either the GNU Lesser General Public License Version 3
+or the Perl Artistic License Version 2.0.
 
-SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0""")
+SPDX-FileCopyrightText: 2002-2026 Wilson Snyder
+SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
+""")
 
 parser.add_argument('--debug', action='store_const', const=9, help='enable debug')
 parser.add_argument('filename', help='input gprof output to process')

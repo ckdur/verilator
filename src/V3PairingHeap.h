@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -93,7 +93,7 @@ public:
         Link m_next;  // Next in list of sibling heaps
         Link m_kids;  // Head of list of child heaps
         Node** m_ownerpp = nullptr;  // Pointer to the Link pointer pointing to this heap
-        T_Key m_key;  // The key in the heap
+        T_Key m_key{};  // The key in the heap
 
         // CONSTRUCTOR
         explicit Node() = default;
@@ -243,11 +243,10 @@ private:
             bp->m_next.link(ap->m_kids.unlink());
             ap->m_kids.linkNonNull(bp);
             return ap;
-        } else {  // ap goes under bp
-            ap->m_next.link(bp->m_kids.unlink());
-            bp->m_kids.linkNonNull(ap);
-            return bp;
-        }
+        }  // else ap goes under bp
+        ap->m_next.link(bp->m_kids.unlink());
+        bp->m_kids.linkNonNull(ap);
+        return bp;
     }
 
     // Reduces the list of nodes starting at the given node into a single node that is returned

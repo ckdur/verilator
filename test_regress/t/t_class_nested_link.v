@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Anthony Donlon.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Anthony Donlon
 // SPDX-License-Identifier: CC0-1.0
 
 /// Test for bug4553
@@ -12,34 +12,36 @@
 int calls = 0;
 
 module t;
-    // int calls = 0;  // TODO: Error: Internal Error: Can't locate varref scope
+  // int calls = 0;  // TODO: Error: Internal Error: Can't locate varref scope
 
+  function void myfunc();
+    calls |= 32'b10;
+  endfunction : myfunc
+
+  class Cls #(
+      int A = 0
+  );
+    function new();
+      calls |= 32'b1;
+    endfunction : new
     function void myfunc();
-        calls |= 32'b10;
+      calls |= 32'b100;
     endfunction : myfunc
+  endclass
 
-    class Cls #(int A = 0);
-        function new();
-            calls |= 32'b1;
-        endfunction : new
-        function void myfunc();
-            calls |= 32'b100;
-        endfunction : myfunc
-    endclass
+  Cls #(100) cls;
 
-    Cls #(100) cls;
+  // this block is following the definition of Cls
+  initial begin
+    cls = new;
+    myfunc();
 
-    // this block is following the definition of Cls
-    initial begin
-        cls = new;
-        myfunc();
-
-        if (calls != 32'b011) begin
-            $write("calls: %0b\n", calls);
-            $stop;
-        end
-
-        $write("*-* All Finished *-*\n");
-        $finish;
+    if (calls != 32'b011) begin
+      $write("calls: %0b\n", calls);
+      $stop;
     end
+
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 endmodule

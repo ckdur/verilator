@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
@@ -38,6 +38,18 @@ hgrep(r'sc_core::sc_out<uint64_t>\s+&o64;')
 hgrep(r'sc_core::sc_out<sc_dt::sc_bv<65>\s>\s+&o65;')
 hgrep(r'sc_core::sc_out<sc_dt::sc_bv<128>\s>\s+&o128;')
 hgrep(r'sc_core::sc_out<sc_dt::sc_bv<513>\s>\s+&o513;')
+
+# sc_biguint pragma overrides `--pins-sc-uint-bool` flag
+hgrep(r'sc_core::sc_in<sc_dt::sc_biguint<1>\s>\s+&ibu1;')
+hgrep(r'sc_core::sc_in<sc_dt::sc_biguint<8>\s>\s+&ibu8;')
+hgrep(r'sc_core::sc_in<sc_dt::sc_biguint<16>\s>\s+&ibu16;')
+hgrep(r'sc_core::sc_in<sc_dt::sc_biguint<64>\s>\s+&ibu64;')
+hgrep(r'sc_core::sc_in<sc_dt::sc_biguint<512>\s>\s+&ibu512;')
+hgrep(r'sc_core::sc_out<sc_dt::sc_biguint<1>\s>\s+&obu1;')
+hgrep(r'sc_core::sc_out<sc_dt::sc_biguint<8>\s>\s+&obu8;')
+hgrep(r'sc_core::sc_out<sc_dt::sc_biguint<16>\s>\s+&obu16;')
+hgrep(r'sc_core::sc_out<sc_dt::sc_biguint<64>\s>\s+&obu64;')
+hgrep(r'sc_core::sc_out<sc_dt::sc_biguint<512>\s>\s+&obu512;')
 
 test.execute()
 

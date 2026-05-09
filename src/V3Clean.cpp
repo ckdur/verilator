@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -18,7 +18,7 @@
 // Each module:
 //      For each expression, if it requires a clean operand,
 //      and the operand is dirty, insert a CLEAN node.
-//      Resize operands to C++ 32/64/wide types.
+//      Resize operands (but not variables or variable selects) to C++ 32/64/wide types.
 //      Copy all width() values to widthMin() so RANGE, etc can still see orig widths
 //
 //*************************************************************************
@@ -45,13 +45,13 @@ class CleanVisitor final : public VNVisitor {
     // TYPES
     enum CleanState : uint8_t { CS_UNKNOWN, CS_CLEAN, CS_DIRTY };
 
-    // STATE
+    // STATE - for current visit position (use VL_RESTORER)
     const AstNodeModule* m_modp = nullptr;
 
     // METHODS
 
     // Width resetting
-    int cppWidth(AstNode* nodep) {
+    int cppWidth(const AstNode* nodep) {
         if (nodep->width() <= VL_IDATASIZE) {
             return VL_IDATASIZE;
         } else if (nodep->width() <= VL_QUADSIZE) {
@@ -83,6 +83,7 @@ class CleanVisitor final : public VNVisitor {
             if (VN_IS(nodep, Var)  //
                 || VN_IS(nodep, ConsPackMember)  //
                 || VN_IS(nodep, NodeDType)  // Don't want to change variable widths!
+                || VN_IS(nodep, NodeSel)  // Array selects should reflect variable widths
                 || VN_IS(nodep->dtypep()->skipRefp(), AssocArrayDType)  // Or arrays
                 || VN_IS(nodep->dtypep()->skipRefp(), WildcardArrayDType)
                 || VN_IS(nodep->dtypep()->skipRefp(), DynArrayDType)
@@ -101,7 +102,9 @@ class CleanVisitor final : public VNVisitor {
 
     // Store the clean state in the userp on each node
     void setCleanState(AstNode* nodep, CleanState clean) { nodep->user1(clean); }
-    CleanState getCleanState(AstNode* nodep) { return static_cast<CleanState>(nodep->user1()); }
+    CleanState getCleanState(const AstNode* nodep) {
+        return static_cast<CleanState>(nodep->user1());
+    }
     bool isClean(AstNode* nodep) {
         const CleanState clstate = getCleanState(nodep);
         if (clstate == CS_CLEAN) return true;
@@ -119,7 +122,7 @@ class CleanVisitor final : public VNVisitor {
 
     // Operate on nodes
     void insertClean(AstNodeExpr* nodep) {  // We'll insert ABOVE passed node
-        UINFO(4, "  NeedClean " << nodep << endl);
+        UINFO(4, "  NeedClean " << nodep);
         VNRelinker relinkHandle;
         nodep->unlinkFrBack(&relinkHandle);
         //
@@ -202,6 +205,11 @@ class CleanVisitor final : public VNVisitor {
         operandQuadop(nodep);
         setClean(nodep, nodep->cleanOut());
     }
+    void visit(AstExprStmt* nodep) override {
+        iterateChildren(nodep);
+        computeCppWidth(nodep);
+        setClean(nodep, isClean(nodep->resultp()));
+    }
     void visit(AstNodeExpr* nodep) override {
         iterateChildren(nodep);
         computeCppWidth(nodep);
@@ -211,9 +219,6 @@ class CleanVisitor final : public VNVisitor {
         iterateChildren(nodep);
         computeCppWidth(nodep);
         if (nodep->cleanRhs()) ensureClean(nodep->rhsp());
-    }
-    void visit(AstText* nodep) override {  //
-        setClean(nodep, true);
     }
     void visit(AstScopeName* nodep) override {  //
         setClean(nodep, true);
@@ -228,16 +233,16 @@ class CleanVisitor final : public VNVisitor {
         setClean(nodep, true);
     }
     void visit(AstSel* nodep) override {
-        operandTriop(nodep);
+        operandBiop(nodep);
         setClean(nodep, nodep->cleanOut());
     }
-    void visit(AstUCFunc* nodep) override {
+    void visit(AstCExprUser* nodep) override {
         iterateChildren(nodep);
         computeCppWidth(nodep);
         setClean(nodep, false);
         // We always clean, as we don't trust those pesky users.
         if (!VN_IS(nodep->backp(), And)) insertClean(nodep);
-        for (AstNode* argp = nodep->exprsp(); argp; argp = argp->nextp()) {
+        for (AstNode* argp = nodep->nodesp(); argp; argp = argp->nextp()) {
             if (AstNodeExpr* const exprp = VN_CAST(argp, NodeExpr)) ensureClean(exprp);
         }
     }
@@ -256,12 +261,13 @@ class CleanVisitor final : public VNVisitor {
     }
 
     // Control flow operators
-    void visit(AstNodeCond* nodep) override {
+    void visit(AstCond* nodep) override {
         iterateChildren(nodep);
         ensureClean(nodep->condp());
         setClean(nodep, isClean(nodep->thenp()) && isClean(nodep->elsep()));
     }
-    void visit(AstWhile* nodep) override {
+    void visit(AstLoop* nodep) override { iterateChildren(nodep); }
+    void visit(AstLoopTest* nodep) override {
         iterateChildren(nodep);
         ensureClean(nodep->condp());
     }
@@ -274,9 +280,9 @@ class CleanVisitor final : public VNVisitor {
         ensureCleanAndNext(nodep->exprsp());
         setClean(nodep, true);  // generates a string, so not relevant
     }
-    void visit(AstUCStmt* nodep) override {
+    void visit(AstCStmtUser* nodep) override {
         iterateChildren(nodep);
-        for (AstNode* argp = nodep->exprsp(); argp; argp = argp->nextp()) {
+        for (AstNode* argp = nodep->nodesp(); argp; argp = argp->nextp()) {
             if (AstNodeExpr* const exprp = VN_CAST(argp, NodeExpr)) ensureClean(exprp);
         }
     }
@@ -321,7 +327,7 @@ public:
 // Clean class functions
 
 void V3Clean::cleanAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { CleanVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("clean", 0, dumpTreeEitherLevel() >= 3);
 }

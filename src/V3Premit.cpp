@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -46,12 +46,12 @@ class PremitVisitor final : public VNVisitor {
 
     // STATE - across all visitors
     VDouble0 m_extractedToConstPool;  // Statistic tracking
+    VDouble0 m_temporaryVarsCreated;  // Statistic tracking
 
     // STATE - for current visit position (use VL_RESTORER)
     AstCFunc* m_cfuncp = nullptr;  // Current block
     size_t m_tmpVarCnt = 0;  // Number of temporary variables created inside a function
     AstNode* m_stmtp = nullptr;  // Current statement
-    AstWhile* m_inWhileCondp = nullptr;  // Inside condition of this while loop
     bool m_assignLhs = false;  // Inside assignment lhs, don't breakup extracts
 
     // METHODS
@@ -62,12 +62,12 @@ class PremitVisitor final : public VNVisitor {
         if (!nodep->isWide()) return;  // Not wide
         if (m_assignLhs) return;  // This is an lvalue!
         UASSERT_OBJ(!VN_IS(nodep->firstAbovep(), ArraySel), nodep, "Should have been ignored");
-        createWideTemp(nodep);
+        createTemp(nodep);
     }
 
-    AstVar* createWideTemp(AstNodeExpr* nodep) {
+    AstVar* createTemp(AstNodeExpr* nodep) {
         UASSERT_OBJ(m_stmtp, nodep, "Attempting to create temporary with no insertion point");
-        UINFO(4, "createWideTemp: " << nodep << endl);
+        UINFO(4, "createTemp: " << nodep);
 
         VNRelinker relinker;
         nodep->unlinkFrBack(&relinker);
@@ -80,7 +80,6 @@ class PremitVisitor final : public VNVisitor {
                                   && !constp->num().isString();  // Not a string
 
         AstVar* varp = nullptr;
-        AstAssign* assignp = nullptr;
 
         if (useConstPool) {
             // Extract into constant pool.
@@ -92,25 +91,20 @@ class PremitVisitor final : public VNVisitor {
             // Keep as local temporary.
             const std::string name = "__Vtemp_" + std::to_string(++m_tmpVarCnt);
             varp = new AstVar{flp, VVarType::STMTTEMP, name, nodep->dtypep()};
-            m_cfuncp->addInitsp(varp);
+            varp->funcLocal(true);
+            varp->noReset(true);
+            m_cfuncp->addVarsp(varp);
+            ++m_temporaryVarsCreated;
 
-            // Put assignment before the referencing statement
-            assignp = new AstAssign{flp, new AstVarRef{flp, varp, VAccess::WRITE}, nodep};
-            if (m_inWhileCondp) {
-                // Statements that are needed for the 'condition' in a while
-                // actually have to be put before & after the loop, since we
-                // can't do any statements in a while's (cond).
-                m_inWhileCondp->addPrecondsp(assignp);
-            } else {
-                m_stmtp->addHereThisAsNext(assignp);
-            }
+            // Assignment to put before the referencing statement
+            AstAssign* const assignp
+                = new AstAssign{flp, new AstVarRef{flp, varp, VAccess::WRITE}, nodep};
+            // Insert before the statement
+            m_stmtp->addHereThisAsNext(assignp);
         }
 
         // Replace node with VarRef to new Var
         relinker.relink(new AstVarRef{flp, varp, VAccess::READ});
-
-        // Handle wide expressions inside the expression recursively
-        if (assignp) iterate(assignp);
 
         // Return the temporary variable
         return varp;
@@ -118,12 +112,13 @@ class PremitVisitor final : public VNVisitor {
 
     void visitShift(AstNodeBiop* nodep) {
         // Shifts of > 32/64 bits in C++ will wrap-around and generate non-0s
-        UINFO(4, "  ShiftFix  " << nodep << endl);
+        UINFO(4, "  ShiftFix  " << nodep);
         const AstConst* const shiftp = VN_CAST(nodep->rhsp(), Const);
         if (shiftp && shiftp->num().mostSetBitP1() > 32) {
-            shiftp->v3error(
+            shiftp->v3warn(
+                E_UNSUPPORTED,
                 "Unsupported: Shifting of by over 32-bit number isn't supported."
-                << " (This isn't a shift of 32 bits, but a shift of 2^32, or 4 billion!)\n");
+                    << " (This isn't a shift of 32 bits, but a shift of 2^32, or 4 billion!)\n");
         }
         if (nodep->widthMin() <= 64  // Else we'll use large operators which work right
                                      // C operator's width must be < maximum shift which is
@@ -141,8 +136,7 @@ class PremitVisitor final : public VNVisitor {
                 newp = new AstShiftRSOvr{nodep->fileline(), nodep->lhsp()->unlinkFrBack(),
                                          nodep->rhsp()->unlinkFrBack()};
             }
-            newp->dtypeFrom(nodep);
-            nodep->replaceWith(newp);
+            nodep->replaceWithKeepDType(newp);
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
             return;
         }
@@ -150,7 +144,7 @@ class PremitVisitor final : public VNVisitor {
         checkNode(nodep);
     }
 
-    static bool rhsReadsLhs(AstNodeAssign* nodep) {
+    static bool rhsReadsLhs(const AstNodeAssign* nodep) {
         const VNUser3InUse user3InUse;
         nodep->lhsp()->foreach([](const AstVarRef* refp) {
             if (refp->access().isWriteOrRW()) refp->varp()->user3(true);
@@ -173,28 +167,12 @@ class PremitVisitor final : public VNVisitor {
     // VISITORS - Statements
 #define START_STATEMENT_OR_RETURN(stmtp) \
     if (!m_cfuncp) return; \
-    if (stmtp->user1SetOnce()) return; \
+    if ((stmtp)->user1SetOnce()) return; \
     VL_RESTORER(m_assignLhs); \
     VL_RESTORER(m_stmtp); \
-    VL_RESTORER(m_inWhileCondp); \
     m_assignLhs = false; \
-    m_stmtp = stmtp; \
-    m_inWhileCondp = nullptr
+    m_stmtp = (stmtp);
 
-    void visit(AstWhile* nodep) override {
-        UINFO(4, "  WHILE  " << nodep << endl);
-        // cppcheck-suppress shadowVariable  // Also restored below
-        START_STATEMENT_OR_RETURN(nodep);
-        iterateAndNextNull(nodep->precondsp());
-        {
-            // cppcheck-suppress shadowVariable  // Also restored above
-            VL_RESTORER(m_inWhileCondp);
-            m_inWhileCondp = nodep;
-            iterateAndNextNull(nodep->condp());
-        }
-        iterateAndNextNull(nodep->stmtsp());
-        iterateAndNextNull(nodep->incsp());
-    }
     void visit(AstNodeAssign* nodep) override {
         START_STATEMENT_OR_RETURN(nodep);
 
@@ -222,9 +200,10 @@ class PremitVisitor final : public VNVisitor {
             }
         }
 
-        if (rhsReadsLhs(nodep)) {
-            // Need to do this even if not wide, as e.g. a select may be on a wide operator
-            createWideTemp(nodep->rhsp());
+        // If the RHS reads the LHS, we need a temporary unless the update is atomic
+        const bool isAtomic = VN_IS(nodep->lhsp(), VarRef) && !nodep->lhsp()->isWide();
+        if (!isAtomic && rhsReadsLhs(nodep)) {
+            createTemp(nodep->rhsp());
         } else {
             iterateAndNextNull(nodep->rhsp());
         }
@@ -242,7 +221,7 @@ class PremitVisitor final : public VNVisitor {
                 && nodep->filep()->sameGateTree(VN_AS(searchp, Display)->filep())) {
                 // There's another display next; we can just wait to flush
             } else {
-                UINFO(4, "Autoflush " << nodep << endl);
+                UINFO(4, "Autoflush " << nodep);
                 nodep->addNextHere(
                     new AstFFlush{nodep->fileline(),
                                   nodep->filep() ? nodep->filep()->cloneTreePure(true) : nullptr});
@@ -280,7 +259,11 @@ class PremitVisitor final : public VNVisitor {
         iterateChildren(nodep);
         checkNode(nodep);
     }
-    void visit(AstUCFunc* nodep) override {
+    void visit(AstCExprUser* nodep) override {
+        iterateChildren(nodep);
+        checkNode(nodep);
+    }
+    void visit(AstCMethodHard* nodep) override {
         iterateChildren(nodep);
         checkNode(nodep);
     }
@@ -291,7 +274,7 @@ class PremitVisitor final : public VNVisitor {
     void visit(AstCvtPackedToArray* nodep) override {
         iterateChildren(nodep);
         checkNode(nodep);
-        if (!VN_IS(nodep->backp(), NodeAssign)) createWideTemp(nodep);
+        if (!VN_IS(nodep->backp(), NodeAssign)) createTemp(nodep);
     }
     void visit(AstCvtUnpackedToQueue* nodep) override {
         iterateChildren(nodep);
@@ -325,13 +308,13 @@ class PremitVisitor final : public VNVisitor {
         }
         checkNode(nodep);
     }
-    void visit(AstNodeCond* nodep) override {
+    void visit(AstCond* nodep) override {
         iterateChildren(nodep);
         if (nodep->thenp()->isWide() && !VN_IS(nodep->condp(), Const)
             && !VN_IS(nodep->condp(), VarRef)) {
             // We're going to need the expression several times in the expanded code,
             // so might as well make it a common expression
-            createWideTemp(nodep->condp());
+            createTemp(nodep->condp());
             VIsCached::clearCacheTree();
         }
         checkNode(nodep);
@@ -340,10 +323,16 @@ class PremitVisitor final : public VNVisitor {
         iterateChildren(nodep);
         // Any strings sent to a display must be var of string data type,
         // to avoid passing a pointer to a temporary.
-        for (AstNodeExpr *expp = nodep->exprsp(), *nextp; expp; expp = nextp) {
-            nextp = VN_AS(expp->nextp(), NodeExpr);
-            if (expp->isString() && !VN_IS(expp, VarRef)) {
-                AstVar* const varp = createWideTemp(expp);
+        AstNodeExpr* exprsp = nodep->exprsp();
+        if (nodep->exprFormat()) exprsp = VN_AS(exprsp->nextp(), NodeExpr);
+        for (AstNodeExpr *argp = exprsp, *nextp; argp; argp = nextp) {
+            nextp = VN_AS(argp->nextp(), NodeExpr);
+
+            AstSFormatArg* const fargp = VN_CAST(argp, SFormatArg);
+            AstNodeExpr* const subargp = fargp ? fargp->exprp() : argp;
+            // Must avoid taking address of rvalue, so even Const needs a temp
+            if (subargp->isString() && !VN_IS(subargp, VarRef)) {
+                AstVar* const varp = createTemp(subargp);
                 // Do not remove VarRefs to this in V3Const
                 varp->noSubst(true);
             }
@@ -361,6 +350,8 @@ public:
     ~PremitVisitor() override {
         V3Stats::addStat("Optimizations, Prelim extracted value to ConstPool",
                          m_extractedToConstPool);
+        V3Stats::addStat("Optimizations, Prelim temporary variables created",
+                         m_temporaryVarsCreated);
     }
 };
 
@@ -368,7 +359,7 @@ public:
 // Premit class functions
 
 void V3Premit::premitAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { PremitVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("premit", 0, dumpTreeEitherLevel() >= 3);
 }

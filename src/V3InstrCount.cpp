@@ -7,10 +7,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -111,7 +111,7 @@ private:
         return savedCount;
     }
     void endVisitBase(uint32_t savedCount, AstNode* nodep) {
-        UINFO(8, "cost " << std::setw(6) << std::left << m_instrCount << "  " << nodep << endl);
+        UINFO(8, "cost " << std::setw(6) << std::left << m_instrCount << "  " << nodep);
         markCost(nodep);
         if (!m_ignoreRemaining) m_instrCount += savedCount;
     }
@@ -140,7 +140,6 @@ private:
         // the fromp() node which could be disproportionately large.
         const VisitBase vb{this, nodep};
         iterateAndNextConstNull(nodep->lsbp());
-        iterateAndNextConstNull(nodep->widthp());
     }
     void visit(AstConcat* nodep) override {
         if (m_ignoreRemaining) return;
@@ -168,13 +167,13 @@ private:
         iterateAndNextConstNull(nodep->condp());
         const uint32_t savedCount = m_instrCount;
 
-        UINFO(8, "thensp:\n");
+        UINFO(8, "thensp:");
         reset();
         iterateAndNextConstNull(nodep->thensp());
         uint32_t ifCount = m_instrCount;
         if (nodep->branchPred().unlikely()) ifCount = 0;
 
-        UINFO(8, "elsesp:\n");
+        UINFO(8, "elsesp:");
         reset();
         iterateAndNextConstNull(nodep->elsesp());
         uint32_t elseCount = m_instrCount;
@@ -189,7 +188,7 @@ private:
             if (nodep->thensp()) nodep->thensp()->user2(0);  // Don't dump it
         }
     }
-    void visit(AstNodeCond* nodep) override {
+    void visit(AstCond* nodep) override {
         if (m_ignoreRemaining) return;
         // Just like if/else above, the ternary operator only evaluates
         // one of the two expressions, so only count the max.
@@ -197,12 +196,12 @@ private:
         iterateAndNextConstNull(nodep->condp());
         const uint32_t savedCount = m_instrCount;
 
-        UINFO(8, "?\n");
+        UINFO(8, "?");
         reset();
         iterateAndNextConstNull(nodep->thenp());
         const uint32_t ifCount = m_instrCount;
 
-        UINFO(8, ":\n");
+        UINFO(8, ":");
         reset();
         iterateAndNextConstNull(nodep->elsep());
         const uint32_t elseCount = m_instrCount;
@@ -225,9 +224,10 @@ private:
     void visit(AstFork* nodep) override {
         if (m_ignoreRemaining) return;
         const VisitBase vb{this, nodep};
+        iterateAndNextConstNull(nodep->stmtsp());
         uint32_t totalCount = m_instrCount;
         // Sum counts in each statement until the first await
-        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+        for (AstNode* stmtp = nodep->forksp(); stmtp; stmtp = stmtp->nextp()) {
             reset();
             iterateConst(stmtp);
             totalCount += m_instrCount;
@@ -307,7 +307,7 @@ private:
     string indent() const { return string(m_depth, ':') + " "; }
     void visit(AstNode* nodep) override {
         ++m_depth;
-        if (unsigned costPlus1 = nodep->user2()) {
+        if (const unsigned costPlus1 = nodep->user2()) {
             *m_osp << "  " << indent() << "cost " << std::setw(6) << std::left << (costPlus1 - 1)
                    << "  " << nodep << '\n';
             iterateChildrenConst(nodep);
@@ -320,6 +320,6 @@ private:
 
 uint32_t V3InstrCount::count(AstNode* nodep, bool assertNoDups, std::ostream* osp) {
     const InstrCountVisitor visitor{nodep, assertNoDups, osp};
-    if (osp) InstrCountDumpVisitor dumper{nodep, osp};
+    if (osp) const InstrCountDumpVisitor dumper{nodep, osp};
     return visitor.instrCount();
 }

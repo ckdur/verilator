@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2005-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -18,12 +18,105 @@
 
 #include "V3Assert.h"
 
+#include "V3AstUserAllocator.h"
 #include "V3Stats.h"
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
 //######################################################################
-// Assert class functions
+// AssertDeFutureVisitor
+// If any AstFuture, then move all non-future varrefs to be one cycle behind,
+// see IEEE 1800-2023 16.9.4.
+
+class AssertDeFutureVisitor final : public VNVisitor {
+    // STATE - across all visitors
+    AstNodeModule* const m_modp;  // Module future is underneath
+    const AstFuture* m_futurep;  // First AstFuture found
+    const unsigned m_pastNum;  // Prefix unique number for this module
+    std::map<AstVar*, AstVar*> m_delayedVars;  // Old to delayed variable mapping
+    // STATE - for current visit position (use VL_RESTORER)
+    bool m_inFuture = false;  // Inside a future
+    bool m_unsupported = false;  // Printed unsupported
+
+    // METHODS
+    void unsupported(AstNode* nodep) {
+        if (m_unsupported) return;
+        m_unsupported = true;
+        nodep->v3warn(E_UNSUPPORTED,
+                      "Unsupported/illegal: Future value function used with expression with "
+                          << nodep->prettyOperatorName());
+    }
+    // VISITORS
+    void visit(AstFuture* nodep) override {
+        VL_RESTORER(m_inFuture);
+        m_inFuture = true;
+        iterateChildren(nodep);
+        // Done with the future, this subexpression is current-time
+        nodep->replaceWith(nodep->exprp()->unlinkFrBack());
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+    }
+    void visit(AstNodeVarRef* nodep) override {
+        if (nodep->user1SetOnce()) return;
+        if (m_inFuture || m_unsupported)
+            return;  // Need user1 set above, don't process when Future is removed
+        if (nodep->access().isWriteOrRW()) {
+            unsupported(nodep);
+            return;
+        }
+        auto it = m_delayedVars.find(nodep->varp());
+        AstVar* outvarp;
+        if (it == m_delayedVars.end()) {
+            AstSenTree* const sentreep = m_futurep->sentreep();
+            AstAlways* const alwaysp = new AstAlways{nodep->fileline(), VAlwaysKwd::ALWAYS,
+                                                     sentreep->cloneTree(false), nullptr};
+            m_modp->addStmtsp(alwaysp);
+            outvarp = new AstVar{nodep->fileline(), VVarType::MODULETEMP,
+                                 "__Vnotfuture" + cvtToStr(m_pastNum) + "_" + nodep->name(),
+                                 nodep->dtypep()};
+            m_modp->addStmtsp(outvarp);
+            AstVarRef* varRefAWritep = new AstVarRef{nodep->fileline(), outvarp, VAccess::WRITE};
+            varRefAWritep->user1(true);
+            AstNodeVarRef* varRefAReadp = nodep->cloneTree(false);
+            varRefAReadp->user1(true);
+            AstNode* const assp = new AstAssignDly{nodep->fileline(), varRefAWritep, varRefAReadp};
+            alwaysp->addStmtsp(assp);
+            m_delayedVars.emplace(nodep->varp(), outvarp);
+        } else {
+            outvarp = it->second;
+        }
+        AstVarRef* newp = new AstVarRef{nodep->fileline(), outvarp, VAccess::READ};
+        newp->user1(true);
+        UINFO(9, "DeFuture " << nodep << "  becomes " << newp);
+        nodep->replaceWith(newp);
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+    }
+    void visit(AstNodeFTaskRef* nodep) override { unsupported(nodep); }
+    void visit(AstMethodCall* nodep) override { unsupported(nodep); }
+    void visit(AstNode* nodep) override {
+        if (!nodep->isPure()) unsupported(nodep);
+        iterateChildren(nodep);
+    }
+
+public:
+    // CONSTRUCTORS
+    explicit AssertDeFutureVisitor(AstNode* nodep, AstNodeModule* modp, unsigned pastNum)
+        : m_modp{modp}
+        , m_pastNum{pastNum} {
+        // See if any Future before we process
+        if (nodep->forall([&](const AstFuture* futurep) -> bool {
+                m_futurep = futurep;
+                return false;
+            }))
+            return;
+        // UINFOTREE(9, nodep, "", "defuture-in");
+        visit(nodep);  // Nodep may get deleted
+        // UINFOTREE(9, nodep, "", "defuture-ou");
+    }
+    ~AssertDeFutureVisitor() = default;
+};
+
+//######################################################################
+// AssertVisitor
 
 class AssertVisitor final : public VNVisitor {
     // CONSTANTS
@@ -32,32 +125,46 @@ class AssertVisitor final : public VNVisitor {
 
     // NODE STATE/TYPES
     // Cleared on netlist
-    //  AstNode::user()         -> bool.  True if processed
-    const VNUser1InUse m_inuser1;
+    //  AstNode::user1()         -> bool.  True if processed
+    //  AstAlways::user2p()      -> std::vector<AstVar*>. Delayed variables via 'm_delayed'
+    //  AstNodeVarRef::user2()   -> bool.  True if shouldn't be sampled
+    const VNUser1InUse m_user1InUse;
+    const VNUser2InUse m_user2InUse;
+    AstUser2Allocator<AstAlways, std::vector<AstVar*>> m_delayed;
 
     // STATE
     AstNodeModule* m_modp = nullptr;  // Last module
-    const AstBegin* m_beginp = nullptr;  // Last begin
+    const AstNode* m_beginp = nullptr;  // Last AstBegin/AstGenBlock
     unsigned m_monitorNum = 0;  // Global $monitor numbering (not per module)
     AstVar* m_monitorNumVarp = nullptr;  // $monitor number variable
     AstVar* m_monitorOffVarp = nullptr;  // $monitoroff variable
     unsigned m_modPastNum = 0;  // Module past numbering
     unsigned m_modStrobeNum = 0;  // Module $strobe numbering
-    const AstNodeProcedure* m_procedurep = nullptr;  // Current procedure
+    AstNodeProcedure* m_procedurep = nullptr;  // Current procedure
     VDouble0 m_statCover;  // Statistic tracking
     VDouble0 m_statAsNotImm;  // Statistic tracking
     VDouble0 m_statAsImm;  // Statistic tracking
     VDouble0 m_statAsFull;  // Statistic tracking
+    VDouble0 m_statPastVars;  // Statistic tracking
     bool m_inSampled = false;  // True inside a sampled expression
+    bool m_inRestrict = false;  // True inside restrict assertion
+    AstNode* m_passsp = nullptr;  // Current pass statement
+    AstNode* m_failsp = nullptr;  // Current fail statement
+    AstFinal* m_finalp = nullptr;  // Current final block
+    // Map from (expression, senTree) to AstAlways that computes delayed values of the expression
+    std::unordered_map<VNRef<AstNodeExpr>, std::unordered_map<VNRef<AstSenTree>, AstAlways*>>
+        m_modExpr2Sen2DelayedAlwaysp;
 
     // METHODS
     static AstNodeExpr* assertOnCond(FileLine* fl, VAssertType type,
                                      VAssertDirectiveType directiveType) {
+        // cppcheck-suppress missingReturn
         switch (directiveType) {
         case VAssertDirectiveType::INTRINSIC: return new AstConst{fl, AstConst::BitTrue{}};
         case VAssertDirectiveType::VIOLATION_CASE: {
-            if (v3Global.opt.assertCaseOn()) {
-                return new AstCExpr{fl, "vlSymsp->_vm_contextp__->assertOn()", 1};
+            if (v3Global.opt.assertCase()) {
+                return new AstCExpr{fl, AstCExpr::Pure{}, "vlSymsp->_vm_contextp__->assertOn()",
+                                    1};
             }
             // If assertions are off, have constant propagation rip them out later
             // This allows syntax errors and such to be detected normally.
@@ -67,7 +174,7 @@ class AssertVisitor final : public VNVisitor {
         case VAssertDirectiveType::COVER:
         case VAssertDirectiveType::ASSUME: {
             if (v3Global.opt.assertOn()) {
-                return new AstCExpr{fl,
+                return new AstCExpr{fl, AstCExpr::Pure{},
                                     "vlSymsp->_vm_contextp__->assertOnGet("s + std::to_string(type)
                                         + ", "s + std::to_string(directiveType) + ")"s,
                                     1};
@@ -78,24 +185,24 @@ class AssertVisitor final : public VNVisitor {
         case VAssertDirectiveType::VIOLATION_IF:
         case VAssertDirectiveType::RESTRICT: {
             if (v3Global.opt.assertOn()) {
-                return new AstCExpr{fl, "vlSymsp->_vm_contextp__->assertOn()", 1};
+                return new AstCExpr{fl, AstCExpr::Pure{}, "vlSymsp->_vm_contextp__->assertOn()",
+                                    1};
             }
             return new AstConst{fl, AstConst::BitFalse{}};
         }
         }
         VL_UNREACHABLE;
     }
-    string assertDisplayMessage(AstNode* nodep, const string& prefix, const string& message,
+    string assertDisplayMessage(const AstNode* nodep, const string& prefix, const string& message,
                                 VDisplayType severity) {
         if (severity == VDisplayType::DT_ERROR || severity == VDisplayType::DT_FATAL) {
             return ("[%0t] "s + prefix + ": " + nodep->fileline()->filebasename() + ":"
                     + cvtToStr(nodep->fileline()->lineno()) + ": Assertion failed in %m"
                     + ((message != "") ? ": " : "") + message + "\n");
-        } else {
-            return ("[%0t] "s + prefix + ": " + nodep->fileline()->filebasename() + ":"
-                    + cvtToStr(nodep->fileline()->lineno()) + ": %m"
-                    + ((message != "") ? ": " : "") + message + "\n");
         }
+        return ("[%0t] "s + prefix + ": " + nodep->fileline()->filebasename() + ":"
+                + cvtToStr(nodep->fileline()->lineno()) + ": %m" + ((message != "") ? ": " : "")
+                + message + "\n");
     }
     static bool resolveAssertType(AstAssertCtl* nodep) {
         if (!nodep->assertTypesp()) {
@@ -147,7 +254,7 @@ class AssertVisitor final : public VNVisitor {
         sampledp->dtypeFrom(nodep);
         return sampledp;
     }
-    AstVarRef* newMonitorNumVarRefp(AstNode* nodep, VAccess access) {
+    AstVarRef* newMonitorNumVarRefp(const AstNode* nodep, VAccess access) {
         if (!m_monitorNumVarp) {
             m_monitorNumVarp = new AstVar{nodep->fileline(), VVarType::MODULETEMP, "__VmonitorNum",
                                           nodep->findUInt64DType()};
@@ -157,7 +264,7 @@ class AssertVisitor final : public VNVisitor {
         varrefp->classOrPackagep(v3Global.rootp()->dollarUnitPkgAddp());
         return varrefp;
     }
-    AstVarRef* newMonitorOffVarRefp(AstNode* nodep, VAccess access) {
+    AstVarRef* newMonitorOffVarRefp(const AstNode* nodep, VAccess access) {
         if (!m_monitorOffVarp) {
             m_monitorOffVarp = new AstVar{nodep->fileline(), VVarType::MODULETEMP, "__VmonitorOff",
                                           nodep->findBitDType()};
@@ -180,7 +287,39 @@ class AssertVisitor final : public VNVisitor {
         return newp;
     }
 
-    AstNodeStmt* newFireAssertUnchecked(AstNodeStmt* nodep, const string& message,
+    static AstIf* assertCond(const AstNodeCoverOrAssert* nodep, AstNodeExpr* propp,
+                             AstNode* passsp, AstNode* failsp) {
+        AstIf* const ifp = new AstIf{nodep->fileline(), propp, passsp, failsp};
+        // It's more LIKELY that we'll take the nullptr if clause
+        // than the sim-killing else clause:
+        ifp->branchPred(VBranchPred::BP_LIKELY);
+        ifp->isBoundsCheck(true);  // To avoid LATCH warning
+        return ifp;
+    }
+
+    AstNode* assertBody(const AstNodeCoverOrAssert* nodep, AstNode* propp, AstNode* passsp,
+                        AstNode* failsp) {
+        AstNode* bodyp = nullptr;
+        if (AstPExpr* const pexprp = VN_CAST(propp, PExpr)) {
+            AstFork* const forkp = new AstFork{nodep->fileline(), VJoinType::JOIN_NONE};
+            forkp->addForksp(pexprp->bodyp()->unlinkFrBack());
+            if (AstNodeStmt* const finalp = pexprp->finalp()) {
+                if (!m_finalp) {
+                    m_finalp = new AstFinal{m_modp->fileline(), finalp->unlinkFrBack()};
+                    m_modp->addStmtsp(m_finalp);
+                } else {
+                    m_finalp->addStmtsp(finalp->unlinkFrBack());
+                }
+            }
+            VL_DO_DANGLING2(pushDeletep(pexprp), pexprp, propp);
+            bodyp = forkp;
+        } else {
+            bodyp = assertCond(nodep, VN_AS(propp, NodeExpr), passsp, failsp);
+        }
+        return newIfAssertOn(bodyp, nodep->directive(), nodep->userType());
+    }
+
+    AstNodeStmt* newFireAssertUnchecked(const AstNodeStmt* nodep, const string& message,
                                         AstNodeExpr* exprsp = nullptr) {
         // Like newFireAssert() but omits the asserts-on check
         AstDisplay* const dispp
@@ -193,7 +332,7 @@ class AssertVisitor final : public VNVisitor {
         return bodysp;
     }
 
-    AstNodeStmt* newFireAssert(AstNodeStmt* nodep, VAssertDirectiveType directiveType,
+    AstNodeStmt* newFireAssert(const AstNodeStmt* nodep, VAssertDirectiveType directiveType,
                                VAssertType assertType, const string& message,
                                AstNodeExpr* exprsp = nullptr) {
         AstNodeStmt* bodysp = newFireAssertUnchecked(nodep, message, exprsp);
@@ -201,31 +340,112 @@ class AssertVisitor final : public VNVisitor {
         return bodysp;
     }
 
-    void newPslAssertion(AstNodeCoverOrAssert* nodep, AstNode* failsp) {
+    AstVar* createDelayedVar(const std::string& name, AstAlways* alwaysp, AstNodeExpr* exprp) {
+        FileLine* const flp = exprp->fileline();
+        AstVar* const varp = new AstVar{flp, VVarType::MODULETEMP, name, exprp->dtypep()};
+        // TODO: this lifetime seems nonsene (can't have NBAs to automatics), but is as before
+        varp->lifetime(VLifetime::AUTOMATIC_EXPLICIT);
+        m_modp->addStmtsp(varp);
+        ++m_statPastVars;
+        // Actually set the delayed value
+        AstNodeExpr* const lhsp = new AstVarRef{flp, varp, VAccess::WRITE};
+        AstAssignDly* const assignp = new AstAssignDly{flp, lhsp, exprp};
+        if (!alwaysp->stmtsp()) {
+            alwaysp->addStmtsp(assignp);
+        } else {
+            alwaysp->stmtsp()->addHereThisAsNext(assignp);
+        }
+        return varp;
+    }
+
+    AstAlways* getDelayedAlways(AstNodeExpr* exprp, AstSenTree* senTreep) {
+        AstAlways*& alwayspr = m_modExpr2Sen2DelayedAlwaysp[*exprp][*senTreep];
+        if (!alwayspr) {
+            FileLine* const flp = exprp->fileline();
+            // Create the always block that computes the delayed values
+            alwayspr = new AstAlways{flp, VAlwaysKwd::ALWAYS, senTreep, nullptr};
+            m_modp->addStmtsp(alwayspr);
+            // Create the once-delayed variable
+            const std::string name = "_Vpast_" + cvtToStr(m_modPastNum++) + "_1";
+            AstVar* const varp = createDelayedVar(name, alwayspr, exprp);
+            // Add it to delayed variable vector
+            m_delayed(alwayspr).emplace_back(varp);
+        } else {
+            // Reusing exiting, not needed
+            VL_DO_DANGLING(pushDeletep(exprp), exprp);
+            VL_DO_DANGLING(pushDeletep(senTreep), senTreep);
+        }
+        return alwayspr;
+    }
+
+    AstNodeExpr* getPastValue(AstNodeExpr* exprp, AstSenTree* senTreep, uint32_t ticks) {
+        UASSERT_OBJ(ticks > 0, exprp, "Delay must be > 0");
+        AstAlways* const alwaysp = getDelayedAlways(exprp, senTreep);
+        std::vector<AstVar*>& delayedr = m_delayed(alwaysp);
+        // Ensure the required delay exists
+        while (delayedr.size() < ticks) {
+            AstVar* const firstp = delayedr.front();
+            FileLine* const flp = firstp->fileline();
+            // Create once more delayed value
+            std::string name = firstp->name();
+            name.resize(name.size() - 1);
+            name += std::to_string(delayedr.size() + 1);
+            AstNodeExpr* const prevp = new AstVarRef{flp, delayedr.back(), VAccess::READ};
+            AstVar* const varp = createDelayedVar(name, alwaysp, prevp);
+            // Add it to delayed variable vector
+            delayedr.emplace_back(varp);
+        }
+        // Return a reference to the appropriately delayed variable
+        return new AstVarRef{exprp->fileline(), delayedr.at(ticks - 1), VAccess::READ};
+    }
+
+    void visitAssertionIterate(AstNodeCoverOrAssert* nodep, AstNode* failsp) {
         if (m_beginp && nodep->name() == "") nodep->name(m_beginp->name());
 
-        AstNodeExpr* const propp = VN_AS(nodep->propp()->unlinkFrBackWithNext(), NodeExpr);
-        AstSenTree* const sentreep = nodep->sentreep();
-        const string& message = nodep->name();
-        AstNode* passsp = nodep->passsp();
-        if (passsp) passsp->unlinkFrBackWithNext();
-        if (failsp) failsp->unlinkFrBackWithNext();
+        { AssertDeFutureVisitor{nodep->propp(), m_modp, m_modPastNum++}; }
 
+        iterateAndNextNull(nodep->sentreep());
+        if (AstAssert* const assertp = VN_CAST(nodep, Assert)) {
+            iterateAndNextNull(assertp->failsp());
+        } else if (AstAssertIntrinsic* const assertp = VN_CAST(nodep, AssertIntrinsic)) {
+            iterateAndNextNull(assertp->failsp());
+        } else if (AstCover* const coverp = VN_CAST(nodep, Cover)) {
+            iterateAndNextNull(coverp->coverincsp());
+        } else if (!VN_IS(nodep, Restrict)) {
+            nodep->v3fatalSrc("Unhandled assert type");
+        }
+        iterateAndNextNull(nodep->passsp());
+        AstSenTree* const sentreep = nodep->sentreep();
         if (nodep->immediate()) {
             UASSERT_OBJ(!sentreep, nodep, "Immediate assertions don't have sensitivity");
         } else {
             UASSERT_OBJ(sentreep, nodep, "Concurrent assertions must have sensitivity");
-            sentreep->unlinkFrBack();
             if (m_procedurep) {
-                // To support this need queue of asserts to activate
-                nodep->v3error("Unsupported: Procedural concurrent assertion with"
-                               " clocking event inside always (IEEE 1800-2023 16.14.6)");
+                if (!nodep->senFromAlways()) {
+                    // To support this need queue of asserts to activate
+                    nodep->v3warn(E_UNSUPPORTED,
+                                  "Unsupported: Procedural concurrent assertion with"
+                                  " clocking event inside always (IEEE 1800-2023 16.14.6)");
+                }
+                // Change type to concurrent and relink after process
+                nodep->immediate(false);
+                static_cast<AstNode*>(m_procedurep)->addNext(nodep->unlinkFrBack());
+                return;  // Later iterate will pick up
             }
+            sentreep->unlinkFrBack();
         }
         //
-        AstNode* bodysp = nullptr;
+        const string& message = nodep->name();
+        AstNode* passsp = nodep->passsp();
+        if (passsp) passsp->unlinkFrBackWithNext();
+        if (AstAssert* const assertp = VN_CAST(nodep, Assert)) {
+            failsp = assertp->failsp();
+        } else if (AstAssertIntrinsic* const assertp = VN_CAST(nodep, AssertIntrinsic)) {
+            failsp = assertp->failsp();
+        }
+        if (failsp) failsp->unlinkFrBackWithNext();
+
         bool selfDestruct = false;
-        AstIf* ifp = nullptr;
         if (const AstCover* const snodep = VN_CAST(nodep, Cover)) {
             ++m_statCover;
             if (!v3Global.opt.coverageUser()) {
@@ -236,45 +456,59 @@ class AssertVisitor final : public VNVisitor {
                 UASSERT_OBJ(covincp, snodep, "Missing AstCoverInc under assertion");
                 covincp->unlinkFrBackWithNext();  // next() might have  AstAssign for trace
                 if (message != "") covincp->declp()->comment(message);
-                bodysp = covincp;
+                if (passsp) {
+                    passsp = AstNode::addNext<AstNode, AstNode>(covincp, passsp);
+                } else {
+                    passsp = covincp;
+                }
             }
-
-            if (bodysp && passsp) bodysp = bodysp->addNext(passsp);
-            if (bodysp) bodysp = newIfAssertOn(bodysp, nodep->directive(), nodep->type());
-            ifp = new AstIf{nodep->fileline(), propp, bodysp};
-            ifp->isBoundsCheck(true);  // To avoid LATCH warning
-            bodysp = ifp;
         } else if (VN_IS(nodep, Assert) || VN_IS(nodep, AssertIntrinsic)) {
             if (nodep->immediate()) {
                 ++m_statAsImm;
             } else {
                 ++m_statAsNotImm;
             }
-            if (!passsp && !failsp) failsp = newFireAssertUnchecked(nodep, "'assert' failed.");
-            ifp = new AstIf{nodep->fileline(), propp, passsp, failsp};
-            ifp->isBoundsCheck(true);  // To avoid LATCH warning
-            // It's more LIKELY that we'll take the nullptr if clause
-            // than the sim-killing else clause:
-            ifp->branchPred(VBranchPred::BP_LIKELY);
-            bodysp = newIfAssertOn(ifp, nodep->directive(), nodep->type());
+            if (!passsp && !failsp)
+                failsp = newFireAssertUnchecked(
+                    nodep, VN_IS(nodep, AssertIntrinsic) ? "'$cast' failed." : "'assert' failed.");
         } else {
             nodep->v3fatalSrc("Unknown node type");
         }
 
-        AstNode* newp;
-        if (sentreep) {
-            newp = new AstAlways{nodep->fileline(), VAlwaysKwd::ALWAYS, sentreep, bodysp};
+        VL_RESTORER(m_passsp);
+        VL_RESTORER(m_failsp);
+        m_passsp = passsp;
+        m_failsp = failsp;
+        iterate(nodep->propp());
+
+        AstNode* propExprp;
+        AstNodeExpr* disablep = nullptr;
+        if (AstPropSpec* const specp = VN_CAST(nodep->propp(), PropSpec)) {
+            propExprp = specp->propp()->unlinkFrBack();
+            if (specp->disablep()) disablep = specp->disablep()->unlinkFrBack();
         } else {
-            newp = bodysp;
+            propExprp = nodep->propp()->unlinkFrBack();
         }
+        AstNode* bodysp = assertBody(nodep, propExprp, passsp, failsp);
+        if (disablep) {
+            bodysp
+                = new AstIf{nodep->fileline(), new AstLogNot{nodep->fileline(), disablep}, bodysp};
+        }
+        if (sentreep) {
+            bodysp = new AstAlways{nodep->fileline(), VAlwaysKwd::ALWAYS, sentreep, bodysp};
+        }
+
+        if (passsp && !passsp->backp()) VL_DO_DANGLING(pushDeletep(passsp), passsp);
+        if (failsp && !failsp->backp()) VL_DO_DANGLING(pushDeletep(failsp), failsp);
+
         // Install it
         if (selfDestruct) {
             // Delete it after making the tree.  This way we can tell the user
             // if it wasn't constructed nicely or has other errors without needing --coverage.
-            VL_DO_DANGLING(newp->deleteTree(), newp);
+            VL_DO_DANGLING(bodysp->deleteTree(), bodysp);
             nodep->unlinkFrBack();
         } else {
-            nodep->replaceWith(newp);
+            nodep->replaceWith(bodysp);
         }
         // Bye
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
@@ -388,12 +622,14 @@ class AssertVisitor final : public VNVisitor {
                     AstNodeExpr* propp = nullptr;
                     for (AstCaseItem* itemp = nodep->itemsp(); itemp;
                          itemp = VN_AS(itemp->nextp(), CaseItem)) {
+                        AstNodeExpr* itembitp = nullptr;
                         for (AstNodeExpr* icondp = itemp->condsp(); icondp;
                              icondp = VN_AS(icondp->nextp(), NodeExpr)) {
                             AstNodeExpr* onep;
                             if (AstInsideRange* const rcondp = VN_CAST(icondp, InsideRange)) {
                                 onep = rcondp->newAndFromInside(
-                                    nodep->exprp(), rcondp->lhsp()->cloneTreePure(true),
+                                    nodep->exprp()->cloneTreePure(true),
+                                    rcondp->lhsp()->cloneTreePure(true),
                                     rcondp->rhsp()->cloneTreePure(true));
                             } else if (nodep->casex() || nodep->casez() || nodep->caseInside()) {
                                 onep = AstEqWild::newTyped(itemp->fileline(),
@@ -404,17 +640,27 @@ class AssertVisitor final : public VNVisitor {
                                                        nodep->exprp()->cloneTreePure(false),
                                                        icondp->cloneTreePure(false));
                             }
+                            // OR together all conditions within the same case item
+                            if (onep) {
+                                if (itembitp) {
+                                    itembitp = new AstOr{icondp->fileline(), onep, itembitp};
+                                } else {
+                                    itembitp = onep;
+                                }
+                            }
+                        }
+                        if (itembitp) {
                             if (propp) {
-                                propp = new AstConcat{icondp->fileline(), onep, propp};
+                                propp = new AstConcat{itemp->fileline(), itembitp, propp};
                             } else {
-                                propp = onep;
+                                propp = itembitp;
                             }
                         }
                     }
                     // Empty case means no property
                     if (!propp) propp = new AstConst{nodep->fileline(), AstConst::BitFalse{}};
                     const bool allow_none = has_default || nodep->unique0Pragma();
-                    // The following assertion lools as below.
+                    // The following assertion looks as below.
                     // if (!$onehot(propp)) begin
                     //     if (propp == '0) begin if (!allow_none) $error("none match"); end
                     //     else $error("multiple match");
@@ -447,6 +693,13 @@ class AssertVisitor final : public VNVisitor {
         }
     }
 
+    void visit(AstFuture* nodep) override {
+        nodep->v3error("Future sampled value function called outside property or sequence "
+                       "expression (IEEE 16.9.4)");
+        nodep->replaceWith(new AstConst{nodep->fileline(), 0});
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+    }
+
     //========== Past
     void visit(AstPast* nodep) override {
         iterateChildren(nodep);
@@ -457,25 +710,8 @@ class AssertVisitor final : public VNVisitor {
             ticks = VN_AS(nodep->ticksp(), Const)->toUInt();
         }
         UASSERT_OBJ(ticks >= 1, nodep, "0 tick should have been checked in V3Width");
-        AstNodeExpr* const exprp = nodep->exprp()->unlinkFrBack();
-        AstNodeExpr* inp = newSampledExpr(exprp);
-        AstVar* invarp = nullptr;
-        AstSenTree* const sentreep = nodep->sentreep()->unlinkFrBack();
-        AstAlways* const alwaysp
-            = new AstAlways{nodep->fileline(), VAlwaysKwd::ALWAYS, sentreep, nullptr};
-        m_modp->addStmtsp(alwaysp);
-        for (uint32_t i = 0; i < ticks; ++i) {
-            AstVar* const outvarp = new AstVar{
-                nodep->fileline(), VVarType::MODULETEMP,
-                "_Vpast_" + cvtToStr(m_modPastNum++) + "_" + cvtToStr(i), inp->dtypep()};
-            m_modp->addStmtsp(outvarp);
-            AstNode* const assp = new AstAssignDly{
-                nodep->fileline(), new AstVarRef{nodep->fileline(), outvarp, VAccess::WRITE}, inp};
-            alwaysp->addStmtsp(assp);
-            // if (debug() >= 9) assp->dumpTree("-  ass: ");
-            invarp = outvarp;
-            inp = new AstVarRef{nodep->fileline(), invarp, VAccess::READ};
-        }
+        AstNodeExpr* const exprp = newSampledExpr(nodep->exprp()->unlinkFrBack());
+        AstNodeExpr* inp = getPastValue(exprp, nodep->sentreep()->unlinkFrBack(), ticks);
         nodep->replaceWith(inp);
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
     }
@@ -488,12 +724,15 @@ class AssertVisitor final : public VNVisitor {
             m_inSampled = true;
             iterateChildren(nodep);
         }
-        nodep->replaceWith(nodep->exprp()->unlinkFrBack());
+        if (nodep->exprp()) {
+            nodep->replaceWith(nodep->exprp()->unlinkFrBack());
+        } else {
+            nodep->unlinkFrBack();
+        }
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
     }
-    void visit(AstVarRef* nodep) override {
-        iterateChildren(nodep);
-        if (m_inSampled) {
+    void visit(AstNodeVarRef* nodep) override {
+        if (m_inSampled && !nodep->user2() && !nodep->varp()->isTemp()) {
             if (!nodep->access().isReadOnly()) {
                 nodep->v3warn(E_UNSUPPORTED,
                               "Unsupported: Write to variable in sampled expression");
@@ -513,6 +752,34 @@ class AssertVisitor final : public VNVisitor {
         m_inSampled = false;
         iterateChildren(nodep);
     }
+    void visit(AstPExprClause* nodep) override {
+        AstNode* stmtsp = nullptr;
+        if (nodep->pass() && m_passsp) {
+            // Cover adds COVERINC by AstNode::addNext, thus need to clone next too.
+            stmtsp = m_passsp->cloneTree(true);
+        } else if (!nodep->pass() && m_failsp) {
+            stmtsp = m_failsp->cloneTree(true);
+        }
+        if (stmtsp) {
+            stmtsp->foreachAndNext([](AstNodeVarRef* const refp) {
+                // References inside action blocks shouldn't be implicitly sampled
+                // m_passsp/m_failsp have been already visited once and refs explicitly sampled
+                // are handled already
+                refp->user2(1);
+            });
+            nodep->replaceWith(stmtsp);
+        } else {
+            nodep->unlinkFrBack();
+        }
+        VL_DO_DANGLING(pushDeletep(nodep), nodep);
+    }
+    void visit(AstPExpr* nodep) override {
+        if (m_inRestrict) {
+            VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
+        } else {
+            iterateChildren(nodep);
+        }
+    }
 
     //========== Statements
     void visit(AstDisplay* nodep) override {
@@ -529,10 +796,10 @@ class AssertVisitor final : public VNVisitor {
         } else if (nodep->displayType() == VDisplayType::DT_MONITOR) {
             nodep->displayType(VDisplayType::DT_DISPLAY);
             FileLine* const fl = nodep->fileline();
-            AstNode* monExprsp = nodep->fmtp()->exprsp();
+
             AstSenItem* monSenItemsp = nullptr;
-            while (monExprsp) {
-                if (AstNodeVarRef* varrefp = VN_CAST(monExprsp, NodeVarRef)) {
+            if (AstNode* const monExprsp = nodep->fmtp()->exprsp()) {
+                monExprsp->foreachAndNext([&](AstVarRef* varrefp) {
                     AstSenItem* const senItemp
                         = new AstSenItem{fl, VEdgeType::ET_CHANGED,
                                          // Clone so get VarRef or VarXRef as needed
@@ -542,9 +809,9 @@ class AssertVisitor final : public VNVisitor {
                     } else {
                         monSenItemsp->addNext(senItemp);
                     }
-                }
-                monExprsp = monExprsp->nextp();
+                });
             }
+
             AstSenTree* const monSenTree = new AstSenTree{fl, monSenItemsp};
             const auto monNum = ++m_monitorNum;
             // Where $monitor was we do "__VmonitorNum = N;"
@@ -593,9 +860,8 @@ class AssertVisitor final : public VNVisitor {
         nodep->replaceWith(newp);
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
     }
-    void visit(AstAssert* nodep) override {
-        iterateChildren(nodep);
-        newPslAssertion(nodep, nodep->failsp());
+    void visit(AstAssert* nodep) override {  //
+        visitAssertionIterate(nodep, nodep->failsp());
     }
     void visit(AstAssertCtl* nodep) override {
         if (VN_IS(m_modp, Class) || VN_IS(m_modp, Iface)) {
@@ -635,22 +901,19 @@ class AssertVisitor final : public VNVisitor {
         FileLine* const fl = nodep->fileline();
         switch (nodep->ctlType()) {
         case VAssertCtlType::ON:
-            UINFO(9, "Generating assertctl for a module: " << m_modp << endl);
-            nodep->replaceWith(new AstCExpr{
-                fl,
-                "vlSymsp->_vm_contextp__->assertOnSet("s + std::to_string(nodep->ctlAssertTypes())
-                    + ", "s + std::to_string(nodep->ctlDirectiveTypes()) + ");\n"s,
-                1});
+            UINFO(9, "Generating assertctl for a module: " << m_modp);
+            nodep->replaceWith(
+                new AstCStmt{fl, "vlSymsp->_vm_contextp__->assertOnSet("s
+                                     + std::to_string(nodep->ctlAssertTypes()) + ", "s
+                                     + std::to_string(nodep->ctlDirectiveTypes()) + ");\n"s});
             break;
         case VAssertCtlType::OFF:
         case VAssertCtlType::KILL: {
-            UINFO(9, "Generating assertctl for a module: " << m_modp << endl);
-            nodep->replaceWith(new AstCExpr{fl,
-                                            "vlSymsp->_vm_contextp__->assertOnClear("s
-                                                + std::to_string(nodep->ctlAssertTypes()) + " ,"s
-                                                + std::to_string(nodep->ctlDirectiveTypes())
-                                                + ");\n"s,
-                                            1});
+            UINFO(9, "Generating assertctl for a module: " << m_modp);
+            nodep->replaceWith(
+                new AstCStmt{fl, "vlSymsp->_vm_contextp__->assertOnClear("s
+                                     + std::to_string(nodep->ctlAssertTypes()) + " ,"s
+                                     + std::to_string(nodep->ctlDirectiveTypes()) + ");\n"s});
             break;
         }
         case VAssertCtlType::LOCK:
@@ -662,25 +925,28 @@ class AssertVisitor final : public VNVisitor {
         case VAssertCtlType::NONVACUOUS_ON:
         case VAssertCtlType::VACUOUS_OFF: {
             nodep->unlinkFrBack();
-            nodep->v3warn(E_UNSUPPORTED, "Unsupported assertcontrol control_type");
+            nodep->v3warn(E_UNSUPPORTED, "Unsupported: $assertcontrol control_type '" << cvtToStr(
+                                             static_cast<int>(nodep->ctlType())) << "'");
             break;
         }
         default: {
             nodep->unlinkFrBack();
-            nodep->v3warn(EC_ERROR, "Bad assertcontrol control_type (IEEE 1800-2023 Table 20-5)");
+            nodep->v3warn(EC_ERROR, "Bad $assertcontrol control_type '"
+                                        << cvtToStr(static_cast<int>(nodep->ctlType()))
+                                        << "' (IEEE 1800-2023 Table 20-5)");
         }
         }
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
     }
-    void visit(AstAssertIntrinsic* nodep) override {
-        iterateChildren(nodep);
-        newPslAssertion(nodep, nodep->failsp());
+    void visit(AstAssertIntrinsic* nodep) override {  //
+        visitAssertionIterate(nodep, nodep->failsp());
     }
-    void visit(AstCover* nodep) override {
-        iterateChildren(nodep);
-        newPslAssertion(nodep, nullptr);
+    void visit(AstCover* nodep) override {  //
+        visitAssertionIterate(nodep, nullptr);
     }
     void visit(AstRestrict* nodep) override {
+        VL_RESTORER(m_inRestrict);
+        m_inRestrict = true;
         iterateChildren(nodep);
         // IEEE says simulator ignores these
         VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
@@ -690,14 +956,23 @@ class AssertVisitor final : public VNVisitor {
         VL_RESTORER(m_modp);
         VL_RESTORER(m_modPastNum);
         VL_RESTORER(m_modStrobeNum);
+        VL_RESTORER(m_modExpr2Sen2DelayedAlwaysp);
         m_modp = nodep;
         m_modPastNum = 0;
         m_modStrobeNum = 0;
+        m_modExpr2Sen2DelayedAlwaysp.clear();
         iterateChildren(nodep);
     }
     void visit(AstNodeProcedure* nodep) override {
         VL_RESTORER(m_procedurep);
         m_procedurep = nodep;
+        iterateChildren(nodep);
+    }
+    void visit(AstGenBlock* nodep) override {
+        // This code is needed rather than a visitor in V3Begin,
+        // because V3Assert is called before V3Begin
+        VL_RESTORER(m_beginp);
+        m_beginp = nodep;
         iterateChildren(nodep);
     }
     void visit(AstBegin* nodep) override {
@@ -718,6 +993,7 @@ public:
         V3Stats::addStat("Assertions, assert immediate statements", m_statAsImm);
         V3Stats::addStat("Assertions, cover statements", m_statCover);
         V3Stats::addStat("Assertions, full/parallel case", m_statAsFull);
+        V3Stats::addStat("Assertions, $past variables", m_statPastVars);
     }
 };
 
@@ -725,7 +1001,7 @@ public:
 // Top Assert class
 
 void V3Assert::assertAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { AssertVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("assert", 0, dumpTreeEitherLevel() >= 3);
 }

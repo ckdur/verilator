@@ -1,55 +1,96 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2022 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2022 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
+
+// verilog_format: off
+`define stop $stop
+`define checkd(gotv,expv) do if ((gotv) !== (expv)) begin $write("%%Error: %s:%0d:  got=%0d exp=%0d\n", `__FILE__,`__LINE__, (gotv), (expv)); `stop; end while(0);
+// verilog_format: on
 
 typedef enum int {
    RANDOMIZED = 20
 } enumed_t;
 
-class Cls;
-   int       pre;
-   rand enumed_t r;
-   int       post;
+class Base;
+  int m_pre;
+  rand enumed_t r;
+  int m_post;
 
-   function void pre_randomize;
-      if (pre != 0) $stop;
-      $display("%d", r);
-      if (r != enumed_t'(0)) $stop;
-      if (post != 0) $stop;
-      pre = 10;
-   endfunction
+  function void pre_randomize;
+    `checkd(m_pre, 0);
+    `checkd(r, enumed_t'(0));
+    `checkd(m_post, 0);
+    m_pre = 10;
+  endfunction
 
-   function void post_randomize;
-      if (pre != 10) $stop;
-      if (r != RANDOMIZED) $stop;
-      if (post != 0) $stop;
-      post = 30;
-   endfunction
+  function void post_randomize;
+    `checkd(m_pre, 10);
+    `checkd(r, RANDOMIZED);
+    `checkd(m_post, 0);
+    m_post = 30;
+  endfunction
 endclass
 
-module t (/*AUTOARG*/);
+class Cls extends Base;
+  int m_cpre;
+  int m_cpost;
+  function void pre_randomize;
+     m_cpre = 111;
+     super.pre_randomize();
+  endfunction
 
-   initial begin
-      Cls c;
-      int rand_result;
+  function void post_randomize;
+     m_cpost = 222;
+     super.post_randomize();
+  endfunction
+endclass
 
-      c = new;
-      rand_result = c.randomize();
-      if (rand_result != 1) $stop;
-      if (c.pre != 10) $stop;
-      if (c.r != RANDOMIZED) $stop;
-      if (c.post != 30) $stop;
+package emp_pkg;
+  virtual class emp_sequence #(
+      type REQ = int
+  );
+  endclass
+  class emp_txn;
+  endclass
+  class emp_base_sequence extends emp_sequence #(emp_txn);
+  endclass
+  class emp_base_port_seq extends emp_base_sequence;
+    function void pre_randomize();
+      super.pre_randomize();
+    endfunction
+    function void post_randomize();
+      super.post_randomize();
+    endfunction
+  endclass
+endpackage
 
-      c = new;
-      rand_result = c.randomize() with { r == RANDOMIZED; };
-      if (rand_result != 1) $stop;
-      if (c.pre != 10) $stop;
-      if (c.r != RANDOMIZED) $stop;
-      if (c.post != 30) $stop;
+module t;
 
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+  initial begin
+    Cls c;
+    int rand_result;
+
+    c = new;
+    rand_result = c.randomize();
+    `checkd(rand_result, 1);
+    `checkd(c.m_pre, 10);
+    `checkd(c.m_cpre, 111);
+    `checkd(c.r, RANDOMIZED);
+    `checkd(c.m_post, 30);
+    `checkd(c.m_cpost, 222);
+
+    c = new;
+    rand_result = c.randomize() with { r == RANDOMIZED; };
+    `checkd(rand_result, 1);
+    `checkd(c.m_pre, 10);
+    `checkd(c.m_cpre, 111);
+    `checkd(c.r, RANDOMIZED);
+    `checkd(c.m_post, 30);
+    `checkd(c.m_cpost, 222);
+
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 endmodule

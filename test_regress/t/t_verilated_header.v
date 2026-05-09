@@ -1,19 +1,19 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 `include "verilated.v"
 
-module t (/*AUTOARG*/);
+module t;
 
-   initial begin
-      `verilator_file_descriptor i;
-      `coverage_block_off
-      i = $fopen("/dev/null", "r");
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+  initial begin
+    `verilator_file_descriptor i;
+    `coverage_block_off
+    i = $fopen("/dev/null", "r");
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 
 endmodule

@@ -1,14 +1,14 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
 module t (
-  input clk,
-  input [7:0] d,
-  input [2:0] a,
-  output [7:0] q
+    input clk,
+    input [7:0] d,
+    input [2:0] a,
+    output [7:0] q
 );
   always_ff @(posedge clk) tick(a);
 

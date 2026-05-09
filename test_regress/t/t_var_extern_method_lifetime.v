@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
 class Foo;
@@ -20,7 +20,7 @@ task automatic Foo::add_in_fork_delayed(int delay, Foo arg);
   join_none
 endtask
 
-module t();
+module t;
   initial begin
     Foo foo1, foo2;
     foo1 = new(1);

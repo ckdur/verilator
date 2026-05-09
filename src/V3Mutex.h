@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2025 by Wilson Snyder.  This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -54,7 +54,7 @@ class V3MutexConfig final {
 
 public:
     static V3MutexConfig& s() VL_MT_SAFE {
-        static V3MutexConfig s;
+        static V3MutexConfig s{};
         return s;
     }
 
@@ -67,11 +67,10 @@ public:
             // requires <iostream>
             // avoided to reduce compile time
             // std::cerr << "%Error: V3Mutex already configured." << std::endl;
-            std::abort();
+            std::abort();  // LCOV_EXCL_LINE
         }
     }
-    bool lockConfig() VL_MT_SAFE { return m_lockConfig; }
-    bool enable() VL_MT_SAFE { return m_enable; }
+    bool enable() const VL_MT_SAFE { return m_enable; }
 };
 
 /// Mutex, wrapped to allow -fthread_safety checks

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -188,7 +188,7 @@ public:
         V3GraphTestVertex* const posedge = n = new V3GraphTestVertex{gp, "*posedge clk*"};
         { new V3GraphEdge{gp, clk, n, 2}; }
 
-        // AssignPre's     VarRefs on LHS:  generate special BLK
+        // AlwaysPre's     VarRefs on LHS:  generate special BLK
         //    normal:      VarRefs on LHS:  generate normal
         //    underSBlock: VarRefs on RHS:  consume 'pre' (required to save cutable tests)
         n = new V3GraphTestVertex{gp, "a_dly<PRE=a"};
@@ -227,7 +227,7 @@ public:
             new V3GraphEdge{gp, posedge, n, 2};
         }
 
-        // AssignPost's
+        // AlwaysPost's
         //    normal:      VarRefs on LHS:  generate normal
         //    underSBlock: VarRefs on RHS:  consume normal
         n = new V3GraphTestVertex{gp, "a=POST=a_dly"};
@@ -298,7 +298,7 @@ public:
 
 void V3Graph::selfTest() {
     // Execute all of the tests
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { V3GraphTestStrong{}.run(); }
     { V3GraphTestAcyc{}.run(); }
     { V3GraphTestVars{}.run(); }

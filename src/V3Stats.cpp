@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2005-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -34,11 +34,11 @@ V3Mutex V3Stats::s_mutex;
 class StatsVisitor final : public VNVisitorConst {
     struct Counters final {
         // Nodes of given type
-        uint64_t m_statTypeCount[VNType::_ENUM_END];
+        std::array<uint64_t, VNType::NUM_TYPES()> m_statTypeCount{};
         // Nodes of given type with given type immediate child
-        uint64_t m_statAbove[VNType::_ENUM_END][VNType::_ENUM_END];
+        std::array<std::array<uint64_t, VNType::NUM_TYPES()>, VNType::NUM_TYPES()> m_statAbove{};
         // Prediction of given type
-        uint64_t m_statPred[VBranchPred::_ENUM_END];
+        std::array<uint64_t, VBranchPred::_ENUM_END> m_statPred{};
     };
 
     // STATE
@@ -102,10 +102,7 @@ public:
     StatsVisitor(AstNetlist* nodep, const std::string& stage, bool fastOnly)
         : m_fastOnly{fastOnly}
         , m_accump{fastOnly ? &m_dumpster : &m_counters} {
-        UINFO(9, "Starting stats, fastOnly=" << fastOnly << endl);
-        memset(&m_counters, 0, sizeof(m_counters));
-        memset(&m_dumpster, 0, sizeof(m_dumpster));
-
+        UINFO(9, "Starting stats, fastOnly=" << fastOnly);
         iterateConst(nodep);
 
         // Shorthand
@@ -130,10 +127,12 @@ public:
         }
 
         // Node types (also total memory usage)
-        const auto typeName = [](int type) { return std::string{VNType{type}.ascii()}; };
-        const auto typeSize = [](int type) { return VNType{type}.typeInfo()->m_sizeof; };
+        const auto typeName
+            = [](size_t t) { return std::string{VNType{static_cast<VNType::en>(t)}.ascii()}; };
+        const auto typeSize
+            = [](size_t t) { return VNType::typeInfo(static_cast<VNType::en>(t)).m_sizeof; };
         size_t totalNodeMemoryUsage = 0;
-        for (int t = 0; t < VNType::_ENUM_END; ++t) {
+        for (size_t t = 0; t < VNType::NUM_TYPES(); ++t) {
             if (const uint64_t count = m_counters.m_statTypeCount[t]) {
                 totalNodeMemoryUsage += count * typeSize(t);
                 addStat("Node count, " + typeName(t), count);
@@ -142,7 +141,7 @@ public:
         addStat("Node memory TOTAL (MiB)", totalNodeMemoryUsage >> 20);
 
         // Node Memory usage
-        for (int t = 0; t < VNType::_ENUM_END; ++t) {
+        for (size_t t = 0; t < VNType::NUM_TYPES(); ++t) {
             if (const uint64_t count = m_counters.m_statTypeCount[t]) {
                 const double share = 100.0 * count * typeSize(t) / totalNodeMemoryUsage;
                 addStat("Node memory share (%), " + typeName(t), share, 2);
@@ -150,8 +149,8 @@ public:
         }
 
         // Expression combinations
-        for (int t1 = 0; t1 < VNType::_ENUM_END; ++t1) {
-            for (int t2 = 0; t2 < VNType::_ENUM_END; ++t2) {
+        for (size_t t1 = 0; t1 < VNType::NUM_TYPES(); ++t1) {
+            for (size_t t2 = 0; t2 < VNType::NUM_TYPES(); ++t2) {
                 if (const uint64_t c = m_counters.m_statAbove[t1][t2]) {
                     addStat("Expr combination, " + typeName(t1) + " over " + typeName(t2), c);
                 }
@@ -170,16 +169,8 @@ public:
 //######################################################################
 // Top Stats class
 
-void V3Stats::addStatSum(const string& name, double count) VL_MT_SAFE_EXCLUDES(s_mutex) {
-    V3LockGuard lock{s_mutex};
-    addStat(V3Statistic{"*", name, count, 0, true});
-}
-
 void V3Stats::statsStageAll(AstNetlist* nodep, const std::string& stage, bool fastOnly) {
     StatsVisitor{nodep, stage, fastOnly};
 }
 
-void V3Stats::statsFinalAll(AstNetlist* nodep) {
-    statsStageAll(nodep, "Final all");
-    statsStageAll(nodep, "Final fast", true);
-}
+void V3Stats::statsFinalAll(AstNetlist* nodep) { statsStageAll(nodep, "Final"); }

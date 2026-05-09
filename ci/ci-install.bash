@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # DESCRIPTION: Verilator: CI dependency install script
 #
-# Copyright 2020 by Geza Lore. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
-#
+# SPDX-FileCopyrightText: 2020 Geza Lore
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 ################################################################################
@@ -34,15 +30,42 @@ elif [ "$CI_OS_NAME" = "osx" ]; then
 elif [ "$CI_OS_NAME" = "freebsd" ]; then
   MAKE=gmake
 else
-  fatal "Unknown os: '$CI_OS_NAME'"
+  fatal "Unknown CI_OS_NAME: '$CI_OS_NAME'"
 fi
 
-install-vcddiff() {
-  TMP_DIR="$(mktemp -d)"
-  git clone https://github.com/veripool/vcddiff "$TMP_DIR"
-  git -C "${TMP_DIR}" checkout dca845020668887fd13498c772939814d9264fd5
-  "$MAKE" -C "${TMP_DIR}"
-  sudo cp "${TMP_DIR}/vcddiff" /usr/local/bin
+if [ "$CI_OS_NAME" = "linux" ]; then
+  # Avoid slow "processing triggers for man db"
+  echo "path-exclude /usr/share/doc/*"  | sudo tee -a /etc/dpkg/dpkg.cfg.d/01_nodoc
+  echo "path-exclude /usr/share/man/*"  | sudo tee -a /etc/dpkg/dpkg.cfg.d/01_nodoc
+  echo "path-exclude /usr/share/info/*" | sudo tee -a /etc/dpkg/dpkg.cfg.d/01_nodoc
+fi
+
+install-wavediff() {
+  source ci/docker/buildenv/wavetools.conf
+  local _base_url="https://github.com/hudson-trading/wavetools/releases/download/${WAVETOOLS_VERSION}"
+  local _platform
+  if [ "$CI_OS_NAME" = "linux" ]; then
+    _platform="linux-x86_64"
+  elif [ "$CI_OS_NAME" = "osx" ]; then
+    _platform="macos-arm64"
+  elif [ "$CI_OS_NAME" = "windows" ]; then
+    _platform="windows-x86_64"
+  else
+    echo "WARNING: No wavetools binary available for CI_OS_NAME=$CI_OS_NAME, skipping"
+    return 0
+  fi
+  local _tmpdir
+  _tmpdir=$(mktemp -d)
+  local _archive="wavetools-${WAVETOOLS_VERSION}-${_platform}"
+  if [ "$CI_OS_NAME" = "windows" ]; then
+    wget -q -O "${_tmpdir}/${_archive}.zip" "${_base_url}/${_archive}.zip"
+    unzip -o "${_tmpdir}/${_archive}.zip" -d "${_tmpdir}"
+  else
+    wget -q -O "${_tmpdir}/${_archive}.tar.gz" "${_base_url}/${_archive}.tar.gz"
+    tar -xzf "${_tmpdir}/${_archive}.tar.gz" -C "${_tmpdir}"
+  fi
+  sudo cp "${_tmpdir}/${_archive}/wavediff" /usr/local/bin/wavediff
+  rm -rf "${_tmpdir}"
 }
 
 if [ "$CI_BUILD_STAGE_NAME" = "build" ]; then
@@ -53,32 +76,36 @@ if [ "$CI_BUILD_STAGE_NAME" = "build" ]; then
   if [ "$CI_OS_NAME" = "linux" ]; then
     sudo apt-get update ||
     sudo apt-get update
-    sudo apt-get install ccache help2man libfl-dev ||
-    sudo apt-get install ccache help2man libfl-dev
+    sudo apt-get install --yes ccache help2man libfl-dev ||
+    sudo apt-get install --yes ccache help2man libfl-dev
     if [[ ! "$CI_RUNS_ON" =~ "ubuntu-22.04" ]]; then
       # Some conflict of libunwind verison on 22.04, can live without it for now
-      sudo apt-get install libgoogle-perftools-dev ||
-      sudo apt-get install libgoogle-perftools-dev
+      sudo apt-get install --yes libjemalloc-dev ||
+      sudo apt-get install --yes libjemalloc-dev
     fi
-    if [[ "$CI_RUNS_ON" =~ "ubuntu-20.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-22.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-24.04" ]]; then
-      sudo apt-get install libsystemc libsystemc-dev ||
-      sudo apt-get install libsystemc libsystemc-dev
+    if [[ "$CI_RUNS_ON" =~ "ubuntu-22.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-24.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-26.04" ]]; then
+      if [[ ! "$CI_RUNS_ON" =~ "-riscv" ]]; then
+        sudo apt-get install --yes libsystemc libsystemc-dev ||
+        sudo apt-get install --yes libsystemc libsystemc-dev
+      fi
     fi
-    if [[ "$CI_RUNS_ON" =~ "ubuntu-22.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-24.04" ]]; then
-      sudo apt-get install bear mold ||
-      sudo apt-get install bear mold
+    if [[ "$CI_RUNS_ON" =~ "ubuntu-22.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-24.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-26.04" ]]; then
+      sudo apt-get install --yes bear mold ||
+      sudo apt-get install --yes bear mold
     fi
   elif [ "$CI_OS_NAME" = "osx" ]; then
+    brew update ||
     brew update
-    brew install ccache perl gperftools
+    brew install ccache perl gperftools autoconf bison flex help2man ||
+    brew install ccache perl gperftools autoconf bison flex help2man
   elif [ "$CI_OS_NAME" = "freebsd" ]; then
     sudo pkg install -y autoconf bison ccache gmake perl5
   else
-    fatal "Unknown os: '$CI_OS_NAME'"
+    fatal "Unknown CI_OS_NAME: '$CI_OS_NAME'"
   fi
 
   if [ -n "$CCACHE_DIR" ]; then
-    mkdir -p "$CCACHE_DIR" && ./ci/ci-ccache-maint.bash
+    mkdir -p "$CCACHE_DIR"
   fi
 elif [ "$CI_BUILD_STAGE_NAME" = "test" ]; then
   ##############################################################################
@@ -89,16 +116,18 @@ elif [ "$CI_BUILD_STAGE_NAME" = "test" ]; then
     sudo apt-get update ||
     sudo apt-get update
     # libfl-dev needed for internal coverage's test runs
-    sudo apt-get install gdb gtkwave lcov libfl-dev ccache jq z3 ||
-    sudo apt-get install gdb gtkwave lcov libfl-dev ccache jq z3
+    sudo apt-get install --yes gdb gtkwave lcov libfl-dev ccache jq z3 ||
+    sudo apt-get install --yes gdb gtkwave lcov libfl-dev ccache jq z3
     # Required for test_regress/t/t_dist_attributes.py
-    if [[ "$CI_RUNS_ON" =~ "ubuntu-22.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-24.04" ]]; then
-      sudo apt-get install python3-clang mold ||
-      sudo apt-get install python3-clang mold
+    if [[ "$CI_RUNS_ON" =~ "ubuntu-22.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-24.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-26.04" ]]; then
+      sudo apt-get install --yes python3-clang mold ||
+      sudo apt-get install --yes python3-clang mold
     fi
-    if [[ "$CI_RUNS_ON" =~ "ubuntu-20.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-22.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-24.04" ]]; then
-      sudo apt-get install libsystemc-dev ||
-      sudo apt-get install libsystemc-dev
+    if [[ "$CI_RUNS_ON" =~ "ubuntu-22.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-24.04" ]] || [[ "$CI_RUNS_ON" =~ "ubuntu-26.04" ]]; then
+      if [[ ! "$CI_RUNS_ON" =~ "-riscv" ]]; then
+        sudo apt-get install --yes libsystemc libsystemc-dev ||
+        sudo apt-get install --yes libsystemc libsystemc-dev
+      fi
     fi
   elif [ "$CI_OS_NAME" = "osx" ]; then
     brew update
@@ -108,14 +137,14 @@ elif [ "$CI_BUILD_STAGE_NAME" = "test" ]; then
     # fst2vcd fails with "Could not open '<input file>', exiting."
     sudo pkg install -y ccache gmake perl5 python3 jq z3
   else
-    fatal "Unknown os: '$CI_OS_NAME'"
+    fatal "Unknown CI_OS_NAME: '$CI_OS_NAME'"
   fi
   # Common installs
-  install-vcddiff
+  install-wavediff
   # Workaround -fsanitize=address crash
   sudo sysctl -w vm.mmap_rnd_bits=28
 else
   ##############################################################################
   # Unknown build stage
-  fatal "Unknown build stage: '$CI_BUILD_STAGE_NAME'"
+  fatal "Unknown CI_BUILD_STAGE_NAME: '$CI_BUILD_STAGE_NAME'"
 fi

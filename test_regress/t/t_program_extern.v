@@ -1,23 +1,32 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2022 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2022 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
-extern program pgm;
+extern program ex_pgm;
+extern interface ex_ifc;
+extern module ex_mod;
 
-program pgm;
-   task ptask;
-   endtask
+module t;
+
+  ex_pgm u_pgm();
+  ex_ifc u_ifc();
+  ex_mod u_mod();
+
+  initial begin
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
+
+endmodule
+
+// Could be in another compile run, but we don't support that
+program ex_pgm;
 endprogram
 
-module t(/*AUTOARG*/);
+interface ex_ifc;
+endinterface
 
-   pgm sub ();
-
-   initial begin
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
-
+module ex_mod;
 endmodule

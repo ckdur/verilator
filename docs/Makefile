@@ -5,10 +5,10 @@
 #
 # Code available from: https://verilator.org
 #
-# Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2025-2026 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 #
 ######################################################################
@@ -25,7 +25,7 @@ BUILDDIR = _build
 
 SPHINXOPTS ?= -c guide -j 4
 ifneq ($(VERILATOR_ANALYTICS_ID),)
-SPHINXOPTS += -D html_theme_options.analytics_id=$(VERILATOR_ANALYTICS_ID)
+  SPHINXOPTS += -D html_theme_options.analytics_id=$(VERILATOR_ANALYTICS_ID)
 endif
 
 ######################################################################
@@ -68,10 +68,15 @@ pdf:
 
 ######################################################################
 
-html latex linkcheck spelling::
+html latex linkcheck::
 	$(MAKE) vl-extract
 	$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS)
 	$(PYTHON3) bin/vl_sphinx_fix _build
+
+spelling::
+	$(MAKE) vl-extract
+	$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS)
+	sort -o guide/spelling.txt guide/spelling.txt
 
 help:
 	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS)

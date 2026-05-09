@@ -3,15 +3,16 @@ under the Developer Certificate of Origin (https://developercertificate.org/).
 
 Please see the Verilator manual for 200+ additional contributors. Thanks to all.
 
+404allen404
 Adam Bagley
 Adrian Sampson
 Adrien Le Masle
-Ahmed El-Mahmoudy
+أحمد المحمودي (Ahmed El-Mahmoudy)
 Aidan McNay
 Aleksander Kiryk
 Alex Chadwick
 Alex Solomatnikov
-Àlex Torregrosa
+Alex Zhou
 Aliaksei Chapyzhenka
 Ameya Vikram Singh
 Andrea Calabrese
@@ -24,71 +25,85 @@ Anthony Donlon
 Anthony Moore
 Arkadiusz Kozdra
 Arthur Rosa
+Artur Bieniek
+AUDIY
 Aylon Chaim Porat
 Bartłomiej Chmiel
 Brian Li
 Cameron Kirk
+Cameron Waite
 Chih-Mao Chen
 Chris Bachhuber
 Chris Randall
+Christian Hecken
 Christopher Taylor
 Chuxuan Wang
 Chykon
+Congcong Cai
 Conor McCullough
-Dan Petrisko
+Dan Ruelas-Petrisko
 Daniel Bates
+Danny Oler
+Dave Sargeant
 David Horton
 David Ledger
 David Metz
-Dave Sargeant
 David Stanford
 David Turner
 Dercury
 Diego Roux
+Dominick Grochowina
 Don Williamson
 Drew Ranck
 Drew Taussig
 Driss Hafdi
 Edgar E. Iglesias
+Eric Mejdrich
 Eric Müller
 Eric Rippey
+Eunseo Song
 Ethan Sifferman
 Eyck Jentzsch
-Furqan Nadir
-Fabian Keßler
+Fabian Keßler-Schulz
 Fan Shupei
-february cozzocrea
 Felix Neumärker
 Felix Yan
 Frans Skarman
 Fuad Ismail
+Furqan Nadir
 G-A. Kamendje
 Garrett Smith
+George Polack
 Geza Lore
 Gianfranco Costamagna
 Gijs Burghoorn
 Gilberto Abram
 Glen Gibb
-Gökçe Aydos
 Graham Rushton
 Greg Davill
 Guokai Chen
 Gus Smith
 Gustav Svensk
+Gökçe Aydos
 Han Qi
 Harald Heckmann
 Hennadii Chernyshchyk
+hjsanjana
 Howard Su
 Huang Rui
 Huanghuang Zhou
 HungMingWu
 HyungKi Jeong
-Ícaro Lima
+Ibrahim Burak Yorulmaz
+Igor Zaworski
 Ilya Barkov
 Iru Cai
 Ivan Vnučec
 Iztok Jeras
 Jake Merdich
+Jakub Michalski
+Jakub Wasilewski
+jalcim
 James Bailey
 James Hanlon
 James Hutchinson
@@ -97,16 +112,19 @@ James Shi
 Jamey Hicks
 Jamie Iles
 Jan Van Winkel
-Jiangjie Weng
 Jean Berniolles
+Jean-Nicolas Strauss
+Jens Yuechao Liu
 Jeremy Bennett
 Jesse Taube
 Jevin Sweval
 Jiacheng Qian
 Jiamin Zhu
-Jitesh Nayak
+Jiangjie Weng
 Jinyan Xu
+Jitesh Nayak
 Jiuyang Liu
+Joel Bodenmann
 Joey Liu
 John Coiner
 John Demme
@@ -115,15 +133,18 @@ John Wehle
 Jonathan Drolet
 Jonathan Schröter
 Jordan McConnon
+Jose Drowne
 Jose Loyola
 Josep Sans
 Joseph Nwabueze
 Josh Redford
+Julian Carrier
 Julian Daube
 Julie Schwartz
 Julien Margetts
 Justin Thiel
 Kaleb Barrett
+Kamil Danecki
 Kamil Rakoczy
 Kanad Kanhere
 Kefa Chen
@@ -138,14 +159,18 @@ Krzysztof Obłonczek
 Krzysztof Starecki
 Krzysztof Sychla
 Kuba Ober
+Lan Zongwei
 Larry Doolittle
+Leela Pakanati
 Liam Braun
 Luca Colagrande
 Ludwig Rogiers
 Lukasz Dalek
+M2kar
 Maarten De Braekeleer
 Maciej Sobkowski
 Marcel Chang
+Marco Bartoli
 Marco Widmer
 Mariusz Glebocki
 Markus Krause
@@ -154,11 +179,17 @@ Marshal Qiao
 Martin Schmidt
 Martin Stadler
 Mateusz Gancarz
+Matt Stroud
 Matthew Ballance
+Max Wipfli
+Maxim Fonarev
+Michael Bedford Taylor
 Michael Bikovitsky
 Michael Killough
-Michaël Lefebvre
+Michael Rogenmoser
 Michal Czyz
+Michaël Lefebvre
+Miguel Perez Andrade
 Mike Popoloski
 Miodrag Milanović
 Mladen Slijepcevic
@@ -171,6 +202,8 @@ Nathan Graybeal
 Nathan Kohagen
 Nathan Myers
 Nick Brereton
+Nikolai Kumar
+Nikolay Puzanov
 Nolan Poe
 Oleh Maksymenko
 Patrick Stewart
@@ -178,11 +211,14 @@ Paul Bowen-Huggett
 Paul Swirhun
 Paul Wright
 Pawel Jewstafjew
+Pawel Kojma
 Pawel Sagan
 Pengcheng Xu
+Peter Birch
 Peter Debacker
 Peter Horvath
 Peter Monsson
+Petr Nohavica
 Philip Axer
 Philipp Wagner
 Pierre-Henri Horrein
@@ -191,6 +227,7 @@ Piotr Binkowski
 Qingyao Sun
 Quentin Corradi
 Rafal Kapuscik
+Rahul Behl
 Rasfunk
 Raynard Qiao
 Ricardo Barbedo
@@ -198,43 +235,53 @@ Richard Myers
 Risto Pejašinović
 Robert Balas
 Robin Heinemann
+Rodrigo Batista de Moraes
+Rowan Goemans
 Rupert Swarbrick
 Ryan Ziegler
 Ryszard Rozak
 Samuel Riedel
 Sean Cross
 Sebastien Van Cauwenberghe
+Sergey Fedorov
 Sergi Granell
 Seth Pellegrino
+Shogo Yamazaki
+Shou-Li Hsu
 Srinivasan Venkataramanan
 Stefan Wallentowitz
 Stephen Henry
 Steven Hugg
-sumpster
 Szymon Gizler
 Sören Tempel
 Teng Huang
-Tom Manner
+Thomas Aldrian
+Thomas Dybdahl Ahle
 Tim Hutt
 Tim Snyder
+Tobias Jensen
 Tobias Rosenkranz
 Tobias Wölfel
 Todd Strader
+Tom Manner
 Tomasz Gorochowik
 Topa Topino
 Toru Niina
+Tracy Narine
 Trung Nguyen
 Tudor Timi
 Tymoteusz Blazejczyk
+Udaya Raj Subedi
 Udi Finkelstein
 Unai Martinez-Corral
-Udaya Raj Subedi
 Valentin Atepalikhin
 Varun Koyyalagunta
 Vassilis Papaefstathiou
 Veripool API Bot
 Victor Besyakov
+Vikash Patel
 Vito Gamberini
+Wei-Lun Chiu
 William D. Jones
 Wilson Snyder
 Xi Zhang
@@ -249,9 +296,17 @@ Yuri Victorovich
 Yutetsu TAKATSUKASA
 Yves Mathieu
 Zhanglei Wang
+Zhen Yan
 Zhou Shen
 Zhouyi Shen
 Zixi Li
-أحمد المحمودي
-404allen404
-Tobias Jensen
+apocelipes
+dependabot[bot]
+february cozzocrea
+sumpster
+em2machine
+emmettifelts
+Àlex Torregrosa
+Ícaro Lima
+Yogish Sekhar
+24bit-xjkp

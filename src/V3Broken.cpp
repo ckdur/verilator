@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -60,29 +60,39 @@ static bool s_brokenAllowMidvisitorCheck = false;
 // Table of allocated AstNode pointers
 
 static class AllocTable final {
+    friend class V3Broken;
     // MEMBERS
-    std::unordered_set<const AstNode*> m_allocated;  // Set of all nodes allocated but not freed
+    V3Mutex m_mutex;  // Mutex for m_allocated
+    // Set of all nodes allocated but not freed
+    std::unordered_set<const AstNode*> m_allocated VL_GUARDED_BY(m_mutex);
 
 public:
     // METHODS
-    void addNewed(const AstNode* nodep) {
+    void addNewed(const AstNode* nodep) VL_MT_SAFE_EXCLUDES(m_mutex) {
         // Called by operator new on any node - only if VL_LEAK_CHECKS
         // LCOV_EXCL_START
+        const V3LockGuard lock{m_mutex};
         if (VL_UNCOVERABLE(!m_allocated.emplace(nodep).second)) {
             nodep->v3fatalSrc("Newing AstNode object that is already allocated");
         }
         // LCOV_EXCL_STOP
     }
-    void deleted(const AstNode* nodep) {
+    void deleted(const AstNode* nodep) VL_MT_SAFE_EXCLUDES(m_mutex) {
         // Called by operator delete on any node - only if VL_LEAK_CHECKS
         // LCOV_EXCL_START
+        const V3LockGuard lock{m_mutex};
         if (VL_UNCOVERABLE(m_allocated.erase(nodep) == 0)) {
             nodep->v3fatalSrc("Deleting AstNode object that was not allocated or already freed");
         }
         // LCOV_EXCL_STOP
     }
-    bool isAllocated(const AstNode* nodep) const { return m_allocated.count(nodep) != 0; }
-    void checkForLeaks() {
+
+private:  // for V3Broken only
+    // cppcheck-suppress unusedPrivateFunction
+    bool isAllocated(const AstNode* nodep) const VL_REQUIRES(m_mutex) {
+        return m_allocated.count(nodep) != 0;
+    }
+    void checkForLeaks() VL_REQUIRES(m_mutex) {
         if (!v3Global.opt.debugCheck()) return;
 
         const uint8_t brokenCntCurrent = s_brokenCntGlobal.get();
@@ -148,6 +158,10 @@ class BrokenCheckVisitor final : public VNVisitorConst {
     std::map<const AstVar*, const AstNodeVarRef*> m_suspectRefs;
     // Local variables declared in the scope of the current statement
     std::vector<std::unordered_set<const AstVar*>> m_localsStack;
+    // Number of write references encountered
+    size_t m_nWriteRefs = 0;
+    // Number of function calls encountered
+    size_t m_nCalls = 0;
 
     // STATE - for current visit position (use VL_RESTORER)
     const AstCFunc* m_cfuncp = nullptr;  // Current CFunc, if any
@@ -176,9 +190,9 @@ private:
         }
         if (v3Global.assertDTypesResolved()) {
             if (nodep->hasDType()) {
-                UASSERT_OBJ(nodep->dtypep(), nodep,
-                            "No dtype on node with hasDType(): " << nodep->prettyTypeName());
             } else {
+                UASSERT_OBJ(!VN_IS(nodep, NodeExpr), nodep,
+                            "All AstNodeExpr must have a dtype post V3WidthCommit");
                 UASSERT_OBJ(!nodep->dtypep(), nodep,
                             "DType on node without hasDType(): " << nodep->prettyTypeName());
             }
@@ -215,9 +229,17 @@ private:
     }
     // VISITORS
     void visit(AstNodeAssign* nodep) override {
-        processAndIterate(nodep);
-        UASSERT_OBJ(!(v3Global.assertDTypesResolved() && nodep->brokeLhsMustBeLvalue()
-                      && VN_IS(nodep->lhsp(), NodeVarRef)
+        processEnter(nodep);
+        iterateConst(nodep->rhsp());
+        const size_t nWriteRefs = m_nWriteRefs;
+        const size_t nCalls = m_nCalls;
+        iterateConst(nodep->lhsp());
+        // Only check if there are no calls on the LHS, as calls might return an LValue
+        if (v3Global.assertDTypesResolved() && m_nCalls == nCalls) {
+            UASSERT_OBJ(m_nWriteRefs > nWriteRefs, nodep, "No write refs on LHS of assignment");
+        }
+        processExit(nodep);
+        UASSERT_OBJ(!(v3Global.assertDTypesResolved() && VN_IS(nodep->lhsp(), NodeVarRef)
                       && !VN_AS(nodep->lhsp(), NodeVarRef)->access().isWriteOrRW()),
                     nodep, "Assignment LHS is not an lvalue");
     }
@@ -252,6 +274,8 @@ private:
         UASSERT_OBJ(
             !(v3Global.assertScoped() && m_inScope && nodep->varp() && !nodep->varScopep()), nodep,
             "VarRef missing VarScope pointer");
+        UASSERT_OBJ(!v3Global.assertScoped() || !nodep->classOrPackagep(), nodep,
+                    "VarRef classOrPackagep must be nullptr after V3Scope");
         if (m_cfuncp) {
             // Check if variable is an in-scope local, otherwise mark as suspect
             if (const AstVar* const varp = nodep->varp()) {
@@ -261,6 +285,19 @@ private:
                 }
             }
         }
+        if (nodep->access().isWriteOrRW()) ++m_nWriteRefs;
+    }
+    void visit(AstNodeCCall* nodep) override {
+        ++m_nCalls;
+        processAndIterate(nodep);
+    }
+    void visit(AstCMethodHard* nodep) override {
+        ++m_nCalls;
+        processAndIterate(nodep);
+    }
+    void visit(AstNodeFTaskRef* nodep) override {
+        ++m_nCalls;
+        processAndIterate(nodep);
     }
     void visit(AstCFunc* nodep) override {
         UASSERT_OBJ(!m_cfuncp, nodep, "Nested AstCFunc");
@@ -332,17 +369,19 @@ public:
 // Broken check entry point
 
 void V3Broken::brokenAll(AstNetlist* nodep) {
-    // UINFO(9, __FUNCTION__ << ": " << endl);
-    static bool inBroken = false;
-    if (VL_UNCOVERABLE(inBroken)) {
+    // UINFO(9, __FUNCTION__ << ": ");
+    static bool s_inBroken = false;
+    if (VL_UNCOVERABLE(s_inBroken)) {
         // A error called by broken can recurse back into broken; avoid this
-        UINFO(1, "Broken called under broken, skipping recursion.\n");  // LCOV_EXCL_LINE
+        UINFO(1, "Broken called under broken, skipping recursion.");  // LCOV_EXCL_LINE
     } else {
-        inBroken = true;
+        s_inBroken = true;
+
+        const V3LockGuard lock{s_allocTable.m_mutex};
 
         // Mark every node in the tree
         const uint8_t brokenCntCurrent = s_brokenCntGlobal.get();
-        nodep->foreach([brokenCntCurrent](AstNode* nodep) {
+        nodep->foreach([brokenCntCurrent](AstNode* nodep) VL_NO_THREAD_SAFETY_ANALYSIS {
 #ifdef VL_LEAK_CHECKS
             UASSERT_OBJ(s_allocTable.isAllocated(nodep), nodep,
                         "AstNode is in tree, but not allocated");
@@ -359,7 +398,7 @@ void V3Broken::brokenAll(AstNetlist* nodep) {
         s_allocTable.checkForLeaks();
         s_linkableTable.clear();
         s_brokenCntGlobal.inc();
-        inBroken = false;
+        s_inBroken = false;
     }
 }
 
@@ -371,12 +410,12 @@ void V3Broken::allowMidvisitorCheck(bool flag) { s_brokenAllowMidvisitorCheck = 
 void V3Broken::selfTest() {
     // Exercise addNewed and deleted for coverage, as otherwise only used with VL_LEAK_CHECKS
     FileLine* const fl = new FileLine{FileLine::commandLineFilename()};
-    const AstNode* const newp = new AstBegin{fl, "[EditWrapper]", nullptr};
+    AstNode* const newp = new AstBegin{fl, "[EditWrapper]", nullptr, false};
     // Don't actually do it with VL_LEAK_CHECKS, when new/delete calls these.
     // Otherwise you call addNewed twice on the same address, which is an error.
 #ifndef VL_LEAK_CHECKS
     addNewed(newp);
     deleted(newp);
 #endif
-    VL_DO_DANGLING(delete newp, newp);
+    VL_DO_DANGLING(newp->deleteTree(), newp);
 }

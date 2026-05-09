@@ -2,8 +2,8 @@
 //
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2008 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2008 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 #include <verilated.h>
@@ -128,6 +128,11 @@ int main(int argc, char** argv) {
             int varLeft = varp->range(0)->left();
             int varBits = varLeft + 1;
             uint8_t* varData = reinterpret_cast<uint8_t*>(varp->datap());
+            // Cover illegal access
+            if (varp->range(1000) != nullptr) {
+                VL_PRINTF("%%Error: Range null mismatch\n");
+                return -1;
+            }
 
             // Check that all bits are high now
             for (int i = 0; i < varBits / 8; i++) {

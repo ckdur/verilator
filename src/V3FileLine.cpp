@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -24,8 +24,9 @@
 #include "V3String.h"
 #ifndef V3ERROR_NO_GLOBAL_
 # include "V3Global.h"
-# include "V3Config.h"
+# include "V3Control.h"
 # include "V3File.h"
+# include "V3Stats.h"
 #endif
 #include "V3Waiver.h"
 // clang-format on
@@ -76,18 +77,6 @@ FileLineSingleton::fileNameIdx_t FileLineSingleton::nameToNumber(const string& f
     return idx;
 }
 
-//! Support XML output
-//! Experimental. Updated to also put out the language.
-void FileLineSingleton::fileNameNumMapDumpXml(std::ostream& os) {
-    os << "<files>\n";
-    for (const auto& itr : m_namemap) {
-        os << "<file id=\"" << filenameLetters(itr.second) << "\" filename=\""
-           << V3OutFormatter::quoteNameControls(itr.first, V3OutFormatter::LA_XML)
-           << "\" language=\"" << numberToLang(itr.second).ascii() << "\"/>\n";
-    }
-    os << "</files>\n";
-}
-
 void FileLineSingleton::fileNameNumMapDumpJson(std::ostream& os) {
     std::string sep = "\n  ";
     os << "\"files\": {";
@@ -109,7 +98,7 @@ void FileLineSingleton::fileNameNumMapDumpJson(std::ostream& os) {
 
 FileLineSingleton::msgEnSetIdx_t FileLineSingleton::addMsgEnBitSet(const MsgEnBitSet& bitSet)
     VL_MT_SAFE_EXCLUDES(m_mutex) {
-    V3LockGuard lock{m_mutex};
+    const V3LockGuard lock{m_mutex};
     const auto pair = m_internedMsgEnIdxs.emplace(bitSet, 0);
     msgEnSetIdx_t& idx = pair.first->second;
     if (pair.second) {
@@ -125,26 +114,50 @@ FileLineSingleton::msgEnSetIdx_t FileLineSingleton::addMsgEnBitSet(const MsgEnBi
 FileLineSingleton::msgEnSetIdx_t FileLineSingleton::defaultMsgEnIndex() VL_MT_SAFE {
     MsgEnBitSet msgEnBitSet;
     for (int i = V3ErrorCode::EC_MIN; i < V3ErrorCode::_ENUM_MAX; ++i) {
-        msgEnBitSet.set(i, !V3ErrorCode{i}.defaultsOff());
+        const V3ErrorCode code{i};
+        // "-Wall" and the like only adjust the code subset, so use default enablement there
+        msgEnBitSet.set(MsgEnBitSet::Subset::CODE, code, !code.defaultsOff());
+        // The control file subset is only adjusted by the control files, everything enabled by
+        // default.  (V3Control also likewise creates with this)
+        msgEnBitSet.set(MsgEnBitSet::Subset::CTRL, code, true);
     }
     return addMsgEnBitSet(msgEnBitSet);
 }
 
 FileLineSingleton::msgEnSetIdx_t FileLineSingleton::msgEnSetBit(msgEnSetIdx_t setIdx,
-                                                                size_t bitIdx, bool value) {
-    if (msgEn(setIdx).test(bitIdx) == value) return setIdx;
+                                                                MsgEnBitSet::Subset subset,
+                                                                V3ErrorCode code, bool value) {
+    // See if state matches existing
+    bool same = true;
+    code.forDelegateCodes([&](V3ErrorCode subcode) {
+        if (msgEn(setIdx).test(subset, subcode) != value) same = false;
+    });
+    if (same) return setIdx;
+    // Make new mask of all delegated codes at once (to avoid extra indices if looped above this)
     MsgEnBitSet msgEnBitSet{msgEn(setIdx)};
-    msgEnBitSet.set(bitIdx, value);
+    code.forDelegateCodes([&](V3ErrorCode subcode) { msgEnBitSet.set(subset, subcode, value); });
+    return addMsgEnBitSet(msgEnBitSet);
+}
+
+FileLineSingleton::msgEnSetIdx_t FileLineSingleton::msgSetCtrlBitSet(msgEnSetIdx_t setIdx,
+                                                                     const VErrorBitSet& bitset) {
+    const MsgEnBitSet::Subset subset = MsgEnBitSet::Subset::CTRL;
+    // See if state matches existing
+    if (msgEn(setIdx).getAll(subset) == bitset) return setIdx;
+    // Make new mask of all delegated codes at once (to avoid extra indices if looped above this)
+    MsgEnBitSet msgEnBitSet{msgEn(setIdx)};
+    msgEnBitSet.setAll(subset, bitset);
     return addMsgEnBitSet(msgEnBitSet);
 }
 
 FileLineSingleton::msgEnSetIdx_t FileLineSingleton::msgEnAnd(msgEnSetIdx_t lhsIdx,
                                                              msgEnSetIdx_t rhsIdx) {
-    MsgEnBitSet msgEnBitSet{msgEn(lhsIdx)};
-    msgEnBitSet &= msgEn(rhsIdx);
-    if (msgEnBitSet == msgEn(lhsIdx)) return lhsIdx;
-    if (msgEnBitSet == msgEn(rhsIdx)) return rhsIdx;
-    return addMsgEnBitSet(msgEnBitSet);
+    const MsgEnBitSet& lhs = msgEn(lhsIdx);
+    const MsgEnBitSet& rhs = msgEn(rhsIdx);
+    const MsgEnBitSet intersection{lhs, rhs};
+    if (intersection == lhs) return lhsIdx;
+    if (intersection == rhs) return rhsIdx;
+    return addMsgEnBitSet(intersection);
 }
 
 // ######################################################################
@@ -216,15 +229,9 @@ void FileLine::newContent() {
     m_contentLineno = 1;
 }
 
-string FileLine::xmlDetailedLocation() const {
-    return "loc=\"" + cvtToStr(filenameLetters()) + "," + cvtToStr(firstLineno()) + ","
-           + cvtToStr(firstColumn()) + "," + cvtToStr(lastLineno()) + "," + cvtToStr(lastColumn())
-           + "\"";
-}
-
 string FileLine::lineDirectiveStrg(int enterExit) const {
     return "`line "s + cvtToStr(lastLineno()) + " \""
-           + V3OutFormatter::quoteNameControls(filename()) + "\" " + cvtToStr(enterExit) + "\n";
+           + V3OutFormatter::quoteNameControls(filename()) + "\" " + cvtToStr(enterExit) + '\n';
 }
 
 void FileLine::lineDirective(const char* textp, int& enterExitRef) {
@@ -292,6 +299,8 @@ void FileLine::lineDirectiveParse(const char* textp, string& filenameRef, int& l
 }
 
 void FileLine::forwardToken(const char* textp, size_t size, bool trackLines) {
+    static int s_tokenNum = 1;
+    m_tokenNum = s_tokenNum++;
     for (const char* sp = textp; size && *sp; ++sp, --size) {
         if (*sp == '\n') {
             if (trackLines) linenoInc();
@@ -305,7 +314,7 @@ void FileLine::forwardToken(const char* textp, size_t size, bool trackLines) {
 
 void FileLine::applyIgnores() {
 #ifndef V3ERROR_NO_GLOBAL_
-    V3Config::applyIgnores(this);  // Toggle warnings based on global config file
+    V3Control::applyIgnores(this);  // Toggle warnings based on global config file
 #endif
 }
 
@@ -319,12 +328,12 @@ FileLine* FileLine::copyOrSameFileLine() {
     // Return this, or a copy of this
     // There are often more than one token per line, thus we use the
     // same pointer as long as we're on the same line, file & warn state.
-    static FileLine* lastNewp = nullptr;
-    if (lastNewp && *lastNewp == *this) {  // Compares lineno, filename, etc
-        return lastNewp;
+    static FileLine* s_lastNewp = nullptr;
+    if (s_lastNewp && *s_lastNewp == *this) {  // Compares lineno, filename, etc
+        return s_lastNewp;
     }
     FileLine* const newp = new FileLine{this};
-    lastNewp = newp;
+    s_lastNewp = newp;
     return newp;
 }
 
@@ -365,53 +374,23 @@ std::ostream& operator<<(std::ostream& os, FileLine* fileline) {
     return (os);
 }
 
-bool FileLine::warnOff(const string& msg, bool flag) {
-    const char* cmsg = msg.c_str();
-    // Backward compatibility with msg="UNUSED"
-    if (V3ErrorCode::unusedMsg(cmsg)) {
-        warnOff(V3ErrorCode::UNUSEDGENVAR, flag);
-        warnOff(V3ErrorCode::UNUSEDLOOP, flag);
-        warnOff(V3ErrorCode::UNUSEDPARAM, flag);
-        warnOff(V3ErrorCode::UNUSEDSIGNAL, flag);
-        return true;
+string FileLine::warnOffParse(const string& msgs, bool turnOff) {
+    string result;
+    for (const string& msg : VString::split(msgs, ',')) {
+        const V3ErrorCode code{msg};
+        if (!code.hardError()) {
+            warnOff(code, turnOff);
+            continue;
+        }
+        // Error if not suppressed
+        if (!v3Global.opt.isFuture(msg)) result = VString::dot(result, ",", msg);
     }
-    const V3ErrorCode code{cmsg};
-    if (code.hardError()) {
-        return false;
-    } else {
-        warnOff(code, flag);
-        return true;
-    }
-}
-
-void FileLine::warnLintOff(bool flag) {
-    for (int codei = V3ErrorCode::EC_MIN; codei < V3ErrorCode::_ENUM_MAX; codei++) {
-        const V3ErrorCode code{codei};
-        if (code.lintError()) warnOff(code, flag);
-    }
-}
-
-void FileLine::warnStyleOff(bool flag) {
-    for (int codei = V3ErrorCode::EC_MIN; codei < V3ErrorCode::_ENUM_MAX; codei++) {
-        const V3ErrorCode code{codei};
-        if (code.styleError()) warnOff(code, flag);
-    }
-}
-
-void FileLine::warnUnusedOff(bool flag) {
-    warnOff(V3ErrorCode::UNUSEDGENVAR, flag);
-    warnOff(V3ErrorCode::UNUSEDLOOP, flag);
-    warnOff(V3ErrorCode::UNUSEDPARAM, flag);
-    warnOff(V3ErrorCode::UNUSEDSIGNAL, flag);
+    return result;
 }
 
 bool FileLine::warnIsOff(V3ErrorCode code) const {
-    if (!msgEn().test(code)) return true;
-    if (!defaultFileLine().msgEn().test(code)) return true;  // Global overrides local
-    if ((code.lintError() || code.styleError()) && !msgEn().test(V3ErrorCode::I_LINT)) {
-        return true;
-    }
-    if ((code.unusedError()) && !msgEn().test(V3ErrorCode::I_UNUSED)) return true;
+    if (!msgEn().enabled(code)) return true;
+    if (!defaultFileLine().msgEn().enabled(code)) return true;  // Global overrides local
     return false;
 }
 
@@ -422,15 +401,15 @@ void FileLine::v3errorEnd(std::ostringstream& sstr, const string& extra)
     // duplicate messages. Currently used for reporting instance name.
     std::ostringstream nsstr;  // sstr with fileline prefix and context
     std::ostringstream wsstr;  // sstr for waiver (no fileline) with context
-    if (lastLineno()) nsstr << this;
+    if (lastLineno()) nsstr << V3Error::warnContextBegin() << this << V3Error::warnContextEnd();
     nsstr << sstr.str();
     wsstr << sstr.str();
-    nsstr << "\n";
-    wsstr << "\n";
+    nsstr << '\n';
+    wsstr << '\n';
     std::ostringstream extrass;  // extra spaced out for prefix
     if (!extra.empty()) {
-        extrass << std::setw(ascii().length()) << " "
-                << ": " << extra;
+        extrass << V3Error::warnContextBegin() << std::setw(ascii().length()) << " " << ": "
+                << V3Error::warnContextEnd() << extra;
     }
     if (warnIsOff(V3Error::s().errorCode())) {
         V3Error::s().suppressThisWarning();
@@ -440,34 +419,33 @@ void FileLine::v3errorEnd(std::ostringstream& sstr, const string& extra)
             wsstr << add;
             nsstr << add;
         }
-        m_waive = V3Config::waive(this, V3Error::s().errorCode(), wsstr.str());
+        const string waiverText = V3Error::stripMetaText(wsstr.str(), false);
+        m_waive = V3Control::waive(this, V3Error::s().errorCode(), waiverText);
         if (m_waive) {
             V3Error::s().suppressThisWarning();
         } else {
-            V3Waiver::addEntry(V3Error::s().errorCode(), filename(), wsstr.str());
+            V3Waiver::addEntry(V3Error::s().errorCode(), filename(), waiverText);
         }
     }
-    V3Error::v3errorEnd(nsstr, extrass.str());
+    V3Error::v3errorEnd(nsstr, extrass.str(), this);
 }
 
 string FileLine::warnMore() const VL_REQUIRES(V3Error::s().m_mutex) {
     if (lastLineno()) {
-        return V3Error::s().warnMore() + string(ascii().size(), ' ') + ": ";
+        return V3Error::warnContextBegin() + V3Error::warnMore() + string(ascii().size(), ' ')
+               + ": " + V3Error::warnContextEnd();
     } else {
-        return V3Error::s().warnMore();
+        return V3Error::warnMore();
     }
 }
 string FileLine::warnOther() const VL_REQUIRES(V3Error::s().m_mutex) {
     if (lastLineno()) {
-        return V3Error::s().warnMore() + ascii() + ": ";
+        return V3Error::s().warnRelated(this) + V3Error::warnContextBegin() + V3Error::warnMore()
+               + ascii() + ": " + V3Error::warnContextEnd();
     } else {
-        return V3Error::s().warnMore();
+        return V3Error::warnMore();
     }
 };
-string FileLine::warnOtherStandalone() const VL_EXCLUDES(V3Error::s().m_mutex) VL_MT_UNSAFE {
-    const V3RecursiveLockGuard guard{V3Error::s().m_mutex};
-    return warnOther();
-}
 
 string FileLine::source() const VL_MT_SAFE {
     if (VL_UNCOVERABLE(!m_contentp)) {  // LCOV_EXCL_START
@@ -497,15 +475,15 @@ string FileLine::prettySource() const VL_MT_SAFE {
 
 string FileLine::warnContext() const {
     if (!v3Global.opt.context()) return "";
-    string out;
     if (firstLineno() == lastLineno() && firstColumn()) {
         const string sourceLine = prettySource();
+        string out;
         // Don't show super-long lines as can fill screen and unlikely to help user
         if (!sourceLine.empty() && sourceLine.length() < SHOW_SOURCE_MAX_LENGTH
             && sourceLine.length() >= static_cast<size_t>(lastColumn() - 1)) {
             string linestr = cvtToStr(firstLineno());
             while (linestr.size() < 5) linestr = ' ' + linestr;
-            out += linestr + " | " + sourceLine + "\n";
+            out += linestr + " | " + sourceLine + '\n';
             out += std::string(linestr.size(), ' ') + " | ";
             out += string((firstColumn() - 1), ' ') + '^';
             // Can't use UASSERT_OBJ used in warnings already inside the error end handler
@@ -513,10 +491,11 @@ string FileLine::warnContext() const {
                 // Note lastColumn() can be <= firstColumn() in some weird preproc expansions
                 out += string((lastColumn() - firstColumn() - 1), '~');
             }
-            out += "\n";
+            out += '\n';
         }
+        return V3Error::warnContextBegin() + out + V3Error::warnContextEnd();
     }
-    return out;
+    return "";
 }
 
 string FileLine::warnContextParent() const VL_REQUIRES(V3Error::s().m_mutex) {
@@ -528,6 +507,7 @@ string FileLine::warnContextParent() const VL_REQUIRES(V3Error::s().m_mutex) {
     }
     return result;
 }
+
 #ifdef VL_LEAK_CHECKS
 std::unordered_set<FileLine*> fileLineLeakChecks;
 
@@ -549,6 +529,18 @@ void FileLine::operator delete(void* objp, size_t size) {
     ::operator delete(objp);
 }
 #endif
+
+void FileLine::stats() {
+#ifndef V3ERROR_NO_GLOBAL_
+    V3Stats::addStatSum("FileLines, Number of filenames",
+                        singleton().m_names.size());  // Max m_filenameno
+    V3Stats::addStatSum("FileLines, Message enable sets",
+                        singleton().m_internedMsgEns.size());  // Max m_msgEnIdx
+    // Don't currently have a good path to recording max line/column,
+    // Infrequently useful, alternatively we could keep globals we update as make each FileLine
+    // or could use fileLineLeakChecks.
+#endif
+}
 
 void FileLine::deleteAllRemaining() {
 #ifdef VL_LEAK_CHECKS

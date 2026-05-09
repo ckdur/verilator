@@ -1,12 +1,12 @@
 # DESCRIPTION: Dockerfile for env to build and fully test Verilator
 #
-# Copyright 2020 by Stefan Wallentowitz. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2020 Stefan Wallentowitz
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Create the user
 RUN groupadd verilator \
@@ -36,12 +36,14 @@ RUN apt-get update \
                         help2man \
                         libfl2 \
                         libfl-dev \
-                        libgoogle-perftools-dev \
+                        libclang-rt-18-dev \
+                        libjemalloc-dev \
                         libsystemc \
                         libsystemc-dev \
                         numactl \
                         perl \
                         python3 \
+                        python3-distro \
                         wget \
                         z3 \
                         zlib1g \
@@ -51,10 +53,14 @@ RUN apt-get update \
 
 WORKDIR /tmp
 
-RUN git clone https://github.com/veripool/vcddiff.git && \
-    make -C vcddiff && \
-    cp -p vcddiff/vcddiff /usr/local/bin/vcddiff && \
-    rm -rf vcddiff
+COPY wavetools.conf /tmp/wavetools.conf
+ARG WGET_EXTRA_ARGS=
+RUN . /tmp/wavetools.conf && \
+    wget -q ${WGET_EXTRA_ARGS} -O /tmp/wavetools.tar.gz \
+    "https://github.com/hudson-trading/wavetools/releases/download/${WAVETOOLS_VERSION}/wavetools-${WAVETOOLS_VERSION}-linux-x86_64.tar.gz" && \
+    tar -xzf /tmp/wavetools.tar.gz -C /tmp && \
+    cp -p /tmp/wavetools-${WAVETOOLS_VERSION}-linux-x86_64/wavediff /usr/local/bin/wavediff && \
+    rm -rf /tmp/wavetools.tar.gz /tmp/wavetools-* /tmp/wavetools.conf
 
 COPY build.sh /tmp/build.sh
 

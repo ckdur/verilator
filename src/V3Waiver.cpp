@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2020-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2020-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -34,7 +34,7 @@ void V3Waiver::addEntry(V3ErrorCode errorCode, const std::string& filename, cons
     string trimmsg = msg;
     if (!v3Global.opt.waiverMultiline()) {
         const size_t pos = trimmsg.find('\n');
-        trimmsg = trimmsg.substr(0, pos);
+        trimmsg.resize(pos);
         if (pos != std::string::npos) trimmsg += '*';
     }
     {  // Remove line numbers and context "\n [0-9] | ", "\n  ^[~]+"
@@ -70,8 +70,8 @@ void V3Waiver::addEntry(V3ErrorCode errorCode, const std::string& filename, cons
     }
 
     std::stringstream entry;
-    entry << "lint_off -rule " << errorCode.ascii() << " -file \"*" << filename << "\" -match \""
-          << trimmsg << "\"";
+    entry << "lint_off -rule " << errorCode.ascii() << " -file \"*"
+          << VString::quoteBackslash(filename) << "\" -match \"" << trimmsg << "\"";
     s_waiverList.push_back(entry.str());
 }
 

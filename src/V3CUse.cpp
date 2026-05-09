@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -43,7 +43,7 @@ class CUseVisitor final : public VNVisitorConst {
     std::map<std::string, std::pair<FileLine*, VUseType>> m_didUse;  // What we already used
 
     // METHODS
-    void addNewUse(AstNode* nodep, VUseType useType, const string& name) {
+    void addNewUse(const AstNode* nodep, VUseType useType, const string& name) {
         auto e = m_didUse.emplace(name, std::make_pair(nodep->fileline(), useType));
         if (e.second || ((e.first->second.second & useType) != useType)) {
             e.first->second.second = e.first->second.second | useType;
@@ -59,9 +59,9 @@ class CUseVisitor final : public VNVisitorConst {
         iterateAndNextConstNull(nodep->argsp());
         iterateAndNextConstNull(nodep->stmtsp());
     }
-    void visit(AstCCall* nodep) override { return; }
+    void visit(AstCCall* /*nodep*/) override {}
     void visit(AstCReturn* nodep) override {
-        UASSERT(!nodep->user1SetOnce(), "Visited same return twice.");
+        UASSERT_OBJ(!nodep->user1SetOnce(), nodep, "Visited same return twice");
         iterateConst(nodep->lhsp()->dtypep());
     }
     void visit(AstNodeDType* nodep) override {
@@ -73,7 +73,8 @@ class CUseVisitor final : public VNVisitorConst {
         if (stypep && stypep->classOrPackagep()) {
             addNewUse(nodep, VUseType::INT_INCLUDE, stypep->classOrPackagep()->name());
             iterateChildrenConst(stypep);
-        } else if (AstClassRefDType* const classp = VN_CAST(nodep->skipRefp(), ClassRefDType)) {
+        } else if (const AstClassRefDType* const classp
+                   = VN_CAST(nodep->skipRefp(), ClassRefDType)) {
             addNewUse(nodep, VUseType::INT_FWD_CLASS, classp->name());
         }
     }
@@ -92,13 +93,13 @@ class CUseVisitor final : public VNVisitorConst {
 public:
     // CONSTRUCTORS
     explicit CUseVisitor(AstNodeModule* modp)
-        : m_modp(modp) {
+        : m_modp{modp} {
         iterateConst(modp);
 
-        for (auto& used : m_didUse) {
+        for (const auto& used : m_didUse) {
             AstCUse* const newp = new AstCUse{used.second.first, used.second.second, used.first};
             m_modp->addStmtsp(newp);
-            UINFO(8, "Insert " << newp << endl);
+            UINFO(8, "Insert " << newp);
         }
     }
     ~CUseVisitor() override = default;
@@ -109,7 +110,7 @@ public:
 // Class class functions
 
 void V3CUse::cUseAll() {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     // Call visitor separately for each module, so visitor state is cleared
     for (AstNodeModule* modp = v3Global.rootp()->modulesp(); modp;
          modp = VN_AS(modp->nextp(), NodeModule)) {

@@ -1,22 +1,21 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2010 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2010 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 interface ifc;
-   logic [3:0] value;
-   logic       reset;
-   modport counter_mp (input reset, output value);
-   modport core_mp (output reset, input value);
+  logic [3:0] value;
+  logic reset;
+  modport counter_mp(input reset, output value);
+  modport core_mp(output reset, input value);
 endinterface
 
-module t
-  (// Inputs
-   input clk,
-   ifc.counter_mp c_data
-   );
+module t (  // Inputs
+    input clk,
+    ifc.counter_mp c_data
+);
 
-   integer cyc=1;
+  integer cyc = 1;
 
 endmodule

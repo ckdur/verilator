@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2020 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2020 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 class Base;
@@ -11,27 +11,31 @@ endclass
 class ExbaseB extends Base;
 endclass
 
-module t (/*AUTOARG*/);
-   int i;
+module t;
+  int i;
 
-   Base b;
-   ExbaseA ba, ba1;
-   ExbaseB bb, bb1;
+  Base b;
+  ExbaseA ba, ba1;
+  ExbaseB bb, bb1;
 
-   initial begin
-      ba = new;
-      b = ba;
-      i = $cast(ba1, b);
-      if (i != 1) $stop;
-      $cast(ba1, b);  // ok at runtime
+  initial begin
+    ba = new;
+    b = ba;
+    i = $cast(ba1, b);
+    if (i != 1) $stop;
+    $cast(ba1, b);  // ok at runtime
 
-      bb = new;
-      b = bb;
-      i = $cast(ba1, b);
-      if (i != 0) $stop;
-      $cast(ba1, b);
+    b = null;
+    $cast(ba1, b);  // no failure on null
 
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+    bb = new;
+    b = bb;
+    i = $cast(ba1, b);
+    if (i != 0) $stop;
+    void'($cast(ba1, b));  // ok as is function
+    $cast(ba1, b);  // <-- Bad $cast task
+
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 endmodule

@@ -1,19 +1,21 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
-module t (/*AUTOARG*/);
+module t;
 
-   class bar #(type T) extends T;
-   endclass
+  class bar #(
+      type T
+  ) extends T;
+  endclass
 
-   typedef real real_t;
+  typedef real real_t;
 
-   bar #(real_t) bar_real_t;
+  bar #(real_t) bar_real_t;
 
-   initial begin
-      $stop;
-   end
+  initial begin
+    $stop;
+  end
 endmodule

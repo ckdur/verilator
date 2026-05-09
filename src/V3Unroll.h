@@ -1,15 +1,15 @@
 // -*- mode: C++; c-file-style: "cc-mode" -*-
 //*************************************************************************
-// DESCRIPTION: Verilator: Pre C-Emit stage changes
+// DESCRIPTION: Verilator: Loop unroller
 //
 // Code available from: https://verilator.org
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -24,25 +24,24 @@
 #include "V3Error.h"
 
 //============================================================================
-/// Unroller with saved state, so caller can determine when pushDelete's are executed.
+// Generate loop unroller
 
-class UnrollVisitor;
+class UnrollGenVisitor;
 
-class UnrollStateful final {
+class GenForUnroller final {
     // MEMBERS
-    UnrollVisitor* const m_unrollerp;
-    VL_UNCOPYABLE(UnrollStateful);
+    UnrollGenVisitor* const m_unrollerp;
 
 public:
-    // CONSTRUCTORS
-    UnrollStateful() VL_MT_DISABLED;
-    ~UnrollStateful() VL_MT_DISABLED;
+    // CONSTRUCTOR
+    GenForUnroller() VL_MT_DISABLED;
+    ~GenForUnroller() VL_MT_DISABLED;
     // METHODS
-    void unrollGen(AstNodeFor* nodep, const string& beginName) VL_MT_DISABLED;
-    void unrollAll(AstNetlist* nodep) VL_MT_DISABLED;
+    void unroll(AstGenFor* nodep, const std::string& beginName) VL_MT_DISABLED;
 };
 
 //============================================================================
+// Loop statement unroller
 
 class V3Unroll final {
 public:

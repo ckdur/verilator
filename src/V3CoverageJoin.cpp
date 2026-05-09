@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -44,11 +44,11 @@ class CoverageJoinVisitor final : public VNVisitor {
     // METHODS
 
     void detectDuplicates() {
-        UINFO(9, "Finding duplicates\n");
+        UINFO(9, "Finding duplicates");
         // Note uses user4
         V3DupFinder dupFinder;  // Duplicate code detection
         // Hash all of the original signals we toggle cover
-        for (AstCoverToggle* nodep : m_toggleps) dupFinder.insert(nodep->origp());
+        for (const AstCoverToggle* const nodep : m_toggleps) dupFinder.insert(nodep->origp());
         if (dumpLevel() || debug() >= 9)
             dupFinder.dumpFile(v3Global.debugFilename("coveragejoin") + ".hash", false);
         // Find if there are any duplicates
@@ -70,14 +70,14 @@ class CoverageJoinVisitor final : public VNVisitor {
                 // covertoggle which is immediately above, so:
                 AstCoverToggle* const removep = VN_AS(duporigp->backp(), CoverToggle);
                 UASSERT_OBJ(removep, nodep, "CoverageJoin duplicate of wrong type");
-                UINFO(8, "  Orig " << nodep << " -->> " << nodep->incp()->declp() << endl);
-                UINFO(8, "   dup " << removep << " -->> " << removep->incp()->declp() << endl);
+                UINFO(8, "  Orig " << nodep << " -->> " << nodep->incp()->declp());
+                UINFO(8, "   dup " << removep << " -->> " << removep->incp()->declp());
                 // The CoverDecl the duplicate pointed to now needs to point to the
                 // original's data. I.e. the duplicate will get the coverage number
                 // from the non-duplicate
-                AstCoverDecl* const datadeclp = nodep->incp()->declp()->dataDeclThisp();
+                AstNodeCoverDecl* const datadeclp = nodep->incp()->declp()->dataDeclThisp();
                 removep->incp()->declp()->dataDeclp(datadeclp);
-                UINFO(8, "   new " << removep->incp()->declp() << endl);
+                UINFO(8, "   new " << removep->incp()->declp());
                 // Mark the found node as a duplicate of the first node
                 // (Not vice-versa as we have the iterator for the found node)
                 removep->unlinkFrBack();
@@ -115,7 +115,7 @@ public:
 // Coverage class functions
 
 void V3CoverageJoin::coverageJoin(AstNetlist* rootp) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { CoverageJoinVisitor{rootp}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("coveragejoin", 0, dumpTreeEitherLevel() >= 3);
 }

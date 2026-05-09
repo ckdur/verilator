@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2009-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2009-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -20,11 +20,11 @@
 #include "config_build.h"
 #include "verilatedos.h"
 
+#include "V3Ast.h"
 #include "V3Error.h"
 #include "V3FileLine.h"
 #include "V3Global.h"
 #include "V3Parse.h"
-#include "V3ParseSym.h"
 
 #include <algorithm>
 #include <deque>
@@ -38,6 +38,8 @@ class V3Lexer;
 // Types (between parser & lexer)
 
 enum V3UniqState : uint8_t { uniq_NONE, uniq_UNIQUE, uniq_UNIQUE0, uniq_PRIORITY };
+
+enum V3TaggedState : uint8_t { tagged_NONE, tagged_SOFT, tagged_TAGGED };
 
 enum V3ImportProperty : uint8_t { iprop_NONE, iprop_CONTEXT, iprop_PURE };
 
@@ -93,7 +95,7 @@ struct VMemberQualifiers final {
             if (m_randc) nodep->rand(VRandAttr::RAND_CYCLIC);
             if (m_local) nodep->isHideLocal(true);
             if (m_protected) nodep->isHideProtected(true);
-            if (m_static) nodep->lifetime(VLifetime::STATIC);
+            if (m_static) nodep->lifetime(VLifetime::STATIC_EXPLICIT);
             if (m_const) nodep->isConst(true);
             if (m_virtual) {
                 nodep->v3error("Syntax error: 'virtual' not allowed before var declaration");
@@ -107,26 +109,29 @@ struct VMemberQualifiers final {
 // We can't use bison's %union as we want to pass the fileline with all tokens
 
 struct V3ParseBisonYYSType final {
-    FileLine* fl;
-    AstNode* scp;  // Symbol table scope for future lookups
-    int token;  // Read token, aka tok
+    FileLine* fl = nullptr;
+    int token = 0;  // Read token, aka tok
     VBaseOverride baseOverride;
+    bool flag = false;  // Passed up some rules
     union {
         V3Number* nump;
-        string* strp;
+        std::string* strp;
         int cint;
         double cdouble;
         bool cbool;
         VMemberQualifiers qualifiers;
         V3UniqState uniqstate;
+        V3TaggedState taggedstate;
         V3ImportProperty iprop;
         VSigning::en signstate;
         V3ErrorCode::en errcodeen;
         VAttrType::en attrtypeen;
         VAssertType::en asserttypeen;
         VAssertDirectiveType::en assertdirectivetypeen;
+        VFwdType::en fwdtype;
         VLifetime::en lifetime;
         VStrength::en strength;
+        VJoinType::en joinType;
 
 #include "V3Ast__gen_yystype.h"
     };
@@ -141,7 +146,6 @@ class V3ParseImp final {
     // MEMBERS
     AstNetlist* const m_rootp;  // Root of the design
     VInFilter* const m_filterp;  // Reading filter
-    V3ParseSym* m_symp;  // Symbol table
 
     V3Lexer* m_lexerp = nullptr;  // Current FlexLexer
     static V3ParseImp* s_parsep;  // Current THIS, bison() isn't class based
@@ -150,13 +154,15 @@ class V3ParseImp final {
     FileLine* m_bisonLastFileline = nullptr;  // Filename/linenumber of last token
 
     bool m_inLibrary = false;  // Currently reading a library vs. regular file
+    bool m_inLibMap = false;  // Currently reading a libmap file
+    string m_libname;  // Config library name (or --work)
     int m_lexKwdDepth = 0;  // Inside a `begin_keywords
     int m_lexKwdLast;  // Last LEX state in `begin_keywords
     VOptionBool m_unconnectedDrive;  // Last unconnected drive
 
     int m_lexPrevToken = 0;  // previous parsed token (for lexer)
     bool m_afterColonColon = false;  // The previous token was '::'
-    V3ParseBisonYYSType m_tokenLastBison;  // Token we last sent to Bison
+    V3ParseBisonYYSType m_tokenLastBison{};  // Token we last sent to Bison
     std::deque<V3ParseBisonYYSType> m_tokensAhead;  // Tokens we parsed ahead of parser
 
     std::deque<string*> m_stringps;  // Created strings for later cleanup
@@ -167,6 +173,7 @@ class V3ParseImp final {
 
     AstNode* m_tagNodep = nullptr;  // Points to the node to set to m_tag or nullptr to not set.
     VTimescale m_timeLastUnit;  // Last `timescale's unit
+    VTimescale m_timeLastPrec;  // Last `timescale's precision
 
 public:
     VL_DEFINE_DEBUG_FUNCTIONS;
@@ -181,9 +188,10 @@ public:
     void tagNodep(AstNode* nodep) { m_tagNodep = nodep; }
     AstNode* tagNodep() const { return m_tagNodep; }
     void lexTimescaleParse(FileLine* fl, const char* textp) VL_MT_DISABLED;
-    void timescaleMod(FileLine* fl, AstNodeModule* modp, bool unitSet, double unitVal,
-                      bool precSet, double precVal) VL_MT_DISABLED;
+    AstPragma* createTimescale(FileLine* fl, bool unitSet, double unitVal, bool precSet,
+                               double precVal) VL_MT_DISABLED;
     VTimescale timeLastUnit() const { return m_timeLastUnit; }
+    VTimescale timeLastPrec() const { return m_timeLastPrec; }
 
     void lexFileline(FileLine* fl) { m_lexFileline = fl; }
     FileLine* lexFileline() const { return m_lexFileline; }
@@ -191,7 +199,7 @@ public:
     static string lexParseTag(const char* textp) VL_MT_DISABLED;
     static double lexParseTimenum(const char* text) VL_MT_DISABLED;
     void lexPpline(const char* textp) VL_MT_DISABLED;
-    void lexVerilatorCmtLint(FileLine* fl, const char* textp, bool warnOff) VL_MT_DISABLED;
+    void lexVerilatorCmtLint(FileLine* fl, const char* textp, bool turnOff) VL_MT_DISABLED;
     void lexVerilatorCmtLintSave(const FileLine* fl) VL_MT_DISABLED;
     void lexVerilatorCmtLintRestore(FileLine* fl) VL_MT_DISABLED;
     static void lexVerilatorCmtBad(FileLine* fl, const char* textp) VL_MT_DISABLED;
@@ -204,9 +212,8 @@ public:
         if (m_lexKwdDepth) {
             --m_lexKwdDepth;
             return true;
-        } else {
-            return false;
         }
+        return false;
     }
     int lexKwdLastState() const { return m_lexKwdLast; }
     static const char* tokenName(int tok) VL_MT_DISABLED;
@@ -237,14 +244,21 @@ public:
         return strp;
     }
     string* newString(const char* text, size_t length) {
-        string* const strp = new string(text, length);
+        string* const strp = new string(text, length);  // Need () constructor
         m_stringps.push_back(strp);
         return strp;
     }
     V3Number* newNumber(FileLine* flp, const char* text) {
-        V3Number* nump = new V3Number{flp, text};
+        V3Number* nump = new V3Number{flp, V3Number::VerilogNumberLiteral{}, text};
         m_numberps.push_back(nump);
         return nump;
+    }
+
+    // For 'unique if' cannot have empty else statements as then assertion
+    // would misfire
+    AstNode* newBlock(FileLine* fl, AstNode* nodep) {
+        if (nodep) return nodep;
+        return new AstBegin{fl, "", nullptr, true};
     }
 
     // Bison sometimes needs error context without a token, so remember last token's line
@@ -253,7 +267,9 @@ public:
 
     // Return next token, for bison, since bison isn't class based, use a global THIS
     AstNetlist* rootp() const { return m_rootp; }
+    bool inLibMap() const { return m_inLibMap; }
     bool inLibrary() const { return m_inLibrary; }
+    string libname() const { return m_libname; }
     VOptionBool unconnectedDrive() const { return m_unconnectedDrive; }
     void unconnectedDrive(const VOptionBool flag) { m_unconnectedDrive = flag; }
 
@@ -268,29 +284,15 @@ public:
     size_t flexPpInputToLex(char* buf, size_t max_size) { return ppInputToLex(buf, max_size); }
 
     //==== Symbol tables
-    V3ParseSym* symp() { return m_symp; }
-    AstPackage* unitPackage(FileLine* /*fl*/) {
-        // Find one made earlier?
-        const VSymEnt* const rootSymp
-            = symp()->symRootp()->findIdFlat(AstPackage::dollarUnitName());
-        AstPackage* pkgp;
-        if (!rootSymp) {
-            pkgp = parsep()->rootp()->dollarUnitPkgAddp();
-            symp()->reinsert(pkgp, symp()->symRootp());  // Don't push/pop scope as they're global
-        } else {
-            pkgp = VN_AS(rootSymp->nodep(), Package);
-        }
-        return pkgp;
-    }
+    AstPackage* unitPackage(FileLine* /*fl*/) { return parsep()->rootp()->dollarUnitPkgAddp(); }
 
-public:
     // CONSTRUCTORS
-    V3ParseImp(AstNetlist* rootp, VInFilter* filterp, V3ParseSym* parserSymp)
+    V3ParseImp(AstNetlist* rootp, VInFilter* filterp)
         : m_rootp{rootp}
-        , m_filterp{filterp}
-        , m_symp{parserSymp} {
+        , m_filterp{filterp} {
         m_lexKwdLast = stateVerilogRecent();
         m_timeLastUnit = v3Global.opt.timeDefaultUnit();
+        m_timeLastPrec = v3Global.opt.timeDefaultPrec();
     }
     ~V3ParseImp() VL_MT_DISABLED;
     void parserClear() VL_MT_DISABLED;
@@ -300,24 +302,28 @@ public:
     // Preprocess and read the Verilog file specified into the netlist database
     int tokenToBison() VL_MT_DISABLED;  // Pass token to bison
 
-    void parseFile(FileLine* fileline, const string& modfilename, bool inLibrary,
-                   const string& errmsg) VL_MT_DISABLED;
+    void parseFile(FileLine* fileline, const string& modfilename, bool inLibrary, bool inLibMap,
+                   const string& libname, const string& errmsg) VL_MT_DISABLED;
     void dumpInputsFile() VL_MT_DISABLED;
+    void dumpTokensAhead(int line) VL_MT_DISABLED;
     static void candidatePli(VSpellCheck* spellerp) VL_MT_DISABLED;
+    void importIfInStd(FileLine* fileline, const string& id, bool doImport);
 
 private:
     void preprocDumps(std::ostream& os);
     void lexFile(const string& modname) VL_MT_DISABLED;
     void yylexReadTok() VL_MT_DISABLED;
-    void importIfInStd(FileLine* fileline, const string& id);
     void tokenPull() VL_MT_DISABLED;
     void tokenPipeline() VL_MT_DISABLED;  // Internal; called from tokenToBison
     int tokenPipelineId(int token) VL_MT_DISABLED;
     void tokenPipelineSym() VL_MT_DISABLED;
-    size_t tokenPipeScanIdCell(size_t depth) VL_MT_DISABLED;
+    size_t tokenPipeScanIdInst(size_t depth) VL_MT_DISABLED;
+    size_t tokenPipeScanIdType(size_t depth) VL_MT_DISABLED;
     size_t tokenPipeScanBracket(size_t depth) VL_MT_DISABLED;
-    size_t tokenPipeScanParam(size_t depth, bool forCell) VL_MT_DISABLED;
-    size_t tokenPipeScanTypeEq(size_t depth) VL_MT_DISABLED;
+    size_t tokenPipeScanParam(size_t depth, bool forInst) VL_MT_DISABLED;
+    size_t tokenPipeScanParens(size_t depth) VL_MT_DISABLED;
+    size_t tokenPipeScanEqNew(size_t depth) VL_MT_DISABLED;
+    bool tokenPipeScanTaggedFollowsPrimary(size_t depth) VL_MT_DISABLED;
     const V3ParseBisonYYSType* tokenPeekp(size_t depth) VL_MT_DISABLED;
     void preprocDumps(std::ostream& os, bool forInputs) VL_MT_DISABLED;
 };

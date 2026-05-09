@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -36,9 +36,9 @@ EmitCParentModule::EmitCParentModule() {
 }
 
 //######################################################################
-// EmitCBase implementation
+// EmitCUtil implementation
 
-string EmitCBase::prefixNameProtect(const AstNode* nodep) VL_MT_STABLE {
+string EmitCUtil::prefixNameProtect(const AstNode* nodep) VL_MT_STABLE {
     const string prefix = v3Global.opt.modPrefix() + "_" + VIdProtect::protect(nodep->name());
     // If all-uppercase prefix conflicts with a previous usage of the
     // prefix with different capitalization, rename to avoid conflict.
@@ -78,13 +78,13 @@ string EmitCBaseVisitorConst::funcNameProtect(const AstCFunc* nodep, const AstNo
     modp = modp ? modp : EmitCParentModule::get(nodep);
     string name;
     if (nodep->isConstructor()) {
-        name += prefixNameProtect(modp);
+        name += "init";
     } else if (nodep->isDestructor()) {
         name += "~";
-        name += prefixNameProtect(modp);
+        name += EmitCUtil::prefixNameProtect(modp);
     } else {
         if (nodep->isLoose()) {
-            name += prefixNameProtect(modp);
+            name += EmitCUtil::prefixNameProtect(modp);
             name += "__";
         }
         name += nodep->nameProtect();
@@ -92,27 +92,12 @@ string EmitCBaseVisitorConst::funcNameProtect(const AstCFunc* nodep, const AstNo
     return name;
 }
 
-AstCFile* EmitCBaseVisitorConst::newCFile(const string& filename, bool slow, bool source) {
-    AstCFile* const cfilep = createCFile(filename, slow, source);
-    v3Global.rootp()->addFilesp(cfilep);
-    return cfilep;
-}
-
-AstCFile* EmitCBaseVisitorConst::createCFile(const string& filename, bool slow,
-                                             bool source) VL_MT_SAFE {
-    AstCFile* const cfilep = new AstCFile{v3Global.rootp()->fileline(), filename};
-    cfilep->slow(slow);
-    cfilep->source(source);
-    if (source) V3Stats::addStatSum(V3Stats::STAT_CPP_FILES, 1);
-    return cfilep;
-}
-
 string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep) {
     // Return argument list for given C function
     string args;
     if (nodep->isLoose() && !nodep->isStatic()) {
         if (nodep->isConst().trueKnown()) args += "const ";
-        args += prefixNameProtect(EmitCParentModule::get(nodep));
+        args += EmitCUtil::prefixNameProtect(EmitCParentModule::get(nodep));
         args += "* vlSelf";
     }
     if (nodep->needProcess()) {
@@ -127,7 +112,7 @@ string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep) {
     for (const AstNode* stmtp = nodep->argsp(); stmtp; stmtp = stmtp->nextp()) {
         if (const AstVar* const portp = VN_CAST(stmtp, Var)) {
             if (portp->isIO() && !portp->isFuncReturn()) {
-                if (args != "") args += ", ";
+                if (!args.empty()) args += ", ";
                 if (nodep->dpiImportPrototype() || nodep->dpiExportDispatcher()) {
                     args += portp->dpiArgType(true, false);
                 } else if (nodep->funcPublic()) {
@@ -141,18 +126,23 @@ string EmitCBaseVisitorConst::cFuncArgs(const AstCFunc* nodep) {
     return args;
 }
 
+void EmitCBaseVisitorConst::emitCDefaultConstructor(const AstNodeModule* const modp) {
+    puts(EmitCUtil::prefixNameProtect(modp));
+    puts("() = default;\n");
+}
+
 void EmitCBaseVisitorConst::emitCFuncHeader(const AstCFunc* funcp, const AstNodeModule* modp,
                                             bool withScope) {
     if (funcp->slow()) putns(funcp, "VL_ATTR_COLD ");
-    if (!funcp->isConstructor() && !funcp->isDestructor()) {
+    if (!funcp->isDestructor()) {
         putns(funcp, funcp->rtnTypeVoid());
         puts(" ");
     }
     if (withScope) {
         if (funcp->dpiExportDispatcher()) {
-            putns(funcp, topClassName() + "::");
+            putns(funcp, EmitCUtil::topClassName() + "::");
         } else if (funcp->isProperMethod()) {
-            putns(funcp, prefixNameProtect(modp) + "::");
+            putns(funcp, EmitCUtil::prefixNameProtect(modp) + "::");
         }
     }
     putns(funcp, funcNameProtect(funcp, modp));
@@ -164,14 +154,19 @@ void EmitCBaseVisitorConst::emitCFuncDecl(const AstCFunc* funcp, const AstNodeMo
                                           bool cLinkage) {
     ensureNewLine();
     if (!funcp->ifdef().empty()) putns(funcp, "#ifdef " + funcp->ifdef() + "\n");
+    if (funcp->isConstructor()) emitCDefaultConstructor(modp);
     if (cLinkage) putns(funcp, "extern \"C\" ");
     if (funcp->isStatic() && funcp->isProperMethod()) putns(funcp, "static ");
     if (funcp->isVirtual()) {
         UASSERT_OBJ(funcp->isProperMethod(), funcp, "Virtual function is not a proper method");
         putns(funcp, "virtual ");
+        // Intentionally no emit for "override" instead, as clang will then enable warning
+        // on other methods where virtual vs override is needed, and this is not tracked yet
     }
     emitCFuncHeader(funcp, modp, /* withScope: */ false);
-    if (funcp->emptyBody() && !funcp->isLoose() && !cLinkage) {
+    const AstClass* const classp = VN_CAST(modp, Class);
+    if (funcp->emptyBody() && !funcp->isLoose() && !cLinkage
+        && !(funcp->isConstructor() && classp && classp->isInterfaceClass())) {
         putns(funcp, " {}\n");
     } else {
         putns(funcp, ";\n");
@@ -181,7 +176,7 @@ void EmitCBaseVisitorConst::emitCFuncDecl(const AstCFunc* funcp, const AstNodeMo
 
 void EmitCBaseVisitorConst::emitVarDecl(const AstVar* nodep, bool asRef) {
     const AstBasicDType* const basicp = nodep->basicp();
-    bool refNeedParens = VN_IS(nodep->dtypeSkipRefp(), UnpackArrayDType);
+    const bool refNeedParens = VN_IS(nodep->dtypeSkipRefp(), UnpackArrayDType);
 
     const auto emitDeclArrayBrackets = [this](const AstVar* nodep) -> void {
         // This isn't very robust and may need cleanup for other data types
@@ -191,23 +186,19 @@ void EmitCBaseVisitorConst::emitVarDecl(const AstVar* nodep, bool asRef) {
         }
     };
 
-    if (nodep->isIO() && nodep->isSc()) {
+    if (nodep->isPrimaryIO() && nodep->isSc()) {
         UASSERT_OBJ(basicp, nodep, "Unimplemented: Outputting this data type");
-        if (nodep->attrScClocked() && nodep->isReadOnly()) {
-            putns(nodep, "sc_core::sc_in_clk ");
+        if (nodep->isInout()) {
+            putns(nodep, "sc_core::sc_inout<");
+        } else if (nodep->isWritable()) {
+            putns(nodep, "sc_core::sc_out<");
+        } else if (nodep->isNonOutput()) {
+            putns(nodep, "sc_core::sc_in<");
         } else {
-            if (nodep->isInout()) {
-                putns(nodep, "sc_core::sc_inout<");
-            } else if (nodep->isWritable()) {
-                putns(nodep, "sc_core::sc_out<");
-            } else if (nodep->isNonOutput()) {
-                putns(nodep, "sc_core::sc_in<");
-            } else {
-                nodep->v3fatalSrc("Unknown type");
-            }
-            puts(nodep->scType());
-            puts("> ");
+            nodep->v3fatalSrc("Unknown type");
         }
+        puts(nodep->scType());
+        puts("> ");
         if (asRef) {
             if (refNeedParens) putns(nodep, "(");
             putns(nodep, "&");
@@ -216,7 +207,7 @@ void EmitCBaseVisitorConst::emitVarDecl(const AstVar* nodep, bool asRef) {
         if (asRef && refNeedParens) puts(")");
         emitDeclArrayBrackets(nodep);
         puts(";\n");
-    } else if (nodep->isIO() && basicp && !basicp->isOpaque()) {
+    } else if (nodep->isVLIO()) {
         if (nodep->isInout()) {
             putns(nodep, "VL_INOUT");
         } else if (nodep->isWritable()) {
@@ -278,33 +269,35 @@ void EmitCBaseVisitorConst::emitVarAccessors(const AstVar* nodep) {
 
 void EmitCBaseVisitorConst::emitModCUse(const AstNodeModule* modp, VUseType useType) {
     bool nl = false;
-    forModCUse(modp, useType, [&](string entry) {
+    forModCUse(modp, useType, [&](const string& entry) {
         puts(entry);
         nl = true;
     });
     if (nl) puts("\n");
 }
 
-std::pair<string, FileLine*> EmitCBaseVisitorConst::textSection(const AstNodeModule* modp,
-                                                                VNType type) {
-    if (!v3Global.hasSCTextSections()) return std::make_pair("", nullptr);
+std::pair<string, FileLine*> EmitCBaseVisitorConst::scSection(const AstNodeModule* modp,
+                                                              VSystemCSectionType type) {
+    if (!v3Global.hasSystemCSections()) return std::make_pair("", nullptr);
     string text;
     FileLine* fl = nullptr;
     int last_line = -999;
     for (AstNode* nodep = modp->stmtsp(); nodep; nodep = nodep->nextp()) {
-        if (nodep->type() != type) continue;
-        if (const AstNodeText* const textp = VN_CAST(nodep, NodeText)) {
-            if (text.empty()) {
-                fl = textp->fileline();
-                text += "\n";
-                if (v3Global.opt.decoration())
-                    text += "\n//*** Below code from `systemc in Verilog file\n";
+        const AstSystemCSection* const ssp = VN_CAST(nodep, SystemCSection);
+        if (!ssp) continue;
+        if (ssp->sectionType() != type) continue;
+        if (text.empty()) {
+            fl = ssp->fileline();
+            text += "\n";
+            if (v3Global.opt.decoration()) {
+                text += "\n//*** Below code from `systemc in Verilog file\n";
             }
-            if (last_line + 1 != nodep->fileline()->lineno() && v3Global.opt.decoration())
-                text += "// From `systemc at " + nodep->fileline()->ascii() + "\n";
-            last_line = textp->fileline()->lineno();
-            text += textp->text();
         }
+        if (last_line + 1 != nodep->fileline()->lineno() && v3Global.opt.decoration()) {
+            text += "// From `systemc at " + nodep->fileline()->ascii() + "\n";
+        }
+        last_line = ssp->fileline()->lineno();
+        text += ssp->text();
     }
     if (!text.empty()) {
         if (v3Global.opt.decoration()) text += "//*** Above code from `systemc in Verilog file\n";
@@ -313,15 +306,16 @@ std::pair<string, FileLine*> EmitCBaseVisitorConst::textSection(const AstNodeMod
         string::size_type pos;
         while ((pos = text.find("`systemc_class_name")) != string::npos) {
             text.replace(pos, std::strlen("`systemc_class_name"),
-                         EmitCBase::prefixNameProtect(modp));
+                         EmitCUtil::prefixNameProtect(modp));
         }
     }
     return std::make_pair(text, fl);
 }
 
-void EmitCBaseVisitorConst::emitTextSection(const AstNodeModule* modp, VNType type) {
+void EmitCBaseVisitorConst::emitSystemCSection(const AstNodeModule* modp,
+                                               VSystemCSectionType type) {
     // Short circuit if nothing to do. This can save a lot of time on large designs as this
     // function needs to traverse the entire module linearly.
-    auto textAndFileline = textSection(modp, type);
+    auto textAndFileline = scSection(modp, type);
     if (!textAndFileline.first.empty()) ofp()->putsNoTracking(textAndFileline.first);
 }

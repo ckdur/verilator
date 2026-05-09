@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
 
 test.scenarios('vltmt')
 
-root = ".."
-
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 
 test.compile(
     # Can't use --coverage and --savable together, so cheat and compile inline
     verilator_flags2=[
-        "--cc", "--coverage-toggle --coverage-line --coverage-user",
-        "--trace-vcd --vpi ", "--trace-threads 1",
+        "--cc", "--coverage-toggle --coverage-line --coverage-user", "--trace-vcd --vpi ",
         ("--timing" if test.have_coroutines else "--no-timing -Wno-STMTDLY"), "--prof-exec",
-        "--prof-pgo", root + "/include/verilated_save.cpp"
+        "--prof-pgo", test.root + "/include/verilated_save.cpp"
     ],
     threads=2)
 
@@ -30,7 +27,8 @@ test.execute(
     all_run_flags=[" +verilator+prof+exec+file+/dev/null", " +verilator+prof+vlt+file+/dev/null"])
 
 hit = {}
-for filename in (test.glob_some(root + "/include/*.cpp") + test.glob_some(root + "/include/*.h")):
+for filename in (test.glob_some(test.root + "/include/*.cpp") +
+                 test.glob_some(test.root + "/include/*.h")):
     filename = os.path.basename(filename)
     if test.verbose:
         print("NEED: " + filename)

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -97,7 +97,7 @@ class HasherVisitor final : public VNVisitorConst {
 
     void visit(AstNode* nodep) override {
 #if VL_DEBUG
-        UINFO(0, "%Warning: Hashing node as AstNode: " << nodep << endl);
+        UINFO(0, "%Warning: Hashing node as AstNode: " << nodep);
 #endif
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, [=]() {});
     }
@@ -215,6 +215,11 @@ class HasherVisitor final : public VNVisitorConst {
     void visit(AstNodeExpr* nodep) override {
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
     }
+    void visit(AstSel* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, [this, nodep]() {  //
+            m_hash += nodep->widthConst();
+        });
+    }
     void visit(AstConst* nodep) override {
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, [this, nodep]() {  //
             m_hash += nodep->num().toHash();
@@ -270,15 +275,13 @@ class HasherVisitor final : public VNVisitorConst {
     void visit(AstNodeStmt* nodep) override {
         m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, []() {});
     }
-    void visit(AstNodeText* nodep) override {
-        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
-            m_hash += nodep->text();
-        });
-    }
     void visit(AstNodeCCall* nodep) override {
         m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
             iterateConstNull(nodep->funcp());
         });
+    }
+    void visit(AstCaseItem* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, []() {});
     }
     void visit(AstNodeFTaskRef* nodep) override {
         m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {
@@ -288,12 +291,12 @@ class HasherVisitor final : public VNVisitorConst {
     }
     void visit(AstCMethodHard* nodep) override {
         m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
-            m_hash += nodep->name();
+            m_hash += nodep->method();
         });
     }
     void visit(AstCAwait* nodep) override {
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, [this, nodep]() {  //
-            iterateConstNull(nodep->sensesp());
+            iterateConstNull(nodep->sentreep());
         });
     }
     void visit(AstCLocalScope* nodep) override {
@@ -315,9 +318,7 @@ class HasherVisitor final : public VNVisitorConst {
         });
     }
     void visit(AstJumpGo* nodep) override {
-        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
-            iterateConstNull(nodep->labelp());
-        });
+        m_hash += hashNodeAndIterate(nodep, false, false, []() {});
     }
     void visit(AstTraceInc* nodep) override {
         m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
@@ -346,7 +347,7 @@ class HasherVisitor final : public VNVisitorConst {
     void visit(AstClassExtends* nodep) override {
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
     }
-    void visit(AstSelLoopVars* nodep) override {
+    void visit(AstForeachHeader* nodep) override {
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
     }
     void visit(AstDefParam* nodep) override {
@@ -356,8 +357,7 @@ class HasherVisitor final : public VNVisitorConst {
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
     }
     void visit(AstParseRef* nodep) override {
-        m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, [this, nodep]() {
-            m_hash += nodep->expect();
+        m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, [this, nodep]() {  //
             m_hash += nodep->name();
         });
     }
@@ -477,7 +477,7 @@ class HasherVisitor final : public VNVisitorConst {
     }
     void visit(AstActive* nodep) override {
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, [this, nodep]() {  //
-            iterateConstNull(nodep->sensesp());
+            iterateConstNull(nodep->sentreep());
         });
     }
     void visit(AstCell* nodep) override {
@@ -516,15 +516,18 @@ class HasherVisitor final : public VNVisitorConst {
             iterateConstNull(nodep->ftaskp());
         });
     }
-    void visit(AstMTaskBody* nodep) override {
-        m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
-    }
     void visit(AstNodeProcedure* nodep) override {
         m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
     }
-    void visit(AstNodeBlock* nodep) override {
-        m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, [this, nodep]() {  //
+    void visit(AstBegin* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
             m_hash += nodep->name();
+        });
+    }
+    void visit(AstFork* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
+            m_hash += nodep->name();
+            m_hash += nodep->joinType();
         });
     }
     void visit(AstPin* nodep) override {
@@ -532,6 +535,33 @@ class HasherVisitor final : public VNVisitorConst {
             m_hash += nodep->name();
             m_hash += nodep->pinNum();
         });
+    }
+    void visit(AstText* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
+            m_hash += nodep->text();
+        });
+    }
+    void visit(AstTextBlock* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, [this, nodep]() {  //
+            m_hash += nodep->prefix();
+            m_hash += nodep->separator();
+            m_hash += nodep->suffix();
+        });
+    }
+    void visit(AstCStmt* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, []() {});
+    }
+    void visit(AstCStmtUser* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, false, HASH_CHILDREN, []() {});
+    }
+    void visit(AstCExpr* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
+    }
+    void visit(AstCExprUser* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
+    }
+    void visit(AstWith* nodep) override {
+        m_hash += hashNodeAndIterate(nodep, HASH_DTYPE, HASH_CHILDREN, []() {});
     }
 
 public:

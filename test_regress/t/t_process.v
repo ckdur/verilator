@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2020 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2020 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 // Methods defined by IEEE:
@@ -18,29 +18,29 @@
 //     function void set_randstate( string state );  // Operate on all proceses for now?
 //   endclass
 
-module t(/*AUTOARG*/);
-   process p;
+module t;
+  process p;
 
-   initial begin
-      if (p != null) $stop;
-      p = process::self();
-      if (p.status() != process::RUNNING) $stop;
-      if (p.status() == process::WAITING) $stop;
-      if (p.status() == process::SUSPENDED) $stop;
-      if (p.status() == process::KILLED) $stop;
-      if (p.status() == process::FINISHED) $stop;
+  initial begin
+    if (p != null) $stop;
+    p = process::self();
+    if (p.status() != process::RUNNING) $stop;
+    if (p.status() == process::WAITING) $stop;
+    if (p.status() == process::SUSPENDED) $stop;
+    if (p.status() == process::KILLED) $stop;
+    if (p.status() == process::FINISHED) $stop;
 
-      if (0) p.kill();
-      if (0) p.await();
-      if (0) p.suspend();
-      if (0) p.resume();
-      // See also t_urandom.py
-      p.srandom(0);
-      p.set_randstate(p.get_randstate());
+    if (0) p.kill();
+    if (0) p.await();
+    if (0) p.suspend();
+    if (0) p.resume();
+    // See also t_urandom.py
+    p.srandom(0);
+    p.set_randstate(p.get_randstate());
 
-      $display("%p", p);
+    $display("%p", p);
 
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 endmodule

@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 // Methods defined by IEEE:
@@ -17,17 +17,17 @@
 //  endclass
 
 `ifndef MAILBOX_T
- `define MAILBOX_T mailbox
+`define MAILBOX_T mailbox
 `endif
 
 // verilator lint_off DECLFILENAME
-module t(/*AUTOARG*/);
-   `MAILBOX_T #(int) m;
+module t;
+  `MAILBOX_T #(int) m;
 
-   initial begin
-      m = new(4);
-      if (m.num() != 0) $stop;
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+  initial begin
+    m = new(4);
+    if (m.num() != 0) $stop;
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 endmodule

@@ -1,13 +1,13 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2024 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2024 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
 `define check_rand(cl, field) \
 begin \
-   longint prev_result; \
-   int ok = 0; \
+   automatic longint prev_result; \
+   automatic int ok; \
    void'(cl.randomize()); \
    prev_result = longint'(field); \
    repeat(9) begin \
@@ -89,12 +89,12 @@ function automatic int return_2();
 endfunction
 
 class Cls;
-   rand int a;
-   rand int b;
+  rand int a;
+  rand int b;
 endclass
 
 class Cls2 extends Cls;
-   rand int c;
+  rand int c;
 endclass
 
 module mwith();
@@ -106,13 +106,16 @@ module mwith();
   endfunction
 
   initial begin
-    int c = 30;
-    Foo foo = new(c);
-    Baz baz = new;
-    Baz2 baz2 = new;
-    Bar bar = new;
-    Cls2 cls2 = new;
-    Cls cls = cls2;
+    automatic int c = 30;
+    automatic Foo foo = new(c);
+    automatic Baz baz = new;
+    typedef Baz baz_t;
+    automatic baz_t baz1 = new;
+    automatic Baz2 baz2 = new;
+    automatic Bar bar = new;
+    automatic Cls2 cls2 = new;
+    automatic Cls cls = cls2;
+
     $display("foo.x = %d", foo.x);
     $display("-----------------");
 
@@ -149,6 +152,7 @@ module mwith();
     if (foo.randomize() with { a > return_2(); } != 1) $stop;
     // Check randomization of class with no constraints
     if (baz.randomize() with { v inside {[2:10]}; } != 1) $stop;
+    if (baz1.randomize() with { v inside {[2:10]}; } != 1) $stop;
     // Check randomization with captured non-static variable from different AstNodeModule
     if (!bar.test_capture_of_callers_derived_var(foo)) $stop;
     // Check randomization with non-captured non-static variable from different AstNodeModule

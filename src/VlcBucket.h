@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -42,7 +42,7 @@ class VlcBuckets final {
         const uint64_t oldsize = m_dataSize;
         if (m_dataSize < point) m_dataSize = (point + 64) & ~63ULL;  // Keep power of two
         m_dataSize *= 2;
-        // UINFO(9, "Realloc "<<allocSize()<<" for "<<point<<"  "<<cvtToHex(m_datap)<<endl);
+        // UINFO(9, "Realloc " << allocSize() << " for " << point << "  " << cvtToHex(m_datap));
         uint64_t* const newp = static_cast<uint64_t*>(std::realloc(m_datap, allocSize()));
         if (VL_UNCOVERABLE(!newp)) {
             // cppcheck-suppress doubleFree  // cppcheck 1.90 bug - realloc doesn't free on fail
@@ -68,32 +68,23 @@ public:
     // METHODS
     void addData(uint64_t point, uint64_t hits) {
         if (hits >= sufficient()) {
-            // UINFO(9,"     addData "<<point<<" "<<hits<<" size="<<m_dataSize<<endl);
+            // UINFO(9, "     addData " << point << " " << hits << " size=" << m_dataSize);
             if (point >= m_dataSize) allocate(point);
             m_datap[point / 64] |= covBit(point);
             m_bucketsCovered++;
         }
     }
     void clearHits(uint64_t point) const {
-        if (point >= m_dataSize) {
-            return;
-        } else {
-            m_datap[point / 64] &= ~covBit(point);
-        }
+        if (point >= m_dataSize) return;
+        m_datap[point / 64] &= ~covBit(point);
     }
     bool exists(uint64_t point) const {
-        if (point >= m_dataSize) {
-            return false;
-        } else {
-            return (m_datap[point / 64] & covBit(point)) ? 1 : 0;
-        }
+        if (point >= m_dataSize) return false;
+        return (m_datap[point / 64] & covBit(point)) ? true : false;
     }
     uint64_t hits(uint64_t point) const {
-        if (point >= m_dataSize) {
-            return 0;
-        } else {
-            return (m_datap[point / 64] & covBit(point)) ? 1 : 0;
-        }
+        if (point >= m_dataSize) return 0;
+        return (m_datap[point / 64] & covBit(point)) ? 1 : 0;
     }
     uint64_t popCount() const {
         uint64_t pop = 0;
@@ -102,7 +93,7 @@ public:
         }
         return pop;
     }
-    uint64_t dataPopCount(const VlcBuckets& remaining) {
+    uint64_t dataPopCount(const VlcBuckets& remaining) const {
         uint64_t pop = 0;
         for (uint64_t i = 0; i < m_dataSize; ++i) {
             if (hits(i) && remaining.hits(i)) ++pop;

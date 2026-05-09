@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -68,8 +68,8 @@ void V3GraphVertex::unlinkDelete(V3Graph* graphp) {
 
 void V3GraphVertex::rerouteEdges(V3Graph* graphp) {
     // Make new edges for each from/to pair
-    for (V3GraphEdge& iedge : inEdges()) {
-        for (V3GraphEdge& oedge : outEdges()) {
+    for (const V3GraphEdge& iedge : inEdges()) {
+        for (const V3GraphEdge& oedge : outEdges()) {
             new V3GraphEdge{graphp, iedge.fromp(), oedge.top(),
                             std::min(iedge.weight(), oedge.weight()),
                             iedge.cutable() && oedge.cutable()};
@@ -105,25 +105,23 @@ template V3GraphEdge* V3GraphVertex::findConnectingEdgep<GraphWay::FORWARD>(V3Gr
 template V3GraphEdge* V3GraphVertex::findConnectingEdgep<GraphWay::REVERSE>(V3GraphVertex*);
 
 // cppcheck-has-bug-suppress constParameter
-void V3GraphVertex::v3errorEnd(std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex) {
+void V3GraphVertex::v3errorEnd(const std::ostringstream& str) const  // LCOV_EXCL_START
+    VL_RELEASE(V3Error::s().m_mutex) {
     std::ostringstream nsstr;
     nsstr << str.str();
-    if (debug()) {
-        nsstr << endl;
-        nsstr << "-vertex: " << this << endl;
-    }
+    if (debug()) nsstr << "\n-vertex: " << this << '\n';
     if (FileLine* const flp = fileline()) {
         flp->v3errorEnd(nsstr);
     } else {
-        V3Error::v3errorEnd(nsstr);
+        V3Error::v3errorEnd(nsstr, "", nullptr);
     }
 }
-void V3GraphVertex::v3errorEndFatal(std::ostringstream& str) const
+void V3GraphVertex::v3errorEndFatal(const std::ostringstream& str) const
     VL_RELEASE(V3Error::s().m_mutex) {
     v3errorEnd(str);
-    assert(0);  // LCOV_EXCL_LINE
+    assert(0);
     VL_UNREACHABLE;
-}
+}  // LCOV_EXCL_STOP
 
 std::ostream& operator<<(std::ostream& os, V3GraphVertex* vertexp) {
     os << "  VERTEX=" << vertexp->name();
@@ -233,13 +231,16 @@ void V3Graph::clearColors() {
 //======================================================================
 // Dumping
 
-void V3Graph::loopsMessageCb(V3GraphVertex* vertexp) {
-    vertexp->v3fatalSrc("Loops detected in graph: " << vertexp);
+void V3Graph::loopsMessageCb(V3GraphVertex* vertexp, V3EdgeFuncP edgeFuncp) {
+    vertexp->v3fatalSrc("Loops detected in graph: " << vertexp << "\n"
+                                                    << reportLoops(edgeFuncp, vertexp));
 }
-
-void V3Graph::loopsVertexCb(V3GraphVertex* vertexp) {
+string V3Graph::loopsVertexCb(V3GraphVertex* vertexp) {
     // Needed here as V3GraphVertex<< isn't defined until later in header
-    if (debug()) std::cerr << "-Info-Loop: " << cvtToHex(vertexp) << " " << vertexp << endl;
+    if (debug())
+        return "-Info-Loop: "s + cvtToHex(vertexp) + ' ' + cvtToStr(vertexp) + '\n';
+    else
+        return "";
 }
 
 void V3Graph::dump(std::ostream& os) const {
@@ -329,8 +330,8 @@ void V3Graph::dumpDotFile(const string& filename, bool colorAsSubgraph) const {
             }
         }
         if (subgr != "") *logp << "\t";
-        *logp << "\tn" << vertexp->dotName() << (n++) << "\t[fontsize=8 "
-              << "label=\"" << (vertexp->name() != "" ? vertexp->name() : "\\N");
+        *logp << "\tn" << vertexp->dotName() << (n++) << "\t[fontsize=8 " << "label=\""
+              << (vertexp->name() != "" ? vertexp->name() : "\\N");
         if (vertexp->rank()) *logp << " r" << vertexp->rank();
         if (vertexp->fanout() != 0.0) *logp << " f" << vertexp->fanout();
         if (vertexp->color()) *logp << "\\n c" << vertexp->color();
@@ -353,8 +354,7 @@ void V3Graph::dumpDotFile(const string& filename, bool colorAsSubgraph) const {
                       << " ["
                       // <<"fontsize=8 label=\""<<(edge.name()!="" ? edge.name() : "\\E")<<"\""
                       << "fontsize=8 label=\"" << (edge.dotLabel() != "" ? edge.dotLabel() : "")
-                      << "\""
-                      << " weight=" << edge.weight() << " color=" << edge.dotColor();
+                      << "\"" << " weight=" << edge.weight() << " color=" << edge.dotColor();
                 if (edge.dotStyle() != "") *logp << " style=" << edge.dotStyle();
                 // if (edge.cutable()) *logp << ",constraint=false";  // to rank without
                 // following edges

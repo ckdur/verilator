@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -41,6 +41,9 @@ void AstNode::dumpJsonNum(std::ostream& os, const std::string& name, int64_t val
 void AstNode::dumpJsonBool(std::ostream& os, const std::string& name, bool val) {
     os << ",\"" << name << "\":" << (val ? "true" : "false");
 }
+void AstNode::dumpJsonBoolIf(std::ostream& os, const std::string& name, bool val) {
+    if (val) dumpJsonBool(os, name, val);
+}
 void AstNode::dumpJsonStr(std::ostream& os, const std::string& name, const std::string& val) {
     os << ",\"" << name << "\":\"" << V3OutFormatter::quoteNameControls(val) << '"';
 }
@@ -53,7 +56,7 @@ void AstNode::dumpJsonPtr(std::ostream& os, const std::string& name, const AstNo
 
 // Shorthands for dumping fields that use func name as key
 #define dumpJsonNumFunc(os, func) dumpJsonNum(os, #func, func())
-#define dumpJsonBoolFunc(os, func) dumpJsonBool(os, #func, func())
+#define dumpJsonBoolFuncIf(os, func) dumpJsonBoolIf(os, #func, func())
 #define dumpJsonStrFunc(os, func) dumpJsonStr(os, #func, func())
 #define dumpJsonPtrFunc(os, func) dumpJsonPtr(os, #func, func())
 
@@ -87,15 +90,14 @@ bool AstNodeFTaskRef::isPure() {
 }
 
 bool AstNodeFTaskRef::getPurityRecurse() const {
+    // cppcheck-suppress shadowFunction
     AstNodeFTask* const taskp = this->taskp();
     // Unlinked yet, so treat as impure
     if (!taskp) return false;
-
     // First compute the purity of arguments
-    for (AstNode* pinp = this->pinsp(); pinp; pinp = pinp->nextp()) {
-        if (!pinp->isPure()) return false;
+    for (AstArg* argp = this->argsp(); argp; argp = VN_AS(argp->nextp(), Arg)) {
+        if (!argp->isPure()) return false;
     }
-
     return taskp->isPure();
 }
 bool AstNodeFTaskRef::isGateOptimizable() const { return m_taskp && m_taskp->isGateOptimizable(); }
@@ -166,9 +168,8 @@ const char* AstNodeQuadop::broken() const {
     return nullptr;
 }
 
-AstNodeCond::AstNodeCond(VNType t, FileLine* fl, AstNodeExpr* condp, AstNodeExpr* thenp,
-                         AstNodeExpr* elsep)
-    : AstNodeTriop{t, fl, condp, thenp, elsep} {
+AstCond::AstCond(FileLine* fl, AstNodeExpr* condp, AstNodeExpr* thenp, AstNodeExpr* elsep)
+    : ASTGEN_SUPER_Cond(fl, condp, thenp, elsep) {
     UASSERT_OBJ(thenp, this, "No thenp expression");
     UASSERT_OBJ(elsep, this, "No elsep expression");
     if (thenp->isClassHandleValue() && elsep->isClassHandleValue()) {
@@ -180,20 +181,18 @@ AstNodeCond::AstNodeCond(VNType t, FileLine* fl, AstNodeExpr* condp, AstNodeExpr
         dtypeFrom(thenp);
     }
 }
-void AstNodeCond::numberOperate(V3Number& out, const V3Number& lhs, const V3Number& rhs,
-                                const V3Number& ths) {
-    if (lhs.isNeqZero()) {
-        out.opAssign(rhs);
-    } else {
-        out.opAssign(ths);
-    }
+
+void AstAddrOfCFunc::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    str << " -> ";
+    funcp()->dump(str);
 }
 
 void AstBasicDType::init(VBasicDTypeKwd kwd, VSigning numer, int wantwidth, int wantwidthmin,
                          AstRange* rangep) {
     // wantwidth=0 means figure it out, but if a widthmin is >=0
     //    we allow width 0 so that {{0{x}},y} works properly
-    // wantwidthmin=-1:  default, use wantwidth if it is non zero
+    // wantwidthmin=-1:  default, use wantwidth if it is non-zero
     m.m_keyword = kwd;
     // Implicitness: // "parameter X" is implicit and sized from initial
     // value, "parameter reg x" not
@@ -260,7 +259,23 @@ int AstBasicDType::widthTotalBytes() const {
 
 bool AstBasicDType::sameNode(const AstNode* samep) const {
     const AstBasicDType* const sp = VN_DBG_AS(samep, BasicDType);
-    if (!(m == sp->m) || numeric() != sp->numeric()) return false;
+    if (!(m == sp->m)) return false;
+    if (numeric() != sp->numeric()) return false;
+    if (!rangep() && !sp->rangep()) return true;
+    return rangep() && rangep()->sameTree(sp->rangep());
+}
+bool AstBasicDType::similarDTypeNode(const AstNodeDType* samep) const {
+    if (sameNode(samep)) return true;
+    const AstBasicDType* const sp = VN_DBG_AS(samep, BasicDType);
+    if (!(m.m_keyword == sp->m.m_keyword
+          || (m.m_keyword == VBasicDTypeKwd::LOGIC_IMPLICIT
+              && sp->m.m_keyword == VBasicDTypeKwd::LOGIC)
+          || (m.m_keyword == VBasicDTypeKwd::LOGIC
+              && sp->m.m_keyword == VBasicDTypeKwd::LOGIC_IMPLICIT)))
+        return false;
+    if (!(m.m_nrange == sp->m.m_nrange)) return false;
+    // Squash so NOSIGN == UNSIGNED
+    if (numeric().isSigned() != sp->numeric().isSigned()) return false;
     if (!rangep() && !sp->rangep()) return true;
     return rangep() && rangep()->sameTree(sp->rangep());
 }
@@ -311,6 +326,16 @@ AstNodeBiop* AstEqWild::newTyped(FileLine* fl, AstNodeExpr* lhsp, AstNodeExpr* r
     }
 }
 
+AstNodeBiop* AstNeq::newTyped(FileLine* fl, AstNodeExpr* lhsp, AstNodeExpr* rhsp) {
+    if (lhsp->isString() && rhsp->isString()) {
+        return new AstNeqN{fl, lhsp, rhsp};
+    } else if (lhsp->isDouble() && rhsp->isDouble()) {
+        return new AstNeqD{fl, lhsp, rhsp};
+    } else {
+        return new AstNeq{fl, lhsp, rhsp};
+    }
+}
+
 AstExecGraph::AstExecGraph(FileLine* fileline, const string& name) VL_MT_DISABLED
     : ASTGEN_SUPER_ExecGraph(fileline),
       m_depGraphp{new V3Graph},
@@ -318,10 +343,54 @@ AstExecGraph::AstExecGraph(FileLine* fileline, const string& name) VL_MT_DISABLE
 
 AstExecGraph::~AstExecGraph() { VL_DO_DANGLING(delete m_depGraphp, m_depGraphp); }
 
+const char* AstExecGraph::broken() const {
+    BROKEN_RTN(!m_depGraphp);
+    for (const V3GraphVertex& vtx : m_depGraphp->vertices()) {
+        const ExecMTask* const mtaskp = vtx.as<ExecMTask>();
+        const AstCFunc* const funcp = mtaskp->funcp();
+        BROKEN_RTN(!funcp || !funcp->brokeExists());
+    }
+    return nullptr;
+}
+
 AstNodeExpr* AstInsideRange::newAndFromInside(AstNodeExpr* exprp, AstNodeExpr* lhsp,
                                               AstNodeExpr* rhsp) {
-    AstNodeExpr* const ap = new AstGte{fileline(), exprp->cloneTreePure(true), lhsp};
-    AstNodeExpr* const bp = new AstLte{fileline(), exprp->cloneTreePure(true), rhsp};
+    const bool lhsUnbounded = VN_IS(lhsp, Unbounded);
+    const bool rhsUnbounded = VN_IS(rhsp, Unbounded);
+
+    if (lhsUnbounded && rhsUnbounded) {
+        fileline()->v3warn(INSIDETRUE,
+                           "Unbounded on both sides of inside range [$:$] is always true");
+        VL_DO_DANGLING(exprp->deleteTree(), exprp);
+        VL_DO_DANGLING(lhsp->deleteTree(), lhsp);
+        VL_DO_DANGLING(rhsp->deleteTree(), rhsp);
+        return new AstConst{fileline(), AstConst::BitTrue{}};
+    }
+
+    if (lhsUnbounded) {
+        // [$:N] - only check expr <= rhs
+        // Use exprp directly (not cloned) so ExprStmt side effects are preserved
+        VL_DO_DANGLING(lhsp->deleteTree(), lhsp);
+        AstNodeExpr* const bp = new AstLte{fileline(), exprp, rhsp};
+        bp->fileline()->modifyWarnOff(V3ErrorCode::CMPCONST, true);
+        return bp;
+    } else if (rhsUnbounded) {
+        // [N:$] - only check expr >= lhs
+        VL_DO_DANGLING(rhsp->deleteTree(), rhsp);
+        AstNodeExpr* const ap = new AstGte{fileline(), exprp, lhsp};
+        ap->fileline()->modifyWarnOff(V3ErrorCode::UNSIGNED, true);
+        return ap;
+    }
+
+    // Normal case: [N:M] - check expr >= lhs && expr <= rhs
+    AstNodeExpr* const ap = new AstGte{fileline(), exprp, lhsp};
+    AstNodeExpr* lteLhsp;
+    if (const AstExprStmt* const exprStmt = VN_CAST(exprp, ExprStmt)) {
+        lteLhsp = exprStmt->resultp()->cloneTreePure(true);
+    } else {
+        lteLhsp = exprp->cloneTreePure(true);
+    }
+    AstNodeExpr* const bp = new AstLte{fileline(), lteLhsp, rhsp};
     ap->fileline()->modifyWarnOff(V3ErrorCode::UNSIGNED, true);
     bp->fileline()->modifyWarnOff(V3ErrorCode::CMPCONST, true);
     return new AstLogAnd{fileline(), ap, bp};
@@ -332,7 +401,21 @@ void AstCReset::dump(std::ostream& str) const {
     if (constructing()) str << " [CONS]";
 }
 void AstCReset::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, constructing);
+    dumpJsonBoolFuncIf(str, constructing);
+    dumpJsonGen(str);
+}
+
+void AstCase::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    str << " " << verilogKwd();
+}
+void AstCase::dumpJson(std::ostream& str) const {
+    dumpJsonStr(str, "kwd", verilogKwd());
+    dumpJsonBoolIf(str, "full", fullPragma());
+    dumpJsonBoolIf(str, "parallel", parallelPragma());
+    dumpJsonBoolIf(str, "unique", uniquePragma());
+    dumpJsonBoolIf(str, "unique0", unique0Pragma());
+    dumpJsonBoolIf(str, "priority", priorityPragma());
     dumpJsonGen(str);
 }
 
@@ -343,7 +426,7 @@ AstVar* AstClocking::ensureEventp(bool childDType) {
                                       new AstBasicDType{fileline(), VBasicDTypeKwd::EVENT}}
                          : new AstVar{fileline(), VVarType::MODULETEMP, m_name,
                                       findBasicDType(VBasicDTypeKwd::EVENT)};
-        evp->lifetime(VLifetime::STATIC);
+        evp->lifetime(VLifetime::STATIC_EXPLICIT);
         eventp(evp);
         // Trigger the clocking event in Observed (IEEE 1800-2023 14.13)
         addNextHere(new AstAlwaysObserved{
@@ -360,19 +443,35 @@ void AstConsDynArray::dump(std::ostream& str) const {
     if (rhsIsValue()) str << " [RVAL]";
 }
 void AstConsDynArray::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, lhsIsValue);
-    dumpJsonBoolFunc(str, rhsIsValue);
+    dumpJsonBoolFuncIf(str, lhsIsValue);
+    dumpJsonBoolFuncIf(str, rhsIsValue);
     dumpJsonGen(str);
 }
 
+void AstSConsRep::dump(std::ostream& str) const {  // LCOV_EXCL_START
+    this->AstNodeExpr::dump(str);
+    if (unbounded()) str << " [unbounded]";
+}
+void AstSConsRep::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, unbounded);
+    dumpJsonGen(str);
+}  // LCOV_EXCL_STOP
+void AstPropAlways::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    if (isStrong()) str << " [strong]";
+}
+void AstPropAlways::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, isStrong);
+    dumpJsonGen(str);
+}
 void AstConsQueue::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
     if (lhsIsValue()) str << " [LVAL]";
     if (rhsIsValue()) str << " [RVAL]";
 }
 void AstConsQueue::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, lhsIsValue);
-    dumpJsonBoolFunc(str, rhsIsValue);
+    dumpJsonBoolFuncIf(str, lhsIsValue);
+    dumpJsonBoolFuncIf(str, rhsIsValue);
     dumpJsonGen(str);
 }
 void AstConstraint::dump(std::ostream& str) const {
@@ -386,11 +485,11 @@ void AstConstraint::dump(std::ostream& str) const {
     if (isStatic()) str << " [STATIC]";
 }
 void AstConstraint::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isExternDef);
-    dumpJsonBoolFunc(str, isExternExplicit);
-    dumpJsonBoolFunc(str, isExternProto);
-    dumpJsonBoolFunc(str, isKwdPure);
-    dumpJsonBoolFunc(str, isStatic);
+    dumpJsonBoolFuncIf(str, isExternDef);
+    dumpJsonBoolFuncIf(str, isExternExplicit);
+    dumpJsonBoolFuncIf(str, isExternProto);
+    dumpJsonBoolFuncIf(str, isKwdPure);
+    dumpJsonBoolFuncIf(str, isStatic);
     if (baseOverride().isAny()) dumpJsonStr(str, "baseOverride", baseOverride().ascii());
     dumpJsonGen(str);
 }
@@ -400,8 +499,8 @@ void AstConstraintExpr::dump(std::ostream& str) const {
     if (isSoft()) str << " [SOFT]";
 }
 void AstConstraintExpr::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isDisableSoft);
-    dumpJsonBoolFunc(str, isSoft);
+    dumpJsonBoolFuncIf(str, isDisableSoft);
+    dumpJsonBoolFuncIf(str, isSoft);
     dumpJsonGen(str);
 }
 AstConst* AstConst::parseParamLiteral(FileLine* fl, const string& literal) {
@@ -425,7 +524,7 @@ AstConst* AstConst::parseParamLiteral(FileLine* fl, const string& literal) {
         // the Verilog literal parser.
         char* endp;
         const int v = strtol(literal.c_str(), &endp, 0);
-        if ((v != 0) && (endp[0] == 0)) {  // C literal
+        if ((v != 0) && (v != 1) && (endp[0] == 0)) {  // C literal
             return new AstConst{fl, AstConst::Signed32{}, v};
         } else {  // Try a Verilog literal (fatals if not)
             return new AstConst{fl, AstConst::StringToParse{}, literal.c_str()};
@@ -444,6 +543,29 @@ AstNetlist::AstNetlist()
     addMiscsp(m_constPoolp);
 }
 
+const char* AstNetlist::broken() const {
+    for (const AstVar* const varp : m_deferredParamVarps) {
+        BROKEN_RTN(!varp || !varp->brokeExists());
+    }
+    return nullptr;
+}
+
+string AstNetlist::astConstOrigParamName(const AstConst* nodep) const {
+    if (!nodep->num().hasOrigParamName()) return "";
+    const auto it = m_constOrigParamNames.find(nodep);
+    UASSERT_OBJ(it != m_constOrigParamNames.end(), nodep, "Missing originating parameter name");
+    return it->second;
+}
+
+void AstNetlist::astConstOrigParamName(const AstConst* nodep, const string& name) {
+    UASSERT(!name.empty(), "Empty originating parameter name");
+    m_constOrigParamNames[nodep] = name;
+}
+
+void AstNetlist::astConstOrigParamNameErase(const AstConst* nodep) {
+    m_constOrigParamNames.erase(nodep);
+}
+
 void AstNetlist::timeprecisionMerge(FileLine*, const VTimescale& value) {
     const VTimescale prec = v3Global.opt.timeComputePrec(value);
     if (prec.isNone() || prec == m_timeprecision) {
@@ -452,6 +574,17 @@ void AstNetlist::timeprecisionMerge(FileLine*, const VTimescale& value) {
     } else if (prec < m_timeprecision) {
         m_timeprecision = prec;
     }
+}
+
+void AstNew::dump(std::ostream& str) const {
+    this->AstNodeFTaskRef::dump(str);
+    if (isImplicit()) str << " [IMPLICIT]";
+    if (isScoped()) str << " [SCOPED]";
+}
+void AstNew::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, isImplicit);
+    dumpJsonBoolFuncIf(str, isScoped);
+    dumpJsonGen(str);
 }
 
 bool AstVar::isSigPublic() const {
@@ -469,10 +602,24 @@ bool AstVar::isScUintBool() const {
     return (isSc() && v3Global.opt.pinsScUintBool() && width() == 1);
 }
 bool AstVar::isScBigUint() const {
+    // Pragma has the highest priority
+    if (m_attrScBigUint) return true;
     return ((isSc() && v3Global.opt.pinsScBigUint() && width() >= 65 && width() <= 512)
             && !isScBv());
 }
-
+void AstVar::combineType(const AstVar* otherp) {
+    // "this" is the port var. otherp is the reg var, or vice-versa
+    propagateAttrFrom(otherp);
+    combineType(otherp->varType());
+    if (otherp->isSigPublic()) sigPublic(true);
+    if (otherp->isSigModPublic()) sigModPublic(true);
+    if (otherp->isSigUserRdPublic()) sigUserRdPublic(true);
+    if (otherp->isSigUserRWPublic()) sigUserRWPublic(true);
+    if (otherp->varType() == VVarType::PORT) {
+        varType(otherp->varType());
+        direction(otherp->direction());
+    }
+}
 void AstVar::combineType(VVarType type) {
     // These flags get combined with the existing settings of the flags.
     // We don't test varType for certain types, instead set flags since
@@ -484,6 +631,7 @@ void AstVar::combineType(VVarType type) {
     }
     if (type == VVarType::TRI0) m_isPulldown = true;
     if (type == VVarType::TRI1) m_isPullup = true;
+    if (type.isParam()) m_isConst = true;
 }
 
 string AstVar::verilogKwd() const {
@@ -505,24 +653,22 @@ string AstVar::verilogKwd() const {
 }
 
 string AstVar::vlArgType(bool named, bool forReturn, bool forFunc, const string& namespc,
-                         bool asRef) const {
+                         bool asRef, bool constRef) const {
     UASSERT_OBJ(!forReturn, this,
                 "Internal data is never passed as return, but as first argument");
     string ostatic;
     if (isStatic() && namespc.empty()) ostatic = "static ";
 
-    const bool isRef = isDpiOpenArray()
-                       || (forFunc && (isWritable() || this->isRef() || this->isConstRef()))
-                       || asRef;
+    asRef = asRef || isDpiOpenArray() || (forFunc && (isWritable() || isRef() || isConstRef()));
 
-    if (forFunc && isReadOnly() && isRef) ostatic = ostatic + "const ";
+    if (forFunc && (isReadOnly() || constRef) && asRef) ostatic = ostatic + "const ";
 
     string oname;
     if (named) {
         if (!namespc.empty()) oname += namespc + "::";
         oname += VIdProtect::protectIf(name(), protect());
     }
-    return ostatic + dtypep()->cType(oname, forFunc, isRef);
+    return ostatic + dtypep()->cType(oname, forFunc, asRef);
 }
 
 string AstVar::vlEnumType() const {
@@ -569,9 +715,17 @@ string AstVar::vlEnumDir() const {
     } else if (isSigUserRdPublic()) {
         out += "|VLVF_PUB_RD";
     }
+    if (isForceable()) out += "|VLVF_FORCEABLE";
+    if (isContinuously()) out += "|VLVF_CONTINUOUSLY";
     //
     if (const AstBasicDType* const bdtypep = basicp()) {
         if (bdtypep->keyword().isDpiCLayout()) out += "|VLVF_DPI_CLAY";
+    }
+    //
+    if (dtypep()->skipRefp()->isSigned()) out += "|VLVF_SIGNED";
+    //
+    if (AstBasicDType* const basicp = dtypep()->skipRefp()->basicp()) {
+        if (basicp->keyword() == VBasicDTypeKwd::BIT) out += "|VLVF_BITVAR";
     }
     return out;
 }
@@ -656,7 +810,7 @@ string AstVar::cPubArgType(bool named, bool forReturn) const {
     if (forReturn) named = false;
     string arg;
     if (isWide() && isReadOnly()) arg += "const ";
-    const bool isRef = !forReturn && (isWritable() || this->isRef() || this->isConstRef());
+    const bool asRef = !forReturn && (isWritable() || this->isRef() || this->isConstRef());
     if (VN_IS(dtypeSkipRefp(), BasicDType) && !dtypeSkipRefp()->isDouble()
         && !dtypeSkipRefp()->isString()) {
         // Backward compatible type declaration
@@ -677,12 +831,12 @@ string AstVar::cPubArgType(bool named, bool forReturn) const {
             arg += " (& " + name();
             arg += ")[" + cvtToStr(widthWords()) + "]";
         } else {
-            if (isRef) arg += "&";
+            if (asRef) arg += "&";
             if (named) arg += " " + name();
         }
     } else {
         // Newer internal-compatible types
-        arg += dtypep()->cType((named ? name() : std::string{}), true, isRef);
+        arg += dtypep()->cType((named ? name() : std::string{}), true, asRef);
     }
     return arg;
 }
@@ -744,7 +898,7 @@ string AstVar::dpiTmpVarType(const string& varName) const {
     class converter final : public dpiTypesToStringConverter {
         const string m_name;
         string arraySuffix(const AstVar* varp, size_t n) const {
-            if (AstUnpackArrayDType* const unpackp
+            if (const AstUnpackArrayDType* const unpackp
                 = VN_CAST(varp->dtypep()->skipRefp(), UnpackArrayDType)) {
                 // Convert multi dimensional unpacked array to 1D array
                 if (n == 0) n = 1;
@@ -768,8 +922,7 @@ string AstVar::dpiTmpVarType(const string& varName) const {
         string primitive(const AstVar* varp) const override {
             string type = dpiTypesToStringConverter::primitive(varp);
             if (varp->isWritable() || VN_IS(varp->dtypep()->skipRefp(), UnpackArrayDType)) {
-                if (!varp->isWritable() && varp->basicp()->keyword() == VBasicDTypeKwd::CHANDLE)
-                    type = "const " + type;
+                if (!varp->isWritable() && varp->basicp()->isCHandle()) type = "const " + type;
             }
             type += ' ' + m_name + arraySuffix(varp, 0);
             return type;
@@ -777,7 +930,7 @@ string AstVar::dpiTmpVarType(const string& varName) const {
 
     public:
         explicit converter(const string& name)
-            : m_name(name) {}
+            : m_name{name} {}
     };
     return converter{varName}.convert(this);
 }
@@ -801,6 +954,8 @@ string AstVar::scType() const {
         } else {
             return "uint32_t";
         }
+    } else if (isDouble()) {
+        return "double";
     } else {
         return "uint64_t";
     }
@@ -816,13 +971,13 @@ AstVar* AstVar::scVarRecurse(AstNode* nodep) {
         } else {
             return nullptr;
         }
-    } else if (AstVarRef* const vrefp = VN_CAST(nodep, VarRef)) {
+    } else if (const AstVarRef* const vrefp = VN_CAST(nodep, VarRef)) {
         if (vrefp->varp()->isSc()) {
             return vrefp->varp();
         } else {
             return nullptr;
         }
-    } else if (AstArraySel* const arraySelp = VN_CAST(nodep, ArraySel)) {
+    } else if (const AstArraySel* const arraySelp = VN_CAST(nodep, ArraySel)) {
         if (AstVar* const p = scVarRecurse(arraySelp->fromp())) return p;
     }
     return nullptr;
@@ -830,12 +985,22 @@ AstVar* AstVar::scVarRecurse(AstNode* nodep) {
 
 const AstNodeDType* AstNodeDType::skipRefIterp(bool skipConst, bool skipEnum,
                                                bool assertOn) const VL_MT_STABLE {
+    static constexpr int MAX_TYPEDEF_DEPTH = 1000;
+    static constexpr int MAX_CHAIN_DISPLAY = 10;
     const AstNodeDType* nodep = this;
-    while (true) {
-        if (VL_UNLIKELY(VN_IS(nodep, MemberDType) || VN_IS(nodep, ParamTypeDType)
-                        || VN_IS(nodep, RefDType)  //
-                        || (VN_IS(nodep, ConstDType) && skipConst)  //
-                        || (VN_IS(nodep, EnumDType) && skipEnum))) {
+    std::unordered_set<const AstNodeDType*> visited;
+    std::vector<const AstNodeDType*> chain;
+    bool isCycle = false;
+    for (int depth = 0; depth < MAX_TYPEDEF_DEPTH; ++depth) {
+        if (VN_IS(nodep, MemberDType) || VN_IS(nodep, ParamTypeDType) || VN_IS(nodep, RefDType)  //
+            || VN_IS(nodep, RequireDType)  //
+            || (VN_IS(nodep, ConstDType) && skipConst)  //
+            || (VN_IS(nodep, EnumDType) && skipEnum)) {
+            if (!visited.emplace(nodep).second) {
+                isCycle = true;
+                break;
+            }
+            if (chain.size() < static_cast<size_t>(MAX_CHAIN_DISPLAY)) chain.push_back(nodep);
             if (const AstNodeDType* subp = nodep->subDTypep()) {
                 nodep = subp;
                 continue;
@@ -846,6 +1011,34 @@ const AstNodeDType* AstNodeDType::skipRefIterp(bool skipConst, bool skipEnum,
         }
         return nodep;
     }
+    // Build user-facing error with type chain
+    V3Error::v3errorPrep(V3ErrorCode::EC_ERROR);
+    {
+        std::ostringstream& os = V3Error::v3errorStr();
+        if (isCycle) {
+            os << "Recursive type definition";
+        } else {
+            os << "Type definition over " << MAX_TYPEDEF_DEPTH << " types deep";
+        }
+        bool first = true;
+        for (const AstNodeDType* chainp : chain) {
+            // Skip internal scaffolding nodes (e.g. REQUIREDTYPE) with no user-visible name
+            if (chainp->name().empty()) continue;
+            os << '\n'
+               << chainp->fileline()->warnOther() << "... Type chain: " << chainp->prettyTypeName()
+               << '\n'
+               << (first ? chainp->fileline()->warnContextPrimary()
+                         : chainp->fileline()->warnContextSecondary());
+            first = false;
+        }
+        if (visited.size() > static_cast<size_t>(MAX_CHAIN_DISPLAY)) {
+            os << '\n'
+               << this->fileline()->warnMore() << "... and "
+               << (visited.size() - MAX_CHAIN_DISPLAY) << " more";
+        }
+    }
+    this->v3errorEnd(V3Error::v3errorStr());
+    return nullptr;
 }
 
 bool AstNodeDType::similarDType(const AstNodeDType* samep) const {
@@ -858,6 +1051,11 @@ bool AstNodeDType::similarDType(const AstNodeDType* samep) const {
 }
 
 bool AstNodeDType::isFourstate() const { return basicp() && basicp()->isFourstate(); }
+
+bool AstNodeDType::isNonPackedArray() const {
+    return VN_IS(this, UnpackArrayDType) || VN_IS(this, DynArrayDType) || VN_IS(this, QueueDType)
+           || VN_IS(this, AssocArrayDType);
+}
 
 class AstNodeDType::CTypeRecursed final {
 public:
@@ -919,10 +1117,10 @@ AstNodeDType::CTypeRecursed AstNodeDType::cTypeRecurse(bool compound, bool packe
         info.m_type = "VlSampleQueue<" + sub.m_type + ">";
     } else if (const auto* const adtypep = VN_CAST(dtypep, ClassRefDType)) {
         UASSERT_OBJ(!packed, this, "Unsupported type for packed struct or union");
-        info.m_type = "VlClassRef<" + EmitCBase::prefixNameProtect(adtypep) + ">";
+        info.m_type = "VlClassRef<" + EmitCUtil::prefixNameProtect(adtypep) + ">";
     } else if (const auto* const adtypep = VN_CAST(dtypep, IfaceRefDType)) {
         UASSERT_OBJ(!packed, this, "Unsupported type for packed struct or union");
-        info.m_type = EmitCBase::prefixNameProtect(adtypep->ifaceViaCellp()) + "*";
+        info.m_type = EmitCUtil::prefixNameProtect(adtypep->ifaceViaCellp()) + "*";
     } else if (const auto* const adtypep = VN_CAST(dtypep, UnpackArrayDType)) {
         UASSERT_OBJ(!packed, this, "Unsupported type for packed struct or union");
         if (adtypep->isCompound()) compound = true;
@@ -956,7 +1154,7 @@ AstNodeDType::CTypeRecursed AstNodeDType::cTypeRecurse(bool compound, bool packe
         const AstNodeUOrStructDType* const sdtypep = VN_AS(dtypep, NodeUOrStructDType);
         UASSERT_OBJ(!packed || sdtypep->packed(), this,
                     "Unsupported type for packed struct or union");
-        info.m_type = EmitCBase::prefixNameProtect(sdtypep);
+        info.m_type = EmitCUtil::prefixNameProtect(sdtypep);
     } else if (const AstBasicDType* const bdtypep = dtypep->basicp()) {
         // We don't print msb()/lsb() as multidim packed would require recursion,
         // and may confuse users as C++ data is stored always with bit 0 used
@@ -973,8 +1171,6 @@ AstNodeDType::CTypeRecursed AstNodeDType::cTypeRecurse(bool compound, bool packe
             info.m_type = "std::string";
         } else if (bdtypep->keyword().isMTaskState()) {
             info.m_type = "VlMTaskVertex";
-        } else if (bdtypep->isTriggerVec()) {
-            info.m_type = "VlTriggerVec<" + cvtToStr(dtypep->width()) + ">";
         } else if (bdtypep->isDelayScheduler()) {
             info.m_type = "VlDelayScheduler";
         } else if (bdtypep->isTriggerScheduler()) {
@@ -987,6 +1183,8 @@ AstNodeDType::CTypeRecursed AstNodeDType::cTypeRecurse(bool compound, bool packe
             info.m_type = "VlProcessRef";
         } else if (bdtypep->isRandomGenerator()) {
             info.m_type = "VlRandomizer";
+        } else if (bdtypep->isStdRandomGenerator()) {
+            info.m_type = "VlStdRandomizer";
         } else if (bdtypep->isEvent()) {
             info.m_type = v3Global.assignsEvents() ? "VlAssignableEvent" : "VlEvent";
         } else if (dtypep->widthMin() <= 8) {  // Handle unpacked arrays; not bdtypep->width
@@ -1031,11 +1229,11 @@ uint32_t AstNodeDType::arrayUnpackedElements() const {
     return entries;
 }
 
-std::pair<uint32_t, uint32_t> AstNodeDType::dimensions(bool includeBasic) {
+std::pair<uint32_t, uint32_t> AstNodeDType::dimensions(bool includeBasic) const {
     // How many array dimensions (packed,unpacked) does this Var have?
     uint32_t packed = 0;
     uint32_t unpacked = 0;
-    for (AstNodeDType* dtypep = this; dtypep;) {
+    for (const AstNodeDType* dtypep = this; dtypep;) {
         dtypep = dtypep->skipRefp();  // Skip AstRefDType/AstTypedef, or return same node
         if (const AstNodeArrayDType* const adtypep = VN_CAST(dtypep, NodeArrayDType)) {
             if (VN_IS(adtypep, PackArrayDType)) {
@@ -1062,6 +1260,7 @@ std::pair<uint32_t, uint32_t> AstNodeDType::dimensions(bool includeBasic) {
 
 int AstNodeDType::widthPow2() const {
     // I.e.  width 30 returns 32, width 32 returns 32.
+    // cppcheck-suppress shadowFunction
     const uint32_t width = this->width();
     for (int p2 = 30; p2 >= 0; p2--) {
         if (width > (1UL << p2)) return (1UL << (p2 + 1));
@@ -1096,6 +1295,9 @@ AstNode* AstArraySel::baseFromp(AstNode* nodep, bool overMembers) {
         } else if (overMembers && VN_IS(nodep, MemberSel)) {
             nodep = VN_AS(nodep, MemberSel)->fromp();
             continue;
+        } else if (overMembers && VN_IS(nodep, StructSel)) {
+            nodep = VN_AS(nodep, StructSel)->fromp();
+            continue;
         }
         // AstNodePreSel stashes the associated variable under an ATTROF
         // of VAttrType::VAR_BASE so it isn't constified
@@ -1116,10 +1318,6 @@ AstNode* AstArraySel::baseFromp(AstNode* nodep, bool overMembers) {
     return nodep;
 }
 
-const char* AstJumpBlock::broken() const {
-    BROKEN_RTN(!labelp()->brokeExistsBelow());
-    return nullptr;
-}
 bool AstJumpBlock::isPure() {
     if (!m_purity.isCached()) m_purity.set(getPurityRecurse());
     return m_purity.get();
@@ -1157,32 +1355,26 @@ AstVarScope* AstScope::createTemp(const string& name, AstNodeDType* dtypep) {
     return vscp;
 }
 
-AstVarScope* AstScope::createTempLike(const string& name, AstVarScope* vscp) {
+AstVarScope* AstScope::createTempLike(const string& name, const AstVarScope* vscp) {
     return createTemp(name, vscp->dtypep());
 }
 
-string AstScopeName::scopePrettyNameFormatter(AstText* scopeTextp) const {
-    string out;
-    for (AstText* textp = scopeTextp; textp; textp = VN_AS(textp->nextp(), Text)) {
-        out += textp->text();
-    }
+std::string AstScopeName::scopePrettyNameFormatter(const std::string& text) {
+    std::string out = text;
     // TOP will be replaced by top->name()
     if (out.substr(0, 10) == "__DOT__TOP") out.replace(0, 10, "");
     if (out.substr(0, 7) == "__DOT__") out.replace(0, 7, "");
     if (out.substr(0, 1) == ".") out.replace(0, 1, "");
     return AstNode::prettyName(out);
 }
-string AstScopeName::scopeNameFormatter(AstText* scopeTextp) const {
-    string out;
-    for (AstText* textp = scopeTextp; textp; textp = VN_AS(textp->nextp(), Text)) {
-        out += textp->text();
-    }
+std::string AstScopeName::scopeNameFormatter(const std::string& text) {
+    std::string out = text;
     if (out.substr(0, 10) == "__DOT__TOP") out.replace(0, 10, "");
     if (out.substr(0, 7) == "__DOT__") out.replace(0, 7, "");
     if (out.substr(0, 1) == ".") out.replace(0, 1, "");
-    string::size_type pos;
-    while ((pos = out.find('.')) != string::npos) out.replace(pos, 1, "__");
-    while ((pos = out.find("__DOT__")) != string::npos) out.replace(pos, 7, "__");
+    std::string::size_type pos;
+    while ((pos = out.find('.')) != std::string::npos) out.replace(pos, 1, "__");
+    while ((pos = out.find("__DOT__")) != std::string::npos) out.replace(pos, 7, "__");
     return out;
 }
 
@@ -1190,6 +1382,13 @@ bool AstSenTree::hasClocked() const {
     UASSERT_OBJ(sensesp(), this, "SENTREE without any SENITEMs under it");
     for (AstSenItem* senp = sensesp(); senp; senp = VN_AS(senp->nextp(), SenItem)) {
         if (senp->isClocked()) return true;
+    }
+    return false;
+}
+bool AstSenTree::hasEdge() const {
+    UASSERT_OBJ(sensesp(), this, "SENTREE without any SENITEMs under it");
+    for (AstSenItem* senp = sensesp(); senp; senp = VN_AS(senp->nextp(), SenItem)) {
+        if (senp->edgeType().anEdge()) return true;
     }
     return false;
 }
@@ -1217,7 +1416,7 @@ bool AstSenTree::hasFinal() const {
 bool AstSenTree::hasCombo() const {
     UASSERT_OBJ(sensesp(), this, "SENTREE without any SENITEMs under it");
     for (AstSenItem* senp = sensesp(); senp; senp = VN_AS(senp->nextp(), SenItem)) {
-        if (senp->isCombo()) return true;
+        if (senp->isComboOrStar()) return true;
     }
     return false;
 }
@@ -1297,48 +1496,41 @@ AstVoidDType* AstTypeTable::findVoidDType(FileLine* fl) {
 }
 
 AstBasicDType* AstTypeTable::findBasicDType(FileLine* fl, VBasicDTypeKwd kwd) {
-    if (m_basicps[kwd]) return m_basicps[kwd];
-    //
-    AstBasicDType* const new1p = new AstBasicDType{fl, kwd};
-    // Because the detailed map doesn't update this map,
-    // check the detailed map for this same node
-    // Also adds this new node to the detailed map
-    AstBasicDType* const newp = findInsertSameDType(new1p);
-    if (newp != new1p) {
-        VL_DO_DANGLING(new1p->deleteTree(), new1p);
-    } else {
-        addTypesp(newp);
+    // Because the detailed map doesn't update m_basicps, check the detailed
+    // map for this same node. Also adds this new node to the detailed map
+    if (!m_basicps[kwd]) {
+        AstBasicDType basic{fl, kwd};
+        m_basicps[kwd] = findCreateSameDType(basic);
     }
-    //
-    m_basicps[kwd] = newp;
-    return newp;
+    return m_basicps[kwd];
 }
 
 AstBasicDType* AstTypeTable::findLogicBitDType(FileLine* fl, VBasicDTypeKwd kwd, int width,
                                                int widthMin, VSigning numeric) {
-    AstBasicDType* const new1p = new AstBasicDType{fl, kwd, numeric, width, widthMin};
-    AstBasicDType* const newp = findInsertSameDType(new1p);
-    if (newp != new1p) {
-        VL_DO_DANGLING(new1p->deleteTree(), new1p);
-    } else {
-        addTypesp(newp);
-    }
-    return newp;
+    AstBasicDType basic{fl, kwd, numeric, width, widthMin};
+    return findCreateSameDType(basic);
 }
 
 AstBasicDType* AstTypeTable::findLogicBitDType(FileLine* fl, VBasicDTypeKwd kwd,
                                                const VNumRange& range, int widthMin,
                                                VSigning numeric) {
-    AstBasicDType* const new1p = new AstBasicDType{fl, kwd, numeric, range, widthMin};
-    AstBasicDType* const newp = findInsertSameDType(new1p);
-    if (newp != new1p) {
-        VL_DO_DANGLING(new1p->deleteTree(), new1p);
-    } else {
-        addTypesp(newp);
-    }
-    return newp;
+    AstBasicDType basic{fl, kwd, numeric, range, widthMin};
+    return findCreateSameDType(basic);
 }
 
+AstBasicDType* AstTypeTable::findCreateSameDType(AstBasicDType& node) {
+    const VBasicTypeKey key{node.width(), node.widthMin(), node.numeric(), node.keyword(),
+                            node.nrange()};
+    AstBasicDType*& entryr = m_detailedMap[key];
+    if (!entryr) {
+        entryr = node.cloneTree(false);
+        entryr->generic(true);
+        addTypesp(entryr);
+    }
+    return entryr;
+}
+
+// cppcheck-suppress duplInheritedMember
 AstBasicDType* AstTypeTable::findInsertSameDType(AstBasicDType* nodep) {
     const VBasicTypeKey key{nodep->width(), nodep->widthMin(), nodep->numeric(), nodep->keyword(),
                             nodep->nrange()};
@@ -1350,7 +1542,7 @@ AstBasicDType* AstTypeTable::findInsertSameDType(AstBasicDType* nodep) {
 
 AstConstPool::AstConstPool(FileLine* fl)
     : ASTGEN_SUPER_ConstPool(fl)
-    , m_modp{new AstModule{fl, "@CONST-POOL@"}}
+    , m_modp{new AstModule{fl, "@CONST-POOL@", "work"}}
     , m_scopep{new AstScope{fl, m_modp, "@CONST-POOL@", nullptr, nullptr}} {
     this->modulep(m_modp);
     m_modp->addStmtsp(m_scopep);
@@ -1427,7 +1619,7 @@ AstVarScope* AstConstPool::findTable(AstInitArray* initp) {
         UASSERT_OBJ(VN_IS(valuep, Const), valuep, "Const pool table entry must be Const");
     }
     // Try to find an existing table with the same content
-    // cppcheck-has-bug-suppress unreadVariable
+    // cppcheck-suppress unreadVariable
     const V3Hash hash = V3Hasher::uncachedHash(initp);
     const auto& er = m_tables.equal_range(hash.value());
     for (auto it = er.first; it != er.second; ++it) {
@@ -1457,7 +1649,7 @@ static bool sameInit(const AstConst* ap, const AstConst* bp) {
 
 AstVarScope* AstConstPool::findConst(AstConst* initp, bool mergeDType) {
     // Try to find an existing constant with the same value
-    // cppcheck-has-bug-suppress unreadVariable
+    // cppcheck-suppress unreadVariable
     const V3Hash hash = initp->num().toHash();
     const auto& er = m_consts.equal_range(hash.value());
     for (auto it = er.first; it != er.second; ++it) {
@@ -1476,43 +1668,6 @@ AstVarScope* AstConstPool::findConst(AstConst* initp, bool mergeDType) {
     AstVarScope* const varScopep = createNewEntry(name, initp);
     m_consts.emplace(hash.value(), varScopep);
     return varScopep;
-}
-
-//======================================================================
-// Special walking tree inserters
-
-void AstNode::addNextStmt(AstNode* newp, AstNode*) {
-    UASSERT_OBJ(backp(), newp, "Can't find current statement to addNextStmt");
-    // Look up; virtual call will find where to put it
-    this->backp()->addNextStmt(newp, this);
-}
-
-void AstNodeStmt::addNextStmt(AstNode* newp, AstNode*) {
-    // Insert newp after current node
-    this->addNextHere(newp);
-}
-
-void AstWhile::addNextStmt(AstNode* newp, AstNode* belowp) {
-    // Special, as statements need to be put in different places
-    // Belowp is how we came to recurse up to this point
-    // Preconditions insert first just before themselves (the normal rule
-    // for other statement types)
-    if (belowp == precondsp()) {
-        // Next in precond list
-        belowp->addNextHere(newp);
-    } else if (belowp == condp()) {
-        // Becomes first statement in body, body may have been empty
-        if (stmtsp()) {
-            stmtsp()->addHereThisAsNext(newp);
-        } else {
-            addStmtsp(newp);
-        }
-    } else if (belowp == stmtsp()) {
-        // Next statement in body
-        belowp->addNextHere(newp);
-    } else {
-        belowp->v3fatalSrc("Doesn't look like this was really under the while");
-    }
 }
 
 //======================================================================
@@ -1536,7 +1691,7 @@ void AstNode::dump(std::ostream& str) const {
         } else {
             str << " @dt=" << nodeAddr(dtypep()) << "@";
         }
-        if (AstNodeDType* const dtp = dtypep()) dtp->dumpSmall(str);
+        if (const AstNodeDType* const dtp = dtypep()) dtp->dumpSmall(str);
     } else {  // V3Broken will throw an error
         if (dtypep()) str << " %Error-dtype-exp=null,got=" << nodeAddr(dtypep());
     }
@@ -1600,8 +1755,8 @@ void AstNodeProcedure::dump(std::ostream& str) const {
 }
 
 void AstNodeProcedure::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isSuspendable);
-    dumpJsonBoolFunc(str, needProcess);
+    dumpJsonBoolFuncIf(str, isSuspendable);
+    dumpJsonBoolFuncIf(str, needProcess);
     dumpJsonGen(str);
 }
 
@@ -1613,13 +1768,21 @@ void AstAlways::dumpJson(std::ostream& str) const {
     dumpJsonStr(str, "keyword", keyword().ascii());
     dumpJsonGen(str);
 }
-AstAssertCtl::AstAssertCtl(FileLine* fl, VAssertCtlType ctlType, AstNodeExpr*, AstNodeExpr*)
+AstAssertCtl::AstAssertCtl(FileLine* fl, VAssertCtlType ctlType, uint32_t assertType,
+                           uint32_t directiveType, AstNodeExpr* levelp, AstNodeExpr* itemsp)
     : ASTGEN_SUPER_AssertCtl(fl)
-    , m_ctlType{ctlType} {
-    controlTypep(new AstConst{fl, ctlType});
+    , m_ctlType{VAssertCtlType::_TO_BE_EVALUATED}
+    , m_assertTypes{VAssertType::INTERNAL}
+    , m_directiveTypes{VAssertDirectiveType::INTERNAL} {
+    this->controlTypep(new AstConst{fl, ctlType});
+    this->assertTypesp(new AstConst{fl, assertType});
+    this->directiveTypesp(new AstConst{fl, directiveType});
+    // Parser creates these but are unused, nuke them
+    if (levelp) VL_DO_DANGLING(levelp->deleteTree(), levelp);
+    if (itemsp) VL_DO_DANGLING(itemsp->deleteTree(), itemsp);
 }
 AstAssertCtl::AstAssertCtl(FileLine* fl, AstNodeExpr* controlTypep, AstNodeExpr* assertTypesp,
-                           AstNodeExpr* directiveTypep, AstNodeExpr*, AstNodeExpr*)
+                           AstNodeExpr* directiveTypep, AstNodeExpr* levelp, AstNodeExpr* itemsp)
     : ASTGEN_SUPER_AssertCtl(fl)
     , m_ctlType{VAssertCtlType::_TO_BE_EVALUATED}
     , m_assertTypes{VAssertType::INTERNAL}
@@ -1627,13 +1790,24 @@ AstAssertCtl::AstAssertCtl(FileLine* fl, AstNodeExpr* controlTypep, AstNodeExpr*
     this->controlTypep(controlTypep);
     this->assertTypesp(assertTypesp);
     this->directiveTypesp(directiveTypep);
+    // Parser creates these but are unused, nuke them
+    if (levelp) VL_DO_DANGLING(levelp->deleteTree(), levelp);
+    if (itemsp) VL_DO_DANGLING(itemsp->deleteTree(), itemsp);
 }
 void AstAssertCtl::dump(std::ostream& str) const {
     this->AstNode::dump(str);
-    str << " [" << ctlType().ascii() << "]";
+    if (ctlType() != VAssertCtlType::_TO_BE_EVALUATED) {
+        str << " [" << ctlType().ascii() << "]";
+        str << " [" << ctlAssertTypes().ascii() << "]";
+        str << " [" << ctlDirectiveTypes().ascii() << "]";
+    }
 }
 void AstAssertCtl::dumpJson(std::ostream& str) const {
-    dumpJsonStr(str, "ctlType", ctlType().ascii());
+    if (ctlType() != VAssertCtlType::_TO_BE_EVALUATED) {
+        dumpJsonStr(str, "ctlType", ctlType().ascii());
+        dumpJsonStr(str, "ctlAssertTypes", ctlAssertTypes().ascii());
+        dumpJsonStr(str, "ctlDirectiveTypes", ctlDirectiveTypes().ascii());
+    }
     dumpJsonGen(str);
 }
 void AstAttrOf::dump(std::ostream& str) const {
@@ -1667,6 +1841,66 @@ string AstBasicDType::prettyDTypeName(bool) const {
 
 void AstNodeExpr::dump(std::ostream& str) const { this->AstNode::dump(str); }
 void AstNodeExpr::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+
+AstConst::~AstConst() {
+    // Only rare constants carry originating parameter-name metadata. For all other AstConst nodes,
+    // the V3Number bit keeps this destructor from touching AstNetlist's side table. When the bit
+    // is set, erase the entry before this AstConst address can be reused by a different node.
+    if (m_num.hasOrigParamName()) v3Global.rootp()->astConstOrigParamNameErase(this);
+}
+
+string AstConst::origParamName() const {
+    if (!m_num.hasOrigParamName()) return "";
+    return v3Global.rootp()->astConstOrigParamName(this);
+}
+
+void AstConst::origParamName(const string& name) {
+    UASSERT(!name.empty(), "Empty originating parameter name");
+    v3Global.rootp()->astConstOrigParamName(this, name);
+    m_num.hasOrigParamName(true);
+}
+
+void AstConst::cloneRelink() {
+    // Preserve parameter-origin metadata across AST clones; the side-table key must be this
+    // new AstConst, not the original node.
+    if (const AstConst* const oldp = clonep()) {
+        const string name = oldp->origParamName();
+        m_num.hasOrigParamName(false);
+        if (!name.empty()) origParamName(name);
+    }
+    m_num.nodep(this);
+}
+
+void AstConst::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    const string name = origParamName();
+    if (!name.empty()) str << " origParamName=" << name;
+}
+void AstConst::dumpJson(std::ostream& str) const {
+    const string name = origParamName();
+    if (!name.empty()) dumpJsonStr(str, "origParamName", name);
+    dumpJsonGen(str);
+}
+
+bool AstNodeExpr::isLValue() const {
+    if (const AstNodeVarRef* const varrefp = VN_CAST(this, NodeVarRef)) {
+        return varrefp->access().isWriteOrRW();
+    } else if (const AstMemberSel* const memberselp = VN_CAST(this, MemberSel)) {
+        return memberselp->access().isWriteOrRW();
+    } else if (const AstSel* const selp = VN_CAST(this, Sel)) {
+        return selp->fromp()->isLValue();
+    } else if (const AstNodeSel* const nodeSelp = VN_CAST(this, NodeSel)) {
+        return nodeSelp->fromp()->isLValue();
+    } else if (const AstConcat* const concatp = VN_CAST(this, Concat)) {
+        // Enough to check only one side, as both must be same otherwise malformed
+        return concatp->lhsp()->isLValue();
+    } else if (const AstCMethodHard* const cMethodHardp = VN_CAST(this, CMethodHard)) {
+        // Used for things like Queue/AssocArray/DynArray
+        return cMethodHardp->fromp()->isLValue();
+    }
+    return false;
+}
+
 void AstNodeUniop::dump(std::ostream& str) const { this->AstNodeExpr::dump(str); }
 void AstNodeUniop::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 
@@ -1676,6 +1910,28 @@ void AstCCast::dump(std::ostream& str) const {
 }
 void AstCCast::dumpJson(std::ostream& str) const {
     dumpJsonNumFunc(str, size);
+    dumpJsonGen(str);
+}
+void AstLogNot::dump(std::ostream& str) const {
+    this->AstNodeUniop::dump(str);
+    if (fromProperty()) str << " [fromProperty]";
+}
+void AstLogNot::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, fromProperty);
+    dumpJsonGen(str);
+}
+void AstCvtArrayToArray::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    str << " reverse=" << reverse();
+    str << " blockSize=" << blockSize();
+    str << " dstElementBits=" << dstElementBits();
+    str << " srcElementBits=" << srcElementBits();
+}
+void AstCvtArrayToArray::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, reverse);
+    dumpJsonNumFunc(str, blockSize);
+    dumpJsonNumFunc(str, dstElementBits);
+    dumpJsonNumFunc(str, srcElementBits);
     dumpJsonGen(str);
 }
 void AstCell::dump(std::ostream& str) const {
@@ -1690,7 +1946,8 @@ void AstCell::dump(std::ostream& str) const {
 }
 void AstCell::dumpJson(std::ostream& str) const {
     dumpJsonStrFunc(str, origName);
-    dumpJsonBoolFunc(str, recursive);
+    dumpJsonStrFunc(str, verilogName);
+    dumpJsonBoolFuncIf(str, recursive);
     dumpJsonGen(str);
 }
 void AstCellInline::dump(std::ostream& str) const {
@@ -1710,8 +1967,16 @@ void AstCellInlineScope::dumpJson(std::ostream& str) const {
     dumpJsonStrFunc(str, origModName);
     dumpJsonGen(str);
 }
+void AstCExpr::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    if (m_pure) str << " [PURE]";
+}
+void AstCExpr::dumpJson(std::ostream& str) const {
+    dumpJsonBoolIf(str, "pure", m_pure);
+    dumpJsonGen(str);
+}
 bool AstClass::isCacheableChild(const AstNode* nodep) {
-    return VN_IS(nodep, Var)
+    return VN_IS(nodep, Var) || VN_IS(nodep, Typedef)
            || (VN_IS(nodep, Constraint) && !VN_AS(nodep, Constraint)->isExternProto())
            || VN_IS(nodep, EnumItemRef)
            || (VN_IS(nodep, NodeFTask) && !VN_AS(nodep, NodeFTask)->isExternProto())
@@ -1733,15 +1998,18 @@ bool AstClass::isClassExtendedFrom(const AstClass* refClassp, const AstClass* ba
 }
 void AstClass::dump(std::ostream& str) const {
     this->AstNodeModule::dump(str);
+    if (isCovergroup()) str << " [CG]";
     if (isExtended()) str << " [EXT]";
     if (isInterfaceClass()) str << " [IFCCLS]";
     if (isVirtual()) str << " [VIRT]";
     if (useVirtualPublic()) str << " [VIRPUB]";
 }
 void AstClass::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isExtended);
-    dumpJsonBoolFunc(str, isInterfaceClass);
-    dumpJsonBoolFunc(str, isVirtual);
+    // dumpJsonNumFunc(str, declTokenNum);  // Not dumped as adding token changes whole file
+    dumpJsonBoolFuncIf(str, isCovergroup);
+    dumpJsonBoolFuncIf(str, isExtended);
+    dumpJsonBoolFuncIf(str, isInterfaceClass);
+    dumpJsonBoolFuncIf(str, isVirtual);
     if (baseOverride().isAny()) dumpJsonStr(str, "baseOverride", baseOverride().ascii());
     dumpJsonGen(str);
 }
@@ -1750,7 +2018,7 @@ void AstClassExtends::dump(std::ostream& str) const {
     if (isImplements()) str << " [IMPLEMENTS]";
 }
 void AstClassExtends::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isImplements);
+    dumpJsonBoolFuncIf(str, isImplements);
     dumpJsonGen(str);
 }
 AstClass* AstClassExtends::classOrNullp() const {
@@ -1759,9 +2027,8 @@ AstClass* AstClassExtends::classOrNullp() const {
     if (refp && !refp->paramsp()) {
         // Class already resolved
         return refp->classp();
-    } else {
-        return nullptr;
     }
+    return nullptr;
 }
 AstClass* AstClassExtends::classp() const {
     AstClass* const clsp = classOrNullp();
@@ -1785,13 +2052,54 @@ void AstClassRefDType::dumpSmall(std::ostream& str) const {
 }
 string AstClassRefDType::prettyDTypeName(bool) const { return "class{}"s + prettyName(); }
 string AstClassRefDType::name() const { return classp() ? classp()->name() : "<unlinked>"; }
+bool AstClassRefDType::similarDTypeNode(const AstNodeDType* samep) const {
+    const AstClassRefDType* const asamep = VN_DBG_AS(samep, ClassRefDType);
+    if (m_classp != asamep->m_classp) return false;
+    // Compare type parameters so C#(int) != C#(string)
+    const AstPin* lp = paramsp();
+    const AstPin* rp = asamep->paramsp();
+    while (lp && rp) {
+        if (!lp->exprp() != !rp->exprp()) return false;
+        if (lp->exprp()) {
+            const AstNodeDType* const lDtp = VN_CAST(lp->exprp(), NodeDType);
+            const AstNodeDType* const rDtp = VN_CAST(rp->exprp(), NodeDType);
+            if (lDtp && rDtp) {
+                if (!lDtp->similarDType(rDtp)) return false;
+            } else {
+                if (!lp->exprp()->sameTree(rp->exprp())) return false;
+            }
+        }
+        lp = VN_CAST(lp->nextp(), Pin);
+        rp = VN_CAST(rp->nextp(), Pin);
+    }
+    return !lp && !rp;
+}
+bool AstNodeUOrStructDType::similarDTypeNode(const AstNodeDType* samep) const {
+    const AstNodeUOrStructDType* const sp = VN_DBG_AS(samep, NodeUOrStructDType);
+    if (m_packed != sp->m_packed) return false;
+    if (fileline()->tokenNum() != sp->fileline()->tokenNum()) return false;
+    const AstMemberDType* lp = membersp();
+    const AstMemberDType* rp = sp->membersp();
+    while (lp && rp) {
+        if (lp->name() != rp->name()) return false;
+        if (lp->width() != rp->width()) return false;
+        if (!lp->subDTypep()->similarDType(rp->subDTypep())) return false;
+        lp = VN_CAST(lp->nextp(), MemberDType);
+        rp = VN_CAST(rp->nextp(), MemberDType);
+    }
+    return !lp && !rp;
+}
 void AstNodeCoverOrAssert::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
-    str << " ["s + this->type().ascii() + "]";
+    str << " ["s + this->userType().ascii() + "]";
+    if (immediate()) str << " [IMMEDIATE]";
+    if (senFromAlways()) str << " [SENALW]";
 }
 void AstNodeCoverOrAssert::dumpJson(std::ostream& str) const {
-    dumpJsonStr(str, "type", "["s + this->type().ascii() + "]");
+    dumpJsonStr(str, "type", "["s + this->userType().ascii() + "]");
     dumpJsonGen(str);
+    dumpJsonBoolFuncIf(str, immediate);
+    dumpJsonBoolFuncIf(str, senFromAlways);
 }
 void AstClocking::dump(std::ostream& str) const {
     this->AstNode::dump(str);
@@ -1799,8 +2107,34 @@ void AstClocking::dump(std::ostream& str) const {
     if (isGlobal()) str << " [GLOBAL]";
 }
 void AstClocking::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isDefault);
-    dumpJsonBoolFunc(str, isGlobal);
+    dumpJsonBoolFuncIf(str, isDefault);
+    dumpJsonBoolFuncIf(str, isGlobal);
+    dumpJsonGen(str);
+}
+void AstConfig::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    str << " configname=" << configname();
+    if (libname() != "work") str << " libname=" << libname();
+}
+void AstConfig::dumpJson(std::ostream& str) const {
+    dumpJsonStrFunc(str, configname);
+    if (libname() != "work") dumpJsonStr(str, "libname=", libname());
+    dumpJsonGen(str);
+}
+void AstConfigRule::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (isCell()) str << " [CELL]";
+}
+void AstConfigRule::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, isCell);
+    dumpJsonGen(str);
+}
+void AstConfigUse::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (isConfig()) str << " [CONFIG]";
+}
+void AstConfigUse::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, isConfig);
     dumpJsonGen(str);
 }
 void AstDisplay::dump(std::ostream& str) const {
@@ -1813,7 +2147,7 @@ void AstEnumDType::dump(std::ostream& str) const {
     str << " enum";
 }
 void AstEnumDType::dumpJson(std::ostream& str) const {
-    dumpJsonBool(str, "enum", 1);
+    dumpJsonBoolIf(str, "enum", true);
     dumpJsonGen(str);
 }
 void AstEnumDType::dumpSmall(std::ostream& str) const {
@@ -1836,6 +2170,10 @@ string AstEnumDType::prettyDTypeName(bool full) const {
     result += "}" + prettyName();
     return result;
 }
+const char* AstEnumItemRef::broken() const {
+    if (v3Global.assertDTypesResolved()) BROKEN_RTN(!itemp());
+    return nullptr;
+}
 void AstEnumItemRef::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
     str << " -> ";
@@ -1853,6 +2191,18 @@ const char* AstEnumDType::broken() const {
 }
 
 void AstEnumItemRef::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+
+void AstGenBlock::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (implied()) str << " [IMPLIED]";
+    if (unnamed()) str << " [UNNAMED]";
+}
+void AstGenBlock::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, implied);
+    dumpJsonBoolFuncIf(str, unnamed);
+    dumpJsonGen(str);
+}
+
 void AstIfaceRefDType::dump(std::ostream& str) const {
     this->AstNodeDType::dump(str);
     if (isPortDecl()) str << " [PORTDECL]";
@@ -1861,18 +2211,18 @@ void AstIfaceRefDType::dump(std::ostream& str) const {
     if (ifaceName() != "") str << " if=" << ifaceName();
     if (modportName() != "") str << " mp=" << modportName();
     if (cellp()) {
-        str << " -> ";
+        str << " c-> ";
         cellp()->dump(str);
     } else if (ifacep()) {
-        str << " -> ";
+        str << " i-> ";
         ifacep()->dump(str);
     } else {
         str << " -> UNLINKED";
     }
 }
 void AstIfaceRefDType::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isPortDecl);
-    dumpJsonBoolFunc(str, isVirtual);
+    dumpJsonBoolFuncIf(str, isPortDecl);
+    dumpJsonBoolFuncIf(str, isVirtual);
     dumpJsonStrFunc(str, cellName);
     dumpJsonStrFunc(str, ifaceName);
     dumpJsonStrFunc(str, modportName);
@@ -1881,6 +2231,16 @@ void AstIfaceRefDType::dumpJson(std::ostream& str) const {
 void AstIfaceRefDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
     str << "iface";
+}
+void AstImplication::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    if (isOverlapped()) str << " [overlapped]";
+    if (isFollowedBy()) str << " [followed-by]";
+}
+void AstImplication::dumpJson(std::ostream& str) const {
+    this->AstNodeExpr::dumpJson(str);
+    dumpJsonBoolFuncIf(str, isOverlapped);
+    dumpJsonBoolFuncIf(str, isFollowedBy);
 }
 void AstInitArray::dumpInitList(std::ostream& str) const {
     int n = 0;
@@ -1930,11 +2290,8 @@ void AstInitArray::addIndexValuep(uint64_t index, AstNodeExpr* newp) {
 }
 AstNodeExpr* AstInitArray::getIndexValuep(uint64_t index) const {
     const auto it = m_map.find(index);
-    if (it == m_map.end()) {
-        return nullptr;
-    } else {
-        return it->second->valuep();
-    }
+    if (it == m_map.end()) { return nullptr; }
+    return it->second->valuep();
 }
 AstNodeExpr* AstInitArray::getIndexDefaultedValuep(uint64_t index) const {
     AstNodeExpr* valuep = getIndexValuep(index);
@@ -1945,28 +2302,41 @@ AstNodeExpr* AstInitArray::getIndexDefaultedValuep(uint64_t index) const {
 void AstJumpGo::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
     str << " -> ";
-    if (labelp()) {
-        labelp()->dump(str);
-    } else {
-        str << "%E:UNLINKED";
-    }
-}
-void AstJumpGo::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
-const char* AstJumpGo::broken() const {
-    BROKEN_RTN(!labelp()->brokeExistsBelow());
-    return nullptr;
-}
-
-void AstJumpLabel::dump(std::ostream& str) const {
-    this->AstNodeStmt::dump(str);
-    str << " -> ";
     if (blockp()) {
         blockp()->dump(str);
     } else {
         str << "%E:UNLINKED";
     }
 }
-void AstJumpLabel::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstJumpGo::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+const char* AstJumpGo::broken() const {
+    BROKEN_RTN(!blockp()->brokeExistsAbove());
+    return nullptr;
+}
+
+void AstLoop::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (unroll().isSetTrue())
+        str << " [unrollfull]";
+    else if (unroll().isSetFalse())
+        str << " [unrollnone]";
+}
+void AstLoop::dumpJson(std::ostream& str) const {
+    dumpJsonStr(str, "unroll",
+                unroll().isSetTrue()    ? "full"
+                : unroll().isSetFalse() ? "none"
+                                        : "default");
+    dumpJsonGen(str);
+}
+void AstLoopTest::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    str << " -> ";
+    loopp()->dump(str);
+}
+const char* AstLoopTest::broken() const {
+    BROKEN_RTN(!loopp()->brokeExistsAbove());
+    return nullptr;
+}
 
 void AstMemberDType::dump(std::ostream& str) const {
     this->AstNodeDType::dump(str);
@@ -1976,7 +2346,7 @@ void AstMemberDType::dump(std::ostream& str) const {
 }
 
 void AstMemberDType::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isConstrainedRand);
+    dumpJsonBoolFuncIf(str, isConstrainedRand);
     dumpJsonStrFunc(str, name);
     dumpJsonStrFunc(str, tag);
     dumpJsonGen(str);
@@ -2005,7 +2375,7 @@ AstMemberSel::AstMemberSel(FileLine* fl, AstNodeExpr* fromp, AstVar* varp)
 bool AstMemberSel::sameNode(const AstNode* samep) const {
     const AstMemberSel* const sp = VN_DBG_AS(samep, MemberSel);
     return sp && access() == sp->access() && fromp()->isSame(sp->fromp()) && name() == sp->name()
-           && (varp() && sp->varp() && varp()->sameNode(sp->varp()));
+           && (varp() == sp->varp() || (varp() && sp->varp() && varp()->sameNode(sp->varp())));
 }
 
 void AstMemberSel::dump(std::ostream& str) const {
@@ -2018,6 +2388,15 @@ void AstMemberSel::dump(std::ostream& str) const {
     }
 }
 void AstMemberSel::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstModportClockingRef::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (clockingp()) {
+        str << " -> ";
+        clockingp()->dump(str);
+    } else {
+        str << " -> UNLINKED";
+    }
+}
 void AstModportFTaskRef::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (isExport()) str << " EXPORT";
@@ -2030,8 +2409,8 @@ void AstModportFTaskRef::dump(std::ostream& str) const {
     }
 }
 void AstModportFTaskRef::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isExport);
-    dumpJsonBoolFunc(str, isImport);
+    dumpJsonBoolFuncIf(str, isExport);
+    dumpJsonBoolFuncIf(str, isImport);
     dumpJsonGen(str);
 }
 void AstModportVarRef::dump(std::ostream& str) const {
@@ -2052,10 +2431,12 @@ void AstModule::dump(std::ostream& str) const {
     this->AstNodeModule::dump(str);
     if (isChecker()) str << " [CHECKER]";
     if (isProgram()) str << " [PROGRAM]";
+    if (hasGenericIface()) str << " [HASGENERICIFACE]";
 }
 void AstModule::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isChecker);
-    dumpJsonBoolFunc(str, isProgram);
+    dumpJsonBoolFuncIf(str, isChecker);
+    dumpJsonBoolFuncIf(str, isProgram);
+    dumpJsonBoolFuncIf(str, hasGenericIface);
     dumpJsonGen(str);
 }
 void AstPin::dump(std::ostream& str) const {
@@ -2066,12 +2447,14 @@ void AstPin::dump(std::ostream& str) const {
     } else {
         str << " ->UNLINKED";
     }
+    if (!paramPath().empty()) str << " paramPath=" << paramPath();
     if (svDotName()) str << " [.n]";
     if (svImplicit()) str << " [.SV]";
 }
 void AstPin::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, svDotName);
-    dumpJsonBoolFunc(str, svImplicit);
+    dumpJsonBoolFuncIf(str, svDotName);
+    dumpJsonBoolFuncIf(str, svImplicit);
+    if (!paramPath().empty()) dumpJsonStr(str, "paramPath", paramPath());
     dumpJsonGen(str);
 }
 string AstPin::prettyOperatorName() const {
@@ -2079,6 +2462,20 @@ string AstPin::prettyOperatorName() const {
                ? ((modVarp()->direction().isAny() ? modVarp()->direction().prettyName() + " " : "")
                   + "port connection " + modVarp()->prettyNameQ())
                : "port connection";
+}
+void AstPragma::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    str << " " << pragType();
+    if (pragType() == VPragmaType::TIMEUNIT_SET) {  //
+        str << " timescale=" << timescale();
+    }
+}
+void AstPragma::dumpJson(std::ostream& str) const {
+    dumpJsonStr(str, "pragType", pragType().ascii());
+    if (pragType() == VPragmaType::TIMEUNIT_SET) {
+        dumpJsonStr(str, "timescale", timescale().ascii());
+    }
+    dumpJsonGen(str);
 }
 void AstPrintTimeScale::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
@@ -2089,8 +2486,6 @@ void AstPrintTimeScale::dumpJson(std::ostream& str) const {
     dumpJsonGen(str);
 }
 
-void AstNodeTermop::dump(std::ostream& str) const { this->AstNodeExpr::dump(str); }
-void AstNodeTermop::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 void AstTime::dump(std::ostream& str) const {
     this->AstNodeTermop::dump(str);
     str << " " << timeunit();
@@ -2118,23 +2513,52 @@ void AstTimeImport::dumpJson(std::ostream& str) const {
 void AstTypedef::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (attrPublic()) str << " [PUBLIC]";
+    if (isUnderClass()) str << " [UNDCLS]";
     if (subDTypep()) {
         str << " -> ";
         subDTypep()->dump(str);
     }
 }
 void AstTypedef::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, attrPublic);
+    // dumpJsonNumFunc(str, declTokenNum);  // Not dumped as adding token changes whole file
+    dumpJsonBoolFuncIf(str, attrPublic);
+    dumpJsonBoolFuncIf(str, isUnderClass);
+    dumpJsonGen(str);
+}
+void AstTypedefFwd::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    str << " [" << fwdType().ascii() << "]";
+}
+void AstTypedefFwd::dumpJson(std::ostream& str) const {
+    dumpJsonStr(str, "fwdType", fwdType().ascii());
     dumpJsonGen(str);
 }
 void AstNodeRange::dump(std::ostream& str) const { this->AstNode::dump(str); }
 void AstNodeRange::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstRandSequence::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    str << " start=" << start();
+}
+void AstRandSequence::dumpJson(std::ostream& str) const {
+    if (!start().empty()) dumpJsonStr(str, "start", start());
+    dumpJsonGen(str);
+}
 void AstRange::dump(std::ostream& str) const {
     this->AstNodeRange::dump(str);
+    if (fromBracket()) str << " [FB]";
     if (ascending()) str << " [ASCENDING]";
 }
+void AstRSProdList::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, randJoin);
+    dumpJsonGen(str);
+}
+void AstRSProdList::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (randJoin()) str << " [RANDJOIN]";
+}
 void AstRange::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, ascending);
+    dumpJsonBoolFuncIf(str, ascending);
+    dumpJsonBoolFuncIf(str, fromBracket);
     dumpJsonGen(str);
 }
 void AstParamTypeDType::dump(std::ostream& str) const {
@@ -2153,11 +2577,14 @@ void AstRefDType::dump(std::ostream& str) const {
         static bool s_recursing = false;
         if (!s_recursing) {  // Prevent infinite dump if circular typedefs
             s_recursing = true;
+            if (classOrPackagep()) str << " cpkg=" << nodeAddr(classOrPackagep());
+            if (refDTypep()) str << " refDTypep=" << nodeAddr(refDTypep());
+            if (typedefp()) str << " typedefp=" << nodeAddr(typedefp());
+
             str << " -> ";
-            if (const auto subp = subDTypep()) {
-                if (typedefp()) str << "typedef=" << static_cast<void*>(typedefp()) << " -> ";
+            if (const AstNodeDType* const subp = subDTypep()) {
                 subp->dump(str);
-            } else if (const auto subp = typedefp()) {
+            } else if (const AstTypedef* const subp = typedefp()) {
                 subp->dump(str);
             }
             s_recursing = false;
@@ -2167,6 +2594,7 @@ void AstRefDType::dump(std::ostream& str) const {
     }
 }
 void AstRefDType::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+
 void AstRefDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
     str << "ref";
@@ -2182,9 +2610,33 @@ void AstNodeUOrStructDType::dump(std::ostream& str) const {
     if (classOrPackagep()) str << " pkg=" << nodeAddr(classOrPackagep());
 }
 void AstNodeUOrStructDType::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, packed);
-    dumpJsonBoolFunc(str, isFourstate);
+    dumpJsonBoolFuncIf(str, packed);
+    dumpJsonBoolFuncIf(str, isFourstate);
     dumpJsonGen(str);
+}
+void AstUnionDType::dump(std::ostream& str) const {
+    this->AstNodeUOrStructDType::dump(str);
+    if (isSoft()) str << " [soft]";
+    if (isTagged()) str << " [tagged]";
+}
+void AstUnionDType::dumpJson(std::ostream& str) const {
+    this->AstNodeUOrStructDType::dumpJson(str);
+    dumpJsonBoolFuncIf(str, isSoft);
+    dumpJsonBoolFuncIf(str, isTagged);
+}
+bool AstUnionDType::sameNode(const AstNode* samep) const {
+    const AstUnionDType* const asamep = VN_DBG_AS(samep, UnionDType);
+    return m_isSoft == asamep->m_isSoft && m_isTagged == asamep->m_isTagged;
+}
+void AstUntil::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    if (isStrong()) str << " [strong]";
+    if (isOverlapping()) str << " [overlapping]";
+}
+void AstUntil::dumpJson(std::ostream& str) const {
+    this->AstNodeExpr::dumpJson(str);
+    dumpJsonBoolFuncIf(str, isStrong);
+    dumpJsonBoolFuncIf(str, isOverlapping);
 }
 string AstNodeUOrStructDType::prettyDTypeName(bool full) const {
     string result = verilogKwd() + "{";
@@ -2201,13 +2653,14 @@ string AstNodeUOrStructDType::prettyDTypeName(bool full) const {
 void AstNodeDType::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (generic()) str << " [GENERIC]";
-    if (AstNodeDType* const dtp = virtRefDTypep()) {
+    if (const AstNodeDType* const dtp = virtRefDTypep()) {
         str << " refdt=" << nodeAddr(dtp);
         dtp->dumpSmall(str);
     }
 }
 void AstNodeDType::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, generic);
+    dumpJsonBoolFuncIf(str, generic);
+    if (isSigned() && !isDouble()) dumpJsonBoolIf(str, "signed", true);
     dumpJsonGen(str);
 }
 void AstNodeDType::dumpSmall(std::ostream& str) const VL_MT_STABLE {
@@ -2233,7 +2686,7 @@ void AstNodeArrayDType::dump(std::ostream& str) const {
     str << " " << declRange();
 }
 void AstNodeArrayDType::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isCompound);
+    dumpJsonBoolFuncIf(str, isCompound);
     dumpJsonStr(str, "declRange", cvtToStr(declRange()));
     dumpJsonGen(str);
 }
@@ -2277,10 +2730,30 @@ void AstNetlist::dumpJson(std::ostream& str) const {
     dumpJsonStr(str, "timeprecision", timeprecision().ascii());
     dumpJsonGen(str);
 }
+void AstNetlist::deleteContents() {
+    // Delete all netlist memory.  Only for use by Verilator.cpp
+    m_typeTablep = nullptr;
+    m_constPoolp = nullptr;
+    m_dollarUnitPkgp = nullptr;
+    m_stdPackagep = nullptr;
+    m_evalp = nullptr;
+    m_evalNbap = nullptr;
+    m_dpiExportTriggerp = nullptr;
+    m_delaySchedulerp = nullptr;
+    m_nbaEventp = nullptr;
+    m_nbaEventTriggerp = nullptr;
+    m_topScopep = nullptr;
+    if (op1p()) op1p()->unlinkFrBackWithNext()->deleteTree();
+    if (op2p()) op2p()->unlinkFrBackWithNext()->deleteTree();
+    if (op3p()) op3p()->unlinkFrBackWithNext()->deleteTree();
+    if (op4p()) op4p()->unlinkFrBackWithNext()->deleteTree();
+#undef VN_DELETE_ONE
+}
 AstPackage* AstNetlist::dollarUnitPkgAddp() {
     if (!m_dollarUnitPkgp) {
-        m_dollarUnitPkgp = new AstPackage{fileline(), AstPackage::dollarUnitName()};
+        m_dollarUnitPkgp = new AstPackage{fileline(), AstPackage::dollarUnitName(), "work"};
         // packages are always libraries; don't want to make them a "top"
+        m_dollarUnitPkgp->level(1);
         m_dollarUnitPkgp->inLibrary(true);
         m_dollarUnitPkgp->modTrace(false);  // may reconsider later
         m_dollarUnitPkgp->internal(true);
@@ -2294,28 +2767,56 @@ void AstNetlist::createTopScope(AstScope* scopep) {
     m_topScopep = new AstTopScope{scopep->modp()->fileline(), scopep};
     scopep->modp()->addStmtsp(v3Global.rootp()->topScopep());
 }
+AstVarScope* AstNetlist::stlFirstIterationp() {
+    if (!m_stlFirstIterationp) {
+        m_stlFirstIterationp = topScopep()->scopep()->createTemp("__VstlFirstIteration", 1);
+    }
+    AstVarScope* const vscp = m_stlFirstIterationp;
+    return vscp;
+}
+AstFuncRef* AstNetlist::stdPackageProcessSelfp(FileLine* flp) const {
+    UASSERT(v3Global.rootp()->stdPackageClassp(), "'std' should be imported");
+    AstFunc* selfp = nullptr;
+    for (AstNode* itemp = v3Global.rootp()->stdPackageClassp()->stmtsp(); itemp;
+         itemp = itemp->nextp()) {
+        if (itemp->name() == "self") selfp = VN_AS(itemp, Func);
+    }
+    UASSERT(selfp, "'std::process::self' should be found");
+    AstFuncRef* const processSelfp = new AstFuncRef{flp, selfp};
+    processSelfp->classOrPackagep(v3Global.rootp()->stdPackageClassp());
+    return processSelfp;
+}
 void AstNodeModule::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     str << "  L" << level();
+    str << " D" << depth();
     if (modPublic()) str << " [P]";
     if (inLibrary()) str << " [LIB]";
+    if (ctorVarReset()) str << " [CVRESET]";
     if (dead()) str << " [DEAD]";
     if (recursiveClone()) {
         str << " [RECURSIVE-CLONE]";
     } else if (recursive()) {
         str << " [RECURSIVE]";
     }
+    if (parameterizedTemplate()) str << " [PAR-TEMPL]";
+    if (verilatorLib()) str << " [VERILATOR-LIB]";
     str << " [" << timeunit() << "]";
+    if (libname() != "work") str << " libname=" << libname();
 }
 void AstNodeModule::dumpJson(std::ostream& str) const {
     dumpJsonStrFunc(str, origName);
+    dumpJsonStrFunc(str, verilogName);
     dumpJsonNumFunc(str, level);
-    dumpJsonBoolFunc(str, modPublic);
-    dumpJsonBoolFunc(str, inLibrary);
-    dumpJsonBoolFunc(str, dead);
-    dumpJsonBoolFunc(str, recursiveClone);
-    dumpJsonBoolFunc(str, recursive);
+    dumpJsonBoolFuncIf(str, modPublic);
+    dumpJsonBoolFuncIf(str, inLibrary);
+    dumpJsonBoolFuncIf(str, ctorVarReset);
+    dumpJsonBoolFuncIf(str, dead);
+    dumpJsonBoolFuncIf(str, recursiveClone);
+    dumpJsonBoolFuncIf(str, recursive);
+    dumpJsonBoolFuncIf(str, verilatorLib);
     dumpJsonStr(str, "timeunit", timeunit().ascii());
+    if (libname() != "work") dumpJsonStr(str, "libname=", libname());
     dumpJsonGen(str);
 }
 void AstPackageExport::dump(std::ostream& str) const {
@@ -2327,9 +2828,6 @@ void AstPackageExport::dump(std::ostream& str) const {
     }
 }
 void AstPackageExport::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
-void AstPackageExport::pkgNameFrom() {
-    if (packagep()) m_pkgName = packagep()->name();
-}
 void AstPackageImport::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (packagep()) {
@@ -2348,20 +2846,51 @@ void AstPatMember::dump(std::ostream& str) const {
     if (isDefault()) str << " [DEFAULT]";
 }
 void AstPatMember::dumpJson(std::ostream& str) const {
-    if (isConcat()) dumpJsonBoolFunc(str, isConcat);
-    if (isDefault()) dumpJsonBoolFunc(str, isDefault);
+    dumpJsonBoolFuncIf(str, isConcat);
+    dumpJsonBoolFuncIf(str, isDefault);
     dumpJsonGen(str);
 }
 void AstNodeTriop::dump(std::ostream& str) const { this->AstNodeExpr::dump(str); }
 void AstNodeTriop::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
+void AstSFormatArg::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    str << " [" << formatAttr().ascii() << "]";
+}
+void AstSFormatArg::dumpJson(std::ostream& str) const {
+    dumpJsonGen(str);
+    dumpJsonStr(str, "formatAttr", std::string{formatAttr().ascii()});
+}
+VFormatAttr AstSFormatArg::formatAttrDefauled(const AstSFormatArg* nodep,
+                                              const AstNodeDType* dtypep) {
+    if (nodep) return nodep->formatAttr();
+    // Used to initially assign the formatArg
+    // Later, V3Randomize creates raw %s's without SFormatArg's that have string arguments
+    if (!dtypep) return VFormatAttr{};
+    const AstNodeDType* skipDtypep = dtypep->skipRefp();
+    if (skipDtypep->isDouble()) return VFormatAttr{VFormatAttr::DOUBLE};
+    if (skipDtypep->isString()) return VFormatAttr{VFormatAttr::STRING};
+    return VFormatAttr{};
+}
+void AstSFormatF::dump(std::ostream& str) const {
+    this->AstNodeExpr::dump(str);
+    if (exprFormat()) str << " [EXPRFMT]";
+    if (optionalFormat()) str << " [OPTFMT]";
+}
+void AstSFormatF::dumpJson(std::ostream& str) const {
+    dumpJsonGen(str);
+    dumpJsonBoolFuncIf(str, exprFormat);
+    dumpJsonBoolFuncIf(str, optionalFormat);
+}
 void AstSel::dump(std::ostream& str) const {
-    this->AstNodeTriop::dump(str);
+    this->AstNodeBiop::dump(str);
+    str << " widthConst=" << this->widthConst();
     if (declRange().ranged()) {
         str << " decl" << declRange() << "]";
         if (declElWidth() != 1) str << "/" << declElWidth();
     }
 }
 void AstSel::dumpJson(std::ostream& str) const {
+    dumpJsonNumFunc(str, widthConst);
     if (declRange().ranged()) {
         dumpJsonStr(str, "declRange", cvtToStr(declRange()));
         dumpJsonNumFunc(str, declElWidth);
@@ -2376,21 +2905,18 @@ void AstSliceSel::dumpJson(std::ostream& str) const {
     if (declRange().ranged()) dumpJsonStr(str, "declRange", cvtToStr(declRange()));
     dumpJsonGen(str);
 }
-void AstMTaskBody::dump(std::ostream& str) const {
+void AstSystemCSection::dump(std::ostream& str) const {
     this->AstNode::dump(str);
-    str << " ";
-    m_execMTaskp->dump(str);
+    str << " sectionType=" << sectionType().ascii();
 }
-void AstMTaskBody::dumpJson(std::ostream& str) const {
-    str << ',' << '"' << "execMTask" << '"' << ':' << '"';
-    m_execMTaskp->dump(str);  // TODO: Consider dumping it as json object
-    str << '"';
+void AstSystemCSection::dumpJson(std::ostream& str) const {
+    dumpJsonStr(str, "sectionType", sectionType().ascii());
     dumpJsonGen(str);
 }
 void AstTypeTable::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     for (int i = 0; i < static_cast<int>(VBasicDTypeKwd::_ENUM_MAX); ++i) {
-        if (AstBasicDType* const subnodep = m_basicps[i]) {
+        if (const AstBasicDType* const subnodep = m_basicps[i]) {
             str << '\n';  // Newline from caller, so newline first
             str << "\t\t" << std::setw(8) << VBasicDTypeKwd{i}.ascii();
             str << "  -> ";
@@ -2400,7 +2926,7 @@ void AstTypeTable::dump(std::ostream& str) const {
     {
         const DetailedMap& mapr = m_detailedMap;
         for (const auto& itr : mapr) {
-            AstBasicDType* const dtypep = itr.second;
+            const AstBasicDType* const dtypep = itr.second;
             str << '\n';  // Newline from caller, so newline first
             str << "\t\tdetailed  ->  ";
             dtypep->dump(str);
@@ -2470,6 +2996,10 @@ void AstVoidDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
     str << "void";
 }
+void AstIfaceGenericDType::dumpSmall(std::ostream& str) const {
+    this->AstNodeDType::dumpSmall(str);
+    str << "generic_interface";
+}
 void AstStreamDType::dumpSmall(std::ostream& str) const {
     this->AstNodeDType::dumpSmall(str);
     str << "stream";
@@ -2486,7 +3016,7 @@ void AstVarScope::dump(std::ostream& str) const {
     }
 }
 void AstVarScope::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isTrace);
+    dumpJsonBoolFuncIf(str, isTrace);
     dumpJsonGen(str);
 }
 bool AstVarScope::sameNode(const AstNode* samep) const {
@@ -2505,15 +3035,21 @@ void AstNodeVarRef::dumpJson(std::ostream& str) const {
 AstNodeVarRef* AstNodeVarRef::varRefLValueRecurse(AstNode* nodep) {
     // Given a (possible) lvalue expression, recurse to find the being-set NodeVarRef, else nullptr
     if (AstNodeVarRef* const anodep = VN_CAST(nodep, NodeVarRef)) return anodep;
-    if (AstNodeSel* const anodep = VN_CAST(nodep, NodeSel))
+    if (const AstNodeSel* const anodep = VN_CAST(nodep, NodeSel)) {
         return varRefLValueRecurse(anodep->fromp());
-    if (AstSel* const anodep = VN_CAST(nodep, Sel)) return varRefLValueRecurse(anodep->fromp());
-    if (AstArraySel* const anodep = VN_CAST(nodep, ArraySel))
+    }
+    if (const AstSel* const anodep = VN_CAST(nodep, Sel)) {
         return varRefLValueRecurse(anodep->fromp());
-    if (AstMemberSel* const anodep = VN_CAST(nodep, MemberSel))
+    }
+    if (const AstArraySel* const anodep = VN_CAST(nodep, ArraySel)) {
         return varRefLValueRecurse(anodep->fromp());
-    if (AstStructSel* const anodep = VN_CAST(nodep, StructSel))
+    }
+    if (const AstMemberSel* const anodep = VN_CAST(nodep, MemberSel)) {
         return varRefLValueRecurse(anodep->fromp());
+    }
+    if (const AstStructSel* const anodep = VN_CAST(nodep, StructSel)) {
+        return varRefLValueRecurse(anodep->fromp());
+    }
     return nullptr;
 }
 
@@ -2531,7 +3067,7 @@ void AstVarXRef::dump(std::ostream& str) const {
     }
 }
 void AstVarXRef::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, containsGenBlock);
+    dumpJsonBoolFuncIf(str, containsGenBlock);
     dumpJsonStrFunc(str, dotted);
     dumpJsonStrFunc(str, inlinedDots);
     dumpJsonGen(str);
@@ -2548,7 +3084,8 @@ void AstVarRef::dump(std::ostream& str) const {
 }
 void AstVarRef::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 const char* AstVarRef::broken() const {
-    BROKEN_RTN(!varp());
+    // Even after assertDTypesResolved(), V3Scope will set varp() to null, but name won't be ""
+    BROKEN_RTN(!varp() && name().empty());
     return nullptr;
 }
 bool AstVarRef::sameNode(const AstNode* samep) const { return sameNode(VN_DBG_AS(samep, VarRef)); }
@@ -2564,73 +3101,83 @@ void AstVar::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     if (isSc()) str << " [SC]";
     if (isPrimaryIO()) str << (isInout() ? " [PIO]" : (isWritable() ? " [PO]" : " [PI]"));
+    if (isPrimaryClock()) str << " [PCLK]";
     if (isIO()) str << " " << direction().ascii();
     if (isConst()) str << " [CONST]";
     if (isPullup()) str << " [PULLUP]";
     if (isPulldown()) str << " [PULLDOWN]";
-    if (isUsedClock()) str << " [CLK]";
     if (isSigPublic()) str << " [P]";
+    if (isSigUserRdPublic()) str << " [PRD]";
+    if (isSigUserRWPublic()) str << " [PWR]";
+    if (isReadByDpi()) str << " [DPIRD]";
+    if (isWrittenByDpi()) str << " [DPIWR]";
     if (isInternal()) str << " [INTERNAL]";
     if (isLatched()) str << " [LATCHED]";
-    if (isUsedLoopIdx()) str << " [LOOP]";
-    if (rand().isRandomizable()) str << rand();
+    if (isUsedLoopIdx()) str << " [LOOPIDX]";
+    if (rand().isRandomizable()) str << " [" << rand() << "]";
+    if (noCReset()) str << " [!CRST]";
     if (noReset()) str << " [!RST]";
+    if (processQueue()) str << " [PROCQ]";
+    if (sampled()) str << " [SAMPLED]";
     if (attrIsolateAssign()) str << " [aISO]";
+    if (attrFsmState()) str << " [aFSMSTATE]";
+    if (attrFsmResetArc()) str << " [aFSMRESETARC]";
+    if (attrFsmArcInclCond()) str << " [aFSMARCCOND]";
     if (attrFileDescr()) str << " [aFD]";
     if (isFuncReturn()) {
         str << " [FUNCRTN]";
     } else if (isFuncLocal()) {
         str << " [FUNC]";
     }
+    if (hasUserInit()) str << " [UINIT]";
     if (isDpiOpenArray()) str << " [DPIOPENA]";
     if (ignorePostWrite()) str << " [IGNPWR]";
     if (ignoreSchedWrite()) str << " [IGNWR]";
-    if (!attrClocker().unknown()) str << " [" << attrClocker().ascii() << "] ";
+    if (isStdRandomizeArg()) str << " [STDRANDARG]";
     if (!lifetime().isNone()) str << " [" << lifetime().ascii() << "] ";
     str << " " << varType();
 }
 void AstVar::dumpJson(std::ostream& str) const {
     dumpJsonStrFunc(str, origName);
-    dumpJsonBoolFunc(str, isSc);
-    dumpJsonBoolFunc(str, isPrimaryIO);
+    dumpJsonStrFunc(str, verilogName);
+    dumpJsonBoolFuncIf(str, isSc);
+    dumpJsonBoolFuncIf(str, isPrimaryIO);
+    dumpJsonBoolFuncIf(str, isPrimaryClock);
     dumpJsonStr(str, "direction", direction().ascii());
-    dumpJsonBoolFunc(str, isConst);
-    dumpJsonBoolFunc(str, isPullup);
-    dumpJsonBoolFunc(str, isPulldown);
-    dumpJsonBoolFunc(str, isUsedClock);
-    dumpJsonBoolFunc(str, isSigPublic);
-    dumpJsonBoolFunc(str, isLatched);
-    dumpJsonBoolFunc(str, isUsedLoopIdx);
-    dumpJsonBoolFunc(str, noReset);
-    dumpJsonBoolFunc(str, attrIsolateAssign);
-    dumpJsonBoolFunc(str, attrFileDescr);
-    dumpJsonBoolFunc(str, isDpiOpenArray);
-    dumpJsonBoolFunc(str, isFuncReturn);
-    dumpJsonBoolFunc(str, isFuncLocal);
-    dumpJsonStr(str, "attrClocker", (attrClocker().unknown() ? "UNKNOWN" : attrClocker().ascii()));
+    dumpJsonBoolFuncIf(str, isConst);
+    dumpJsonBoolFuncIf(str, isPullup);
+    dumpJsonBoolFuncIf(str, isPulldown);
+    dumpJsonBoolFuncIf(str, isSigPublic);
+    dumpJsonBoolFuncIf(str, isLatched);
+    dumpJsonBoolFuncIf(str, isUsedLoopIdx);
+    dumpJsonBoolFuncIf(str, noCReset);
+    dumpJsonBoolFuncIf(str, noReset);
+    dumpJsonBoolFuncIf(str, processQueue);
+    dumpJsonBoolFuncIf(str, sampled);
+    dumpJsonBoolFuncIf(str, attrIsolateAssign);
+    dumpJsonBoolFuncIf(str, attrFsmState);
+    dumpJsonBoolFuncIf(str, attrFsmResetArc);
+    dumpJsonBoolFuncIf(str, attrFsmArcInclCond);
+    dumpJsonBoolFuncIf(str, attrFileDescr);
+    dumpJsonBoolFuncIf(str, isDpiOpenArray);
+    dumpJsonBoolFuncIf(str, isFuncReturn);
+    dumpJsonBoolFuncIf(str, isFuncLocal);
+    dumpJsonBoolFuncIf(str, isStdRandomizeArg);
     dumpJsonStr(str, "lifetime", lifetime().ascii());
     dumpJsonStr(str, "varType", varType().ascii());
     if (dtypep()) dumpJsonStr(str, "dtypeName", dtypep()->name());
-    dumpJsonBoolFunc(str, isSigUserRdPublic);
-    dumpJsonBoolFunc(str, isSigUserRWPublic);
-    dumpJsonBoolFunc(str, isGParam);
-    dumpJsonBoolFunc(str, isParam);
-    dumpJsonBoolFunc(str, attrScBv);
-    dumpJsonBoolFunc(str, attrSFormat);
-    dumpJsonBoolFunc(str, ignorePostWrite);
-    dumpJsonBoolFunc(str, ignoreSchedWrite);
+    dumpJsonBoolFuncIf(str, isSigUserRdPublic);
+    dumpJsonBoolFuncIf(str, isSigUserRWPublic);
+    dumpJsonBoolFuncIf(str, isReadByDpi);
+    dumpJsonBoolFuncIf(str, isWrittenByDpi);
+    dumpJsonBoolFuncIf(str, isGParam);
+    dumpJsonBoolFuncIf(str, isParam);
+    dumpJsonBoolFuncIf(str, attrScBv);
+    dumpJsonBoolFuncIf(str, attrSFormat);
+    dumpJsonBoolFuncIf(str, hasUserInit);
+    dumpJsonBoolFuncIf(str, ignorePostWrite);
+    dumpJsonBoolFuncIf(str, ignoreSchedWrite);
     dumpJsonGen(str);
-}
-bool AstVar::sameNode(const AstNode* samep) const {
-    const AstVar* const asamep = VN_DBG_AS(samep, Var);
-    return name() == asamep->name() && varType() == asamep->varType();
-}
-void AstWhile::dump(std::ostream& str) const {
-    this->AstNode::dump(str);
-    if (unrollFull().isSetTrue())
-        str << " [unrollfull]";
-    else if (unrollFull().isSetFalse())
-        str << " [unrolldis]";
 }
 void AstScope::dump(std::ostream& str) const {
     this->AstNode::dump(str);
@@ -2650,10 +3197,14 @@ void AstScopeName::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
     if (dpiExport()) str << " [DPIEX]";
     if (forFormat()) str << " [FMT]";
+    str << " scopeAttr=\"" << m_scopeAttr << "\"";
+    str << " scopeEntr=\"" << m_scopeEntr << "\"";
 }
 void AstScopeName::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, dpiExport);
-    dumpJsonBoolFunc(str, forFormat);
+    dumpJsonBoolFuncIf(str, dpiExport);
+    dumpJsonBoolFuncIf(str, forFormat);
+    dumpJsonStr(str, "scopeAttr", m_scopeAttr);
+    dumpJsonStr(str, "scopeEntr", m_scopeEntr);
     dumpJsonGen(str);
 }
 void AstSenTree::dump(std::ostream& str) const {
@@ -2661,7 +3212,7 @@ void AstSenTree::dump(std::ostream& str) const {
     if (isMulti()) str << " [MULTI]";
 }
 void AstSenTree::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isMulti);
+    dumpJsonBoolFuncIf(str, isMulti);
     dumpJsonGen(str);
 }
 void AstSenItem::dump(std::ostream& str) const {
@@ -2679,14 +3230,6 @@ void AstStrengthSpec::dump(std::ostream& str) const {
 void AstStrengthSpec::dumpJson(std::ostream& str) const {
     dumpJsonStr(str, "strength0", m_s0.ascii());
     dumpJsonStr(str, "strength1", m_s1.ascii());
-    dumpJsonGen(str);
-}
-void AstParseRef::dump(std::ostream& str) const {
-    this->AstNode::dump(str);
-    str << " [" << expect().ascii() << "]";
-}
-void AstParseRef::dumpJson(std::ostream& str) const {
-    dumpJsonStr(str, "expect", expect().ascii());
     dumpJsonGen(str);
 }
 void AstClassOrPackageRef::dump(std::ostream& str) const {
@@ -2708,9 +3251,12 @@ AstNodeModule* AstClassOrPackageRef::classOrPackageSkipp() const {
         if (AstNodeDType* const anodep = VN_CAST(foundp, NodeDType)) {
             foundp = anodep->skipRefOrNullp();
         }
-        if (AstTypedef* const anodep = VN_CAST(foundp, Typedef)) foundp = anodep->subDTypep();
-        if (AstClassRefDType* const anodep = VN_CAST(foundp, ClassRefDType))
+        if (const AstTypedef* const anodep = VN_CAST(foundp, Typedef)) {
+            foundp = anodep->subDTypep();
+        }
+        if (const AstClassRefDType* const anodep = VN_CAST(foundp, ClassRefDType)) {
             foundp = anodep->classp();
+        }
     }
     return VN_CAST(foundp, NodeModule);
 }
@@ -2720,14 +3266,14 @@ void AstDot::dump(std::ostream& str) const {
     if (colon()) str << " [::]";
 }
 void AstDot::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, colon);
+    dumpJsonBoolFuncIf(str, colon);
     dumpJsonGen(str);
 }
 void AstActive::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     str << " => ";
-    if (sensesp()) {
-        sensesp()->dump(str);
+    if (sentreep()) {
+        sentreep()->dump(str);
     } else {
         str << "UNLINKED";
     }
@@ -2736,6 +3282,7 @@ void AstActive::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 void AstNodeFTaskRef::dump(std::ostream& str) const {
     this->AstNodeExpr::dump(str);
     if (classOrPackagep()) str << " pkg=" << nodeAddr(classOrPackagep());
+    if (containsGenBlock()) str << " [GENBLK]";
     str << " -> ";
     if (dotted() != "") str << ".=" << dotted() << " ";
     if (taskp()) {
@@ -2746,6 +3293,7 @@ void AstNodeFTaskRef::dump(std::ostream& str) const {
 }
 void AstNodeFTaskRef::dumpJson(std::ostream& str) const {
     dumpJsonStrFunc(str, dotted);
+    dumpJsonBoolFuncIf(str, containsGenBlock);
     dumpJsonGen(str);
 }
 void AstNodeFTask::dump(std::ostream& str) const {
@@ -2757,10 +3305,15 @@ void AstNodeFTask::dump(std::ostream& str) const {
     if (dpiOpenParent()) str << " [DPIOPENPARENT]";
     if (isExternDef()) str << " [EXTDEF]";
     if (isExternProto()) str << " [EXTPROTO]";
+    if (isVirtual()) str << " [VIRT]";
     if (prototype()) str << " [PROTOTYPE]";
     if (pureVirtual()) str << " [PUREVIRTUAL]";
     if (recursive()) str << " [RECURSIVE]";
     if (taskPublic()) str << " [PUBLIC]";
+    if (isStatic()) str << " [STATIC]";
+    if (verilogTask()) str << " [VTASK]";
+    if (verilogFunction()) str << " [VFUNC]";
+    if (needProcess()) str << " [NPRC]";
     if ((dpiImport() || dpiExport()) && cname() != name()) str << " [c=" << cname() << "]";
 }
 bool AstNodeFTask::isPure() {
@@ -2780,25 +3333,31 @@ bool AstNodeFTask::getPurityRecurse() const {
             if (varp->isInoutOrRef()) return false;
         }
         if (!stmtp->isPure()) return false;
-        if (stmtp->exists([](const AstNodeVarRef* const varrefp) {
-                return (!varrefp->varp()->isFuncLocal() || varrefp->varp()->lifetime().isStatic())
-                       && varrefp->access().isWriteOrRW();
+        if (stmtp->exists([](AstNode* const nodep) {
+                if (AstNodeVarRef* const varrefp = VN_CAST(nodep, VarRef)) {
+                    return (!varrefp->varp()->isFuncLocal()
+                            || varrefp->varp()->lifetime().isStatic())
+                           && varrefp->access().isWriteOrRW();
+                }
+                return !nodep->isPure();
             }))
             return false;
     }
     return true;
 }
 void AstNodeFTask::dumpJson(std::ostream& str) const {
-    dumpJsonBool(str, "method", classMethod());
-    dumpJsonBoolFunc(str, dpiExport);
-    dumpJsonBoolFunc(str, dpiImport);
-    dumpJsonBoolFunc(str, dpiOpenChild);
-    dumpJsonBoolFunc(str, dpiOpenParent);
-    dumpJsonBoolFunc(str, isExternDef);
-    dumpJsonBoolFunc(str, isExternProto);
-    dumpJsonBoolFunc(str, prototype);
-    dumpJsonBoolFunc(str, recursive);
-    dumpJsonBoolFunc(str, taskPublic);
+    dumpJsonBoolIf(str, "method", classMethod());
+    dumpJsonBoolFuncIf(str, dpiExport);
+    dumpJsonBoolFuncIf(str, dpiImport);
+    dumpJsonBoolFuncIf(str, dpiOpenChild);
+    dumpJsonBoolFuncIf(str, dpiOpenParent);
+    dumpJsonBoolFuncIf(str, isExternDef);
+    dumpJsonBoolFuncIf(str, isExternProto);
+    dumpJsonBoolFuncIf(str, isVirtual);
+    dumpJsonBoolFuncIf(str, needProcess);
+    dumpJsonBoolFuncIf(str, prototype);
+    dumpJsonBoolFuncIf(str, recursive);
+    dumpJsonBoolFuncIf(str, taskPublic);
     if (baseOverride().isAny()) dumpJsonStr(str, "baseOverride", baseOverride().ascii());
     dumpJsonStrFunc(str, cname);
     dumpJsonGen(str);
@@ -2808,27 +3367,22 @@ void AstNodeBlock::dump(std::ostream& str) const {
     if (unnamed()) str << " [UNNAMED]";
 }
 void AstNodeBlock::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, unnamed);
+    dumpJsonBoolFuncIf(str, unnamed);
     dumpJsonGen(str);
 }
 void AstBegin::dump(std::ostream& str) const {
     this->AstNodeBlock::dump(str);
-    if (generate()) str << " [GEN]";
-    if (genforp()) str << " [GENFOR]";
     if (implied()) str << " [IMPLIED]";
     if (needProcess()) str << " [NPRC]";
 }
 void AstBegin::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, generate);
-    dumpJsonBool(str, "genfor", bool(genforp()));
-    dumpJsonBoolFunc(str, implied);
-    dumpJsonBoolFunc(str, needProcess);
+    dumpJsonBoolFuncIf(str, implied);
+    dumpJsonBoolFuncIf(str, needProcess);
     dumpJsonGen(str);
 }
-void AstCoverDecl::dump(std::ostream& str) const {
-    this->AstNodeStmt::dump(str);
+void AstNodeCoverDecl::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
     if (!page().empty()) str << " page=" << page();
-    if (!linescov().empty()) str << " lc=" << linescov();
     if (this->dataDeclNullp()) {
         static bool s_recursing = false;
         str << " -> ";
@@ -2843,11 +3397,37 @@ void AstCoverDecl::dump(std::ostream& str) const {
         if (binNum()) str << " bin" << std::dec << binNum();
     }
 }
-void AstCoverDecl::dumpJson(std::ostream& str) const {
+void AstNodeCoverDecl::dumpJson(std::ostream& str) const {
     dumpJsonStrFunc(str, page);
-    dumpJsonStrFunc(str, linescov);
     dumpJsonNumFunc(str, binNum);
     dumpJsonGen(str);
+}
+void AstCoverOtherDecl::dump(std::ostream& str) const {
+    this->AstNodeCoverDecl::dump(str);
+    if (!linescov().empty()) str << " lc=" << linescov();
+    if (!fsmVar().empty()) str << " fv=" << fsmVar();
+    if (!fsmFrom().empty()) str << " ff=" << fsmFrom();
+    if (!fsmTo().empty()) str << " ft=" << fsmTo();
+    if (!fsmTag().empty()) str << " fg=" << fsmTag();
+}
+void AstCoverOtherDecl::dumpJson(std::ostream& str) const {
+    this->AstNodeCoverDecl::dumpJson(str);
+    dumpJsonStrFunc(str, linescov);
+    dumpJsonStrFunc(str, fsmVar);
+    dumpJsonStrFunc(str, fsmFrom);
+    dumpJsonStrFunc(str, fsmTo);
+    dumpJsonStrFunc(str, fsmTag);
+}
+void AstCoverToggleDecl::dump(std::ostream& str) const {
+    this->AstNodeCoverDecl::dump(str);
+    if (range().ranged()) str << " range=[" << range().left() << ":" << range().right() << "]";
+}
+void AstCoverToggleDecl::dumpJson(std::ostream& str) const {
+    this->AstNodeCoverDecl::dumpJson(str);
+    if (range().ranged()) {
+        dumpJsonStr(str, "range",
+                    std::to_string(range().left()) + ":" + std::to_string(range().right()));
+    }
 }
 void AstCoverInc::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
@@ -2861,7 +3441,7 @@ void AstCoverInc::dump(std::ostream& str) const {
 void AstCoverInc::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 void AstFork::dump(std::ostream& str) const {
     this->AstNodeBlock::dump(str);
-    if (!joinType().join()) str << " [" << joinType() << "]";
+    str << " [" << joinType() << "]";
 }
 void AstFork::dumpJson(std::ostream& str) const {
     dumpJsonStr(str, "joinType", joinType().ascii());
@@ -2872,12 +3452,13 @@ void AstStop::dump(std::ostream& str) const {
     if (isFatal()) str << " [FATAL]";
 }
 void AstStop::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isFatal);
+    dumpJsonBoolFuncIf(str, isFatal);
     dumpJsonGen(str);
 }
 void AstTraceDecl::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
-    if (code()) str << " [code=" << code() << "]";
+    if (codeAssigned()) str << " [code=" << code() << "]";
+    if (dtypeCallp()) str << " [dtypeCallp=" << dtypeCallp() << "]";
 }
 void AstTraceDecl::dumpJson(std::ostream& str) const {
     dumpJsonNumFunc(str, code);
@@ -2893,21 +3474,21 @@ void AstTraceInc::dump(std::ostream& str) const {
     }
 }
 void AstTraceInc::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
-string AstNodeText::shortText() const {
-    string out = text();
-    string::size_type pos;
-    if ((pos = out.find('\n')) != string::npos) {
-        out.erase(pos, out.length() - pos);
-        out += "...";
-    }
-    return out;
-}
-void AstNodeText::dump(std::ostream& str) const {
+void AstText::dump(std::ostream& str) const {
     this->AstNode::dump(str);
-    str << " \"" << shortText() << "\"";
+    std::string txt = text();
+    if (txt.size() > 120) {
+        txt.resize(120);
+        txt += " ... omitted ...";
+    }
+    txt = VString::replaceSubstr(txt, "\\", "\\\\");
+    txt = VString::replaceSubstr(txt, "\"", "\\\"");
+    txt = VString::replaceSubstr(txt, "\n", "\\n");
+    txt = VString::replaceSubstr(txt, "\t", "\\t");
+    str << " \"" << txt << "\"";
 }
-void AstNodeText::dumpJson(std::ostream& str) const {
-    dumpJsonStrFunc(str, shortText);
+void AstText::dumpJson(std::ostream& str) const {
+    dumpJsonStrFunc(str, text);
     dumpJsonGen(str);
 }
 
@@ -2923,8 +3504,8 @@ void AstCFile::dump(std::ostream& str) const {
 }
 
 void AstCFile::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, source);
-    dumpJsonBoolFunc(str, slow);
+    dumpJsonBoolFuncIf(str, source);
+    dumpJsonBoolFuncIf(str, slow);
     dumpJsonGen(str);
 }
 void AstCFunc::dump(std::ostream& str) const {
@@ -2945,129 +3526,49 @@ void AstCFunc::dump(std::ostream& str) const {
     if (isCoroutine()) str << " [CORO]";
     if (needProcess()) str << " [NPRC]";
     if (entryPoint()) str << " [ENTRY]";
+    if (noLife()) str << " [NOLIFE]";
 }
 void AstCFunc::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, slow);
-    dumpJsonBoolFunc(str, isStatic);
-    dumpJsonBoolFunc(str, dpiExportDispatcher);
-    dumpJsonBoolFunc(str, dpiExportImpl);
-    dumpJsonBoolFunc(str, dpiImportPrototype);
-    dumpJsonBoolFunc(str, dpiImportWrapper);
-    dumpJsonBoolFunc(str, dpiContext);
-    dumpJsonBoolFunc(str, isConstructor);
-    dumpJsonBoolFunc(str, isDestructor);
-    dumpJsonBoolFunc(str, isVirtual);
-    dumpJsonBoolFunc(str, isCoroutine);
-    dumpJsonBoolFunc(str, needProcess);
+    dumpJsonBoolFuncIf(str, slow);
+    dumpJsonBoolFuncIf(str, isStatic);
+    dumpJsonBoolFuncIf(str, dpiExportDispatcher);
+    dumpJsonBoolFuncIf(str, dpiExportImpl);
+    dumpJsonBoolFuncIf(str, dpiImportPrototype);
+    dumpJsonBoolFuncIf(str, dpiImportWrapper);
+    dumpJsonBoolFuncIf(str, dpiContext);
+    dumpJsonBoolFuncIf(str, isConstructor);
+    dumpJsonBoolFuncIf(str, isDestructor);
+    dumpJsonBoolFuncIf(str, isVirtual);
+    dumpJsonBoolFuncIf(str, isCoroutine);
+    dumpJsonBoolFuncIf(str, needProcess);
+    dumpJsonBoolFuncIf(str, noLife);
     dumpJsonGen(str);
     // TODO: maybe try to shorten these flags somehow
 }
 void AstCAwait::dump(std::ostream& str) const {
-    this->AstNodeUniop::dump(str);
-    if (sensesp()) {
+    this->AstNodeStmt::dump(str);
+    if (sentreep()) {
         str << " => ";
-        sensesp()->dump(str);
+        sentreep()->dump(str);
     }
 }
 void AstCAwait::dumpJson(std::ostream& str) const { dumpJsonGen(str); }
 int AstCMethodHard::instrCount() const {
-    if (AstBasicDType* const basicp = fromp()->dtypep()->basicp()) {
-        // TODO: add a more structured description of library methods, rather than using string
-        //       matching. See issue #3715.
-        if (basicp->isTriggerVec() && m_name == "word") {
-            // This is an important special case for scheduling so we compute it precisely,
-            // it is simply a load.
-            return INSTR_COUNT_LD;
-        }
-    }
-    return 0;
+    return 0;  // TODO
 }
 void AstCMethodHard::setPurity() {
-    static const std::map<std::string, bool> isPureMethod{{"andNot", false},
-                                                          {"any", true},
-                                                          {"anyTriggered", false},
-                                                          {"assign", false},
-                                                          {"at", true},
-                                                          {"atBack", true},
-                                                          {"atWrite", true},
-                                                          {"awaitingCurrentTime", true},
-                                                          {"clear", false},
-                                                          {"clearFired", false},
-                                                          {"commit", false},
-                                                          {"delay", false},
-                                                          {"done", false},
-                                                          {"enqueue", false},
-                                                          {"erase", false},
-                                                          {"evaluate", false},
-                                                          {"evaluation", false},
-                                                          {"exists", true},
-                                                          {"find", true},
-                                                          {"find_first", true},
-                                                          {"find_first_index", true},
-                                                          {"find_index", true},
-                                                          {"find_last", true},
-                                                          {"find_last_index", true},
-                                                          {"fire", false},
-                                                          {"first", false},
-                                                          {"hard", false},
-                                                          {"init", false},
-                                                          {"insert", false},
-                                                          {"inside", true},
-                                                          {"isFired", true},
-                                                          {"isTriggered", true},
-                                                          {"join", false},
-                                                          {"last", false},
-                                                          {"max", true},
-                                                          {"min", true},
-                                                          {"neq", true},
-                                                          {"next", false},
-                                                          {"pop", false},
-                                                          {"pop_back", false},
-                                                          {"pop_front", false},
-                                                          {"prev", false},
-                                                          {"push", false},
-                                                          {"push_back", false},
-                                                          {"push_front", false},
-                                                          {"r_and", true},
-                                                          {"r_or", true},
-                                                          {"r_product", true},
-                                                          {"r_sum", true},
-                                                          {"r_xor", true},
-                                                          {"renew", false},
-                                                          {"renew_copy", false},
-                                                          {"resize", false},
-                                                          {"resume", false},
-                                                          {"reverse", false},
-                                                          {"rsort", false},
-                                                          {"setBit", false},
-                                                          {"setWord", false},
-                                                          {"set_randmode", false},
-                                                          {"shuffle", false},
-                                                          {"size", true},
-                                                          {"slice", true},
-                                                          {"sliceBackBack", true},
-                                                          {"sliceFrontBack", true},
-                                                          {"sort", false},
-                                                          {"thisOr", false},
-                                                          {"trigger", false},
-                                                          {"unique", true},
-                                                          {"unique_index", true},
-                                                          {"word", true},
-                                                          {"write_var", false}};
-
-    if (name() == "atWriteAppend" || name() == "atWriteAppendBack") {
+    if (method() == VCMethod::DYN_AT_WRITE_APPEND
+        || method() == VCMethod::DYN_AT_WRITE_APPEND_BACK) {
         m_pure = false;
         // Treat atWriteAppend as pure if the argument is a loop iterator
-        if (AstNodeExpr* const argp = pinsp()) {
-            if (AstVarRef* const varrefp = VN_CAST(argp, VarRef)) {
+        if (const AstNodeExpr* const argp = pinsp()) {
+            if (const AstVarRef* const varrefp = VN_CAST(argp, VarRef)) {
                 if (varrefp->varp()->isUsedLoopIdx()) m_pure = true;
             }
         }
         return;
     }
-    auto isPureIt = isPureMethod.find(name());
-    UASSERT_OBJ(isPureIt != isPureMethod.end(), this, "Unknown purity of method " + name());
-    m_pure = isPureIt->second;
+    m_pure = method().isPure();
     if (!m_pure) return;
     if (!fromp()->isPure()) m_pure = false;
     if (!m_pure) return;
@@ -3079,6 +3580,14 @@ void AstCMethodHard::setPurity() {
     }
 }
 
+void AstCStmt::dump(std::ostream& str) const {
+    this->AstNodeStmt::dump(str);
+    if (!stmtType().isNone()) str << " [" << stmtType().ascii() << "]";
+}
+void AstCStmt::dumpJson(std::ostream& str) const {
+    dumpJsonGen(str);
+    if (!stmtType().isNone()) dumpJsonStr(str, "stmtType", stmtType().ascii());
+}
 void AstCUse::dump(std::ostream& str) const {
     this->AstNode::dump(str);
     str << " [" << useType() << "]";
@@ -3097,48 +3606,46 @@ static AstDelay* getLhsNetDelayRecurse(const AstNodeExpr* const nodep) {
     return nullptr;
 }
 AstDelay* AstAssignW::getLhsNetDelay() const { return getLhsNetDelayRecurse(lhsp()); }
-AstAlways* AstAssignW::convertToAlways() {
-    const bool hasTimingControl = isTimingControl();
-    AstNodeExpr* const lhs1p = lhsp()->unlinkFrBack();
-    AstNodeExpr* const rhs1p = rhsp()->unlinkFrBack();
-    AstNode* const controlp = timingControlp() ? timingControlp()->unlinkFrBack() : nullptr;
-    FileLine* const flp = fileline();
-    AstNode* bodysp = new AstAssign{flp, lhs1p, rhs1p, controlp};
-    if (hasTimingControl) {
-        // If there's a timing control, put the assignment in a fork..join_none. This process won't
-        // get marked as suspendable and thus will be scheduled normally
-        AstFork* forkp = new AstFork{flp, "", bodysp};
-        forkp->joinType(VJoinType::JOIN_NONE);
-        bodysp = forkp;
-    }
-    AstAlways* const newp = new AstAlways{flp, VAlwaysKwd::ALWAYS, nullptr, bodysp};
-    replaceWith(newp);  // User expected to then deleteTree();
-    return newp;
-}
 
 string AstCase::pragmaString() const {
-    if (fullPragma() && parallelPragma())
-        return "synthesis full_case parallel_case";
-    else if (fullPragma())
-        return "synthesis full_case";
-    else if (parallelPragma())
-        return "synthesis parallel_case";
-    else if (uniquePragma())
-        return "unique case";
-    else if (unique0Pragma())
-        return "unique0 case";
-    else if (priorityPragma())
-        return "priority case";
+    if (fullPragma() && parallelPragma()) return "synthesis full_case parallel_case";
+    if (fullPragma()) return "synthesis full_case";
+    if (parallelPragma()) return "synthesis parallel_case";
+    if (uniquePragma()) return "unique case";
+    if (unique0Pragma()) return "unique0 case";
+    if (priorityPragma()) return "priority case";
     return "";
 }
 
+void AstCgOptionAssign::dump(std::ostream& str) const {
+    if (typeOption()) str << " [TYPEOPT]";
+    this->AstNode::dump(str);
+}
+void AstCgOptionAssign::dumpJson(std::ostream& str) const {
+    dumpJsonBoolFuncIf(str, typeOption);
+    dumpJsonGen(str);
+}
 void AstDelay::dump(std::ostream& str) const {
     this->AstNodeStmt::dump(str);
     if (isCycleDelay()) str << " [CYCLE]";
 }
 void AstDelay::dumpJson(std::ostream& str) const {
-    dumpJsonBoolFunc(str, isCycleDelay);
+    dumpJsonBoolFuncIf(str, isCycleDelay);
     dumpJsonGen(str);
+}
+
+const char* AstDisable::broken() const {
+    BROKEN_RTN((m_targetp && targetRefp()) || ((!m_targetp && !targetRefp())));
+    return nullptr;
+}
+void AstDisable::dump(std::ostream& str) const {
+    this->AstNodeStmt::dump(str);
+    str << " -> ";
+    if (targetp()) {
+        targetp()->dump(str);
+    } else {
+        str << "UNLINKED";
+    }
 }
 const char* AstAnd::widthMismatch() const VL_MT_STABLE {
     BROKEN_RTN(lhsp()->widthMin() != rhsp()->widthMin());
@@ -3158,4 +3665,31 @@ const char* AstXor::widthMismatch() const VL_MT_STABLE {
 const char* AstNot::widthMismatch() const VL_MT_STABLE {
     BROKEN_RTN(lhsp()->widthMin() != widthMin());
     return nullptr;
+}
+void AstWith::dump(std::ostream& str) const {
+    this->AstNode::dump(str);
+    if (m_restricted) {
+        str << " [RESTRICTED={";
+        bool first = true;
+        for (const std::string& n : m_restrictedNames) {
+            if (!first) str << ",";
+            str << n;
+            first = false;
+        }
+        str << "}]";
+    }
+}
+void AstWith::dumpJson(std::ostream& str) const {
+    dumpJsonBoolIf(str, "restricted", m_restricted);
+    if (m_restricted) {
+        std::string joined;
+        bool first = true;
+        for (const std::string& n : m_restrictedNames) {
+            if (!first) joined += ",";
+            joined += n;
+            first = false;
+        }
+        dumpJsonStr(str, "restrictedNames", joined);
+    }
+    dumpJsonGen(str);
 }

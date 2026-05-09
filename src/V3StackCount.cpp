@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -79,8 +79,8 @@ private:
         m_stackSize = 0;
         return savedCount;
     }
-    void endVisitBase(uint32_t savedCount, AstNode* nodep) {
-        UINFO(8, "cost " << std::setw(6) << std::left << m_stackSize << "  " << nodep << endl);
+    void endVisitBase(uint32_t savedCount, const AstNode* nodep) {
+        UINFO(8, "cost " << std::setw(6) << std::left << m_stackSize << "  " << nodep);
         if (!m_ignoreRemaining) m_stackSize += savedCount;
     }
 
@@ -91,13 +91,13 @@ private:
         iterateAndNextConstNull(nodep->condp());
         const uint32_t savedCount = m_stackSize;
 
-        UINFO(8, "thensp:\n");
+        UINFO(8, "thensp:");
         reset();
         iterateAndNextConstNull(nodep->thensp());
         uint32_t ifCount = m_stackSize;
         if (nodep->branchPred().unlikely()) ifCount = 0;
 
-        UINFO(8, "elsesp:\n");
+        UINFO(8, "elsesp:");
         reset();
         iterateAndNextConstNull(nodep->elsesp());
         uint32_t elseCount = m_stackSize;
@@ -112,7 +112,7 @@ private:
             if (nodep->thensp()) nodep->thensp()->user2(0);  // Don't dump it
         }
     }
-    void visit(AstNodeCond* nodep) override {
+    void visit(AstCond* nodep) override {
         if (m_ignoreRemaining) return;
         // Just like if/else above, the ternary operator only evaluates
         // one of the two expressions, so only count the max.
@@ -120,12 +120,12 @@ private:
         iterateAndNextConstNull(nodep->condp());
         const uint32_t savedCount = m_stackSize;
 
-        UINFO(8, "?\n");
+        UINFO(8, "?");
         reset();
         iterateAndNextConstNull(nodep->thenp());
         const uint32_t ifCount = m_stackSize;
 
-        UINFO(8, ":\n");
+        UINFO(8, ":");
         reset();
         iterateAndNextConstNull(nodep->elsep());
         const uint32_t elseCount = m_stackSize;
@@ -142,10 +142,11 @@ private:
     void visit(AstFork* nodep) override {
         if (m_ignoreRemaining) return;
         const VisitBase vb{this, nodep};
+        iterateAndNextConstNull(nodep->stmtsp());
         uint32_t totalCount = m_stackSize;
         VL_RESTORER(m_ignoreRemaining);
         // Sum counts in each statement
-        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+        for (AstNode* stmtp = nodep->forksp(); stmtp; stmtp = stmtp->nextp()) {
             reset();
             iterateConst(stmtp);
             totalCount += m_stackSize;

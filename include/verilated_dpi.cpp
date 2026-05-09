@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2009-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2009-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=========================================================================
@@ -80,6 +80,7 @@ void svPutBitselLogic(svLogicVecVal* dp, int bit, svLogic s) {
 }
 
 void svGetPartselBit(svBitVecVal* dp, const svBitVecVal* sp, int lsb, int width) {
+    // Verilator supports > 32 bit widths, which is an extension to IEEE DPI
     // See also VL_SEL_WWI
     const int msb = lsb + width - 1;
     const int word_shift = VL_BITWORD_I(lsb);
@@ -103,6 +104,7 @@ void svGetPartselBit(svBitVecVal* dp, const svBitVecVal* sp, int lsb, int width)
     dp[VL_WORDS_I(width) - 1] &= VL_MASK_I(width);
 }
 void svGetPartselLogic(svLogicVecVal* dp, const svLogicVecVal* sp, int lsb, int width) {
+    // Verilator supports > 32 bit widths, which is an extension to IEEE DPI
     const int msb = lsb + width - 1;
     const int word_shift = VL_BITWORD_I(lsb);
     if (VL_BITBIT_I(lsb) == 0) {
@@ -288,7 +290,7 @@ static void _vl_svGetBitArrElemVecVal(svBitVecVal* d, const svOpenArrayHandle s,
         break;
     }
     case VLVT_WDATA: {
-        WDataOutP wdatap = (reinterpret_cast<WDataOutP>(datap));
+        WDataInP wdatap = (reinterpret_cast<WDataInP>(datap));
         for (int i = 0; i < VL_WORDS_I(varp->entBits()); ++i) d[i] = wdatap[i];
         return;
     }
@@ -327,7 +329,7 @@ static void _vl_svGetLogicArrElemVecVal(svLogicVecVal* d, const svOpenArrayHandl
         break;
     }
     case VLVT_WDATA: {
-        WDataOutP wdatap = (reinterpret_cast<WDataOutP>(datap));
+        WDataInP wdatap = (reinterpret_cast<WDataInP>(datap));
         for (int i = 0; i < VL_WORDS_I(varp->entBits()); ++i) {
             d[i].aval = wdatap[i];
             d[i].bval = 0;
@@ -773,7 +775,7 @@ int svGetCallerInfo(const char** fileNamepp, int* lineNumberp) {
 //======================================================================
 // Time
 
-int svGetTime(const svScope scope, svTimeVal* time) {
+int svGetTime(const svScope /*scope*/, svTimeVal* time) {
     if (VL_UNLIKELY(!time)) return -1;
     const QData qtime = VL_TIME_Q();
     VlWide<2> itime;
@@ -794,7 +796,7 @@ int svGetTimeUnit(const svScope scope, int32_t* time_unit) {
     return 0;
 }
 
-int svGetTimePrecision(const svScope scope, int32_t* time_precision) {
+int svGetTimePrecision(const svScope /*scope*/, int32_t* time_precision) {
     if (VL_UNLIKELY(!time_precision)) return -1;
     *time_precision = Verilated::threadContextp()->timeprecision();
     return 0;

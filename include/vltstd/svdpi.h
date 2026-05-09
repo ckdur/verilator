@@ -7,7 +7,11 @@
  * This file contains the constant definitions, structure definitions,
  * and routine declarations used by SystemVerilog DPI.
  *
- * This file is from the SystemVerilog IEEE 1800-2023 Annex I.
+ * This file is from the SystemVerilog IEEE 1800-2023 Annex I,
+ * and is placed here as mandatory interface material, permitted under IEEE
+ * implementation permission doctrine.
+ * SPDX-FileCopyrightText: 2024 The Institute of Electrical and Electronics Engineers, Inc.
+ * SPDX-License-Identifier: LicenseRef-IEEE-1800
  */
 
 #ifndef INCLUDED_SVDPI
@@ -367,28 +371,28 @@ XXTERN int svIsDisabledState( void );
  */
 XXTERN void svAckDisabledState( void );
 
-/*                                                                                                         Mantis 5713/D9
+/*
  * Retrieve the current simulation time, scaled to the time unit of the scope.
-* If scope is NULL, then time is scaled to the simulation time unit.
-* It is an error to call svGetTime() with an invalid svScope.
-* This function returns -1 for all error cases, 0 upon success.
-*/
+ * If scope is NULL, then time is scaled to the simulation time unit.
+ * It is an error to call svGetTime() with an invalid svScope.
+ * This function returns -1 for all error cases, 0 upon success.
+ */
 XXTERN int svGetTime(const svScope scope, svTimeVal* time);
 
 /*
  * Retrieve the time unit for scope.
  * If scope is NULL, then simulation time unit is retrieved.
-* It is an error to call svGetTimeUnit() with an invalid svScope.
-* This function returns -1 for all error cases, 0 upon success.
-*/
+ * It is an error to call svGetTimeUnit() with an invalid svScope.
+ * This function returns -1 for all error cases, 0 upon success.
+ */
 XXTERN int svGetTimeUnit(const svScope scope, int32_t* time_unit);
 
 /*
  * Retrieve the time precision for scope.
  * If scope is NULL, then simulation time unit is retrieved.
-* It is an error to call svGetTimePrecision() with an invalid svScope.
-* This function returns -1 for all error cases, 0 upon success.
-*/
+ * It is an error to call svGetTimePrecision() with an invalid svScope.
+ * This function returns -1 for all error cases, 0 upon success.
+ */
 XXTERN int svGetTimePrecision(const svScope scope, int32_t* time_precision);
 
 

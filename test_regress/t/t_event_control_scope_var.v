@@ -1,17 +1,23 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
-module test_mod(input reg clk, input reg reset, output integer result);
+module test_mod (
+    input reg clk,
+    input reg reset,
+    output integer result
+);
   always @(reset) begin
     result <= 1;
   end
 endmodule
 
-module Dut(input clk);
-  integer num;
+module Dut (
+    input clk
+);
+  int num;
   integer result1;
   integer result2;
   reg reset1;
@@ -38,24 +44,27 @@ module Dut(input clk);
   end
 
   test_mod t (
-    .clk(clk),
-    .reset(reset1),
-    .result(result1)
+      .clk(clk),
+      .reset(reset1),
+      .result(result1)
   );
   test_mod t2 (
-    .clk(clk),
-    .reset(reset2),
-    .result(result2));
-  endmodule
-
-module Dut_wrapper(input clk);
-
-  Dut d(.clk(clk));
-  Dut d2(.clk(clk));
+      .clk(clk),
+      .reset(reset2),
+      .result(result2)
+  );
 endmodule
 
-module t (/*AUTOARG*/
-   clk);
-  input clk;
-  Dut_wrapper d_w(.clk(clk));
+module Dut_wrapper (
+    input clk
+);
+
+  Dut d (.clk(clk));
+  Dut d2 (.clk(clk));
+endmodule
+
+module t (
+    input clk
+);
+  Dut_wrapper d_w (.clk(clk));
 endmodule

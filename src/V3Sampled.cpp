@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -35,7 +35,8 @@ class SampledVisitor final : public VNVisitor {
     //  AstVarScope::user1()  -> AstVarScope*. The VarScope that stores sampled value
     //  AstVarRef::user1()    -> bool. Whether already converted
     const VNUser1InUse m_user1InUse;
-    // STATE
+
+    // STATE - for current visit position (use VL_RESTORER)
     AstScope* m_scopep = nullptr;  // Current scope
     bool m_inSampled = false;  // True inside a sampled expression
 
@@ -52,11 +53,12 @@ class SampledVisitor final : public VNVisitor {
         AstVarScope* const newvscp = new AstVarScope{flp, m_scopep, newvarp};
         newvarp->direction(VDirection::INPUT);  // Inform V3Sched that it will be driven later
         newvarp->primaryIO(true);
+        newvarp->sampled(true);
         vscp->user1p(newvscp);
         m_scopep->addVarsp(newvscp);
         // At the top of _eval, assign them (use valuep here as temporary storage during V3Sched)
         newvarp->valuep(new AstVarRef{flp, vscp, VAccess::READ});
-        UINFO(4, "New Sampled: " << newvscp << endl);
+        UINFO(4, "New Sampled: " << newvscp);
         return newvscp;
     }
 
@@ -99,7 +101,7 @@ public:
 // Sampled class functions
 
 void V3Sampled::sampledAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { SampledVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("sampled", 0, dumpTreeEitherLevel() >= 3);
 }

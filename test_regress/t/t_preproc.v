@@ -1,10 +1,10 @@
 // DESCRIPTION: Verilator: Verilog Test module
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2000-2011 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2000-2011 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
+// verilog_format: off
 // This file intentionally includes some tabs
-
 //===========================================================================
 // Includes
 `include "t_preproc_inc2.vh"
@@ -753,3 +753,15 @@ predef `SV_COV_PARTIAL 2
 `quux(`bar(`a,`a))
 `quux(`baz(`a,`bar(x,`a)))
 `quux(`baz(`bar(`a,x), quux(`foo)))
+
+//======================================================================
+// Define with --preproc-defines needs to keep backslashes
+
+`define uvm_a(x) foo x bar
+`define uvm_imp_decl(SFX) \
+class uvm_master_imp``SFX  \
+  `uvm_a(SFX, RSP, t) // rsp \
+  \
+  `uvm_a(SFX, REQ, t) // req \
+  \
+endclass

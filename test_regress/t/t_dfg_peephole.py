@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
 
 test.scenarios('vlt_all')
 test.sim_time = 2000000
+test.top_filename = "t/t_dfg_peephole.v"
 
-root = ".."
-
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 
 # Read optimizations
 optimizations = []
 
-hdrFile = "../src/V3DfgPeephole.h"
+hdrFile = "../src/V3DfgPeepholePatterns.h"
 with open(hdrFile, 'r', encoding="utf8") as hdrFh:
     prevOpt = ""
     lineno = 0
@@ -33,6 +32,9 @@ with open(hdrFile, 'r', encoding="utf8") as hdrFh:
         if prevOpt > opt:
             test.error(hdrFile + ":" + str(lineno) + ": '" + opt + "; is not in sorted order")
         prevOpt = opt
+        # Trivial, but also hard to trigger on purpose as it depends on rewrite order
+        if opt == "REPLACE_WITH_EQUIVALENT":
+            continue
         optimizations.append(opt)
 
 if len(optimizations) < 1:
@@ -74,6 +76,16 @@ test.compile(verilator_flags2=[
 ])  # yapf:disable
 
 # Compile optimized - also builds executable
+
+extraArgs = []
+if test.name == "t_dfg_peephole_off_all":
+    extraArgs.append("-fno-dfg-peephole")
+if test.name == "t_dfg_peephole_off_each":
+    for opt in optimizations:
+        opt = opt.lower()
+        opt = re.sub(r"_", "-", opt)
+        extraArgs.append("-fno-dfg-peephole-" + opt)
+
 test.compile(verilator_flags2=[
     "--stats",
     "--build",
@@ -82,25 +94,33 @@ test.compile(verilator_flags2=[
     "-Mdir", test.obj_dir + "/obj_opt",
     "--prefix", "Vopt",
     "-fno-const-before-dfg",  # Otherwise V3Const makes testing painful
+    "-fno-lift-expr", # Assumes V3Const run prior to V3LiftExpr
+    "-fdfg-synthesize-all",
     "--dump-dfg",  # To fill code coverage
     "-CFLAGS \"-I .. -I ../obj_ref\"",
     "../obj_ref/Vref__ALL.a",
-    "../../t/" + test.name + ".cpp"
-])  # yapf:disable
-
-# Execute test to check equivalence
-test.execute(executable=test.obj_dir + "/obj_opt/Vopt")
+    "../../t/t_dfg_peephole.cpp"
+] + extraArgs)  # yapf:disable
 
 
-def check(name):
+def check(name, enabled):
     name = name.lower()
     name = re.sub(r'_', ' ', name)
-    test.file_grep(test.obj_dir + "/obj_opt/Vopt__stats.txt",
-                   r'DFG\s+(pre|post) inline Peephole, ' + name + r'\s+([1-9]\d*)')
+    pattern = r'DFG, Peephole, ' + name + r'\s+([1-9]\d*)\s*$'
+    if enabled:
+        test.file_grep(test.obj_dir + "/obj_opt/Vopt__stats.txt", pattern)
+    else:
+        test.file_grep_not(test.obj_dir + "/obj_opt/Vopt__stats.txt", pattern)
 
 
 # Check all optimizations defined in
 for opt in optimizations:
-    check(opt)
+    check(opt, test.name == "t_dfg_peephole")
+
+test.file_grep_not(test.obj_dir + "/obj_opt/Vopt__stats.txt",
+                   r'DFG.*non-representable.*\s[1-9]\d*$')
+
+# Execute test to check equivalence
+test.execute(executable=test.obj_dir + "/obj_opt/Vopt")
 
 test.passes()

@@ -1,8 +1,8 @@
 //
 // DESCRIPTION: Verilator: Verilog Test module for prepareClone/atClone APIs
 //
-// This file ONLY is placed into the Public Domain, for any use,
-// without warranty, 2023 by Yinan Xu.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Yinan Xu
 // SPDX-License-Identifier: CC0-1.0
 
 #include <verilated.h>
@@ -72,8 +72,7 @@ int main(int argc, char** argv) {
             } else if (pid == 0) {
                 printf("child: here we go\n");
             } else {
-                while (wait(nullptr) > 0)
-                    ;
+                while (wait(nullptr) > 0);
                 printf("parent: here we go\n");
                 topp->is_parent = 1;
             }

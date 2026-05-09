@@ -1,9 +1,9 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// Copyright 2010 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2010 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 `ifdef VERILATOR
@@ -12,10 +12,9 @@
 import "DPI-C" context function int mon_check();
 `endif
 
-module t (/*AUTOARG*/
-   // Inputs
-   clk
-   );
+module t (
+    input clk
+);
 
 `ifdef VERILATOR
 `systemc_header
@@ -23,25 +22,23 @@ extern "C" int mon_check();
 `verilog
 `endif
 
-   input clk;
+  reg          onebit          /*verilator public_flat_rw @(posedge clk) */;
 
-   reg          onebit          /*verilator public_flat_rw @(posedge clk) */;
+  integer        status;
 
-   integer        status;
-
-   // Test loop
-   initial begin
+  // Test loop
+  initial begin
 `ifdef VERILATOR
-      status = $c32("mon_check()");
+    status = $c32("mon_check()");
 `else
-      status = mon_check();
+    status = mon_check();
 `endif
-      if (status != 0) begin
-         $write("%%Error: t_vpi_unimpl.cpp:%0d: C Test failed\n", status);
-         $stop;
-      end
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+    if (status != 0) begin
+      $write("%%Error: t_vpi_unimpl.cpp:%0d: C Test failed\n", status);
+      $stop;
+    end
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 
 endmodule : t

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -57,24 +57,45 @@ public:
     void testsCoveringInc() { m_testsCovering++; }
     bool ok(unsigned annotateMin) const {
         const std::string threshStr = thresh();
-        unsigned threshi = !threshStr.empty() ? std::atoi(threshStr.c_str()) : annotateMin;
+        const unsigned threshi = !threshStr.empty() ? std::atoi(threshStr.c_str()) : annotateMin;
         return m_count >= threshi;
     }
     // KEY ACCESSORS
-    string filename() const { return keyExtract(VL_CIK_FILENAME); }
-    string comment() const { return keyExtract(VL_CIK_COMMENT); }
-    string hier() const { return keyExtract(VL_CIK_HIER); }
-    string type() const { return keyExtract(VL_CIK_TYPE); }
-    string thresh() const { return keyExtract(VL_CIK_THRESH); }  // string as maybe ""
-    string linescov() const { return keyExtract(VL_CIK_LINESCOV); }
-    int lineno() const { return std::atoi(keyExtract(VL_CIK_LINENO).c_str()); }
-    int column() const { return std::atoi(keyExtract(VL_CIK_COLUMN).c_str()); }
+    string filename() const { return keyExtract(VL_CIK_FILENAME, m_name.c_str()); }
+    string comment() const { return keyExtract(VL_CIK_COMMENT, m_name.c_str()); }
+    string hier() const { return keyExtract(VL_CIK_HIER, m_name.c_str()); }
+    string type() const { return typeExtract(m_name.c_str()); }
+    string thresh() const {
+        // string as maybe ""
+        return keyExtract(VL_CIK_THRESH, m_name.c_str());
+    }
+    string linescov() const { return keyExtract(VL_CIK_LINESCOV, m_name.c_str()); }
+    bool isFsmState() const { return type() == "fsm_state"; }
+    bool isFsmArc() const { return type() == "fsm_arc"; }
+    // Arc-specific helpers are used after callers have already filtered to
+    // FSM arc points, so they do not repeat the type check here.
+    string fsmVarName() const { return keyExtract(VL_CIK_FSM_VAR, m_name.c_str()); }
+    string fsmFromState() const { return keyExtract(VL_CIK_FSM_FROM, m_name.c_str()); }
+    string fsmToState() const { return keyExtract(VL_CIK_FSM_TO, m_name.c_str()); }
+    string fsmTag() const { return keyExtract(VL_CIK_FSM_TAG, m_name.c_str()); }
+    bool isFsmResetInclude() const { return fsmTag() == "reset_include"; }
+    bool isFsmResetArc() const { return fsmTag() == "reset"; }
+    bool isFsmDefaultArc() const { return fsmTag() == "default"; }
+    bool fsmIsReset() const { return isFsmResetArc() || isFsmResetInclude(); }
+    int lineno() const {
+        const string lineStr = keyExtract(VL_CIK_LINENO, m_name.c_str());
+        return std::atoi(lineStr.c_str());
+    }
+    int column() const {
+        const string columnStr = keyExtract(VL_CIK_COLUMN, m_name.c_str());
+        return std::atoi(columnStr.c_str());
+    }
     // METHODS
-    string keyExtract(const char* shortKey) const {
+    static string typeExtract(const char* name) { return keyExtract(VL_CIK_TYPE, name); }
+    static string keyExtract(const char* shortKey, const char* name) {
         // Hot function
         const size_t shortLen = std::strlen(shortKey);
-        const string namestr = name();
-        for (const char* cp = namestr.c_str(); *cp; ++cp) {
+        for (const char* cp = name; *cp; ++cp) {
             if (*cp == '\001') {
                 if (0 == std::strncmp(cp + 1, shortKey, shortLen) && cp[shortLen + 1] == '\002') {
                     cp += shortLen + 2;  // Skip \001+short+\002
@@ -99,7 +120,7 @@ public:
     void dumpAnnotate(std::ostream& os, unsigned annotateMin) const {
         os << (ok(annotateMin) ? "+" : "-");
         os << std::setw(6) << std::setfill('0') << count();
-        os << "  point: comment=" << comment() << " hier=" << hier();
+        os << "  point: type=" << type() << " comment=" << comment() << " hier=" << hier();
         os << "\n";
     }
 };
@@ -129,7 +150,7 @@ public:
 
     // METHODS
     void dump() {
-        UINFO(2, "dumpPoints...\n");
+        UINFO(2, "dumpPoints...");
         VlcPoint::dumpHeader(std::cout);
         for (const auto& i : *this) {
             const VlcPoint& point = pointNumber(i.second);

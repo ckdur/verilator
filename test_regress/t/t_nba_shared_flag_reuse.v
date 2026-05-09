@@ -1,11 +1,13 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2025 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2025 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
+// verilog_format: off
 `define stop $stop
 `define checkh(gotv,expv) do if ((gotv) !== (expv)) begin $write("%%Error: %s:%0d:  got=%0x exp=%0x (%s !== %s)\n", `__FILE__,`__LINE__, (gotv), (expv), `"gotv`", `"expv`"); `stop; end while(0);
+// verilog_format: on
 
 module t;
 
@@ -17,13 +19,13 @@ module t;
 
   reg r_valid;
 
-  reg [31:0] addr [1:0];
-  reg [7:0] len [1:0];
+  reg [31:0] addr[1:0];
+  reg [7:0] len[1:0];
 
   always #5 clk = ~clk;
 
   initial begin
-    #5; // Align with negedge clk
+    #5;  // Align with negedge clk
 
     #20;
     `checkh(addr[0], 32'h0000_0000);
@@ -52,6 +54,7 @@ module t;
   always @(posedge clk) begin
     if (reset) begin
       r_valid <= 0;
+      addr[0] <= '0;
     end
     else begin
       if (r_valid) begin
@@ -64,8 +67,7 @@ module t;
       if (aw_valid) begin
         addr[0] <= 32'h33333333;
         len[0] <= 8'hff;
-        if (w_valid)
-          addr[0] <= 32'h44444444;
+        if (w_valid) addr[0] <= 32'h44444444;
       end
     end
   end

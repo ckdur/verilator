@@ -6,11 +6,11 @@
 //
 //*************************************************************************
 //
-// Copyright 2000-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
-// SPDX-License-Identifier: LGPL-3.0-only LOR Artistic-2.0
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2000-2026 Wilson Snyder
+// SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
 
@@ -24,8 +24,6 @@
 #include "V3Global.h"
 
 #include <deque>
-
-using namespace std;
 
 class V3PreExprToken final {
 public:
@@ -136,7 +134,7 @@ class V3PreExpr final {
     static void selfTestOne(const string& expr, bool expect) {
         // This hacky self-test parser just looks at first character of
         // operator, and requires space separation of operators/values
-        UINFO(9, "V3PreExpr selfTestOne " << expr << endl);
+        UINFO(9, "V3PreExpr selfTestOne " << expr);
         FileLine* const flp = nullptr;
         V3PreExpr parser;
         parser.reset(flp);
@@ -161,16 +159,16 @@ class V3PreExpr final {
             }
         }
         const bool got = parser.result();
-        UASSERT_SELFTEST(bool, got, expect);
+        UASSERT_SELFTEST(const bool, got, expect);
     }
 
     // METHODS
     void pushOp(const V3PreExprToken& token) {
-        // UINFO(9, "  pushOp " << token.ascii() << endl);
+        // UINFO(9, "  pushOp " << token.ascii());
         m_ops.push_back(token);
     }
     void pushValue(const V3PreExprToken& token) {
-        // UINFO(9, "  pushValue " << token.ascii() << endl);
+        // UINFO(9, "  pushValue " << token.ascii());
         m_values.push_back(token);
     }
     V3PreExprToken popValue() {
@@ -180,13 +178,13 @@ class V3PreExpr final {
         }
         const V3PreExprToken tok = m_values.back();
         m_values.pop_back();
-        // UINFO(9, "  popValue " << tok.ascii() << endl;
+        // UINFO(9, "  popValue " << tok.ascii());
         return tok;
     }
     void reduce() {
         UASSERT(!m_ops.empty(), "lost op stack beginning END");
-        V3PreExprToken tok = m_ops.back();
-        // UINFO(9, "Reduce " << tok.ascii() << endl);
+        const V3PreExprToken tok = m_ops.back();
+        // UINFO(9, "Reduce " << tok.ascii());
         m_ops.pop_back();
         switch (tok.token()) {
         case V3PreExprToken::KET: {
@@ -239,19 +237,19 @@ class V3PreExpr final {
     }
     void parse() {
         while (!m_inputs.empty()) {
-            V3PreExprToken tok = m_inputs.front();
+            const V3PreExprToken tok = m_inputs.front();
             m_inputs.pop_front();
-            UINFO(9, "input read " << tok.ascii() << endl);
+            UINFO(9, "input read " << tok.ascii());
             if (tok.isValue()) {
                 pushValue(tok);
                 continue;
             }
 
             UASSERT(!m_ops.empty(), "lost op stack beginning END");
-            V3PreExprToken topTok = m_ops.back();
+            const V3PreExprToken topTok = m_ops.back();
             auto action = parseTable[topTok.token()][tok.token()];
             UINFO(9, "pop action " << actionAscii(action) << " from parseTable[" << topTok.ascii()
-                                   << "][" << tok.ascii() << "]\n");
+                                   << "][" << tok.ascii() << "]");
             switch (action) {
             case RR:  // Reduce
                 reduce();
@@ -268,7 +266,7 @@ class V3PreExpr final {
 
 public:
     // METHODS
-    V3PreExpr() {}
+    V3PreExpr() = default;
     ~V3PreExpr() = default;
     void reset(FileLine* flp) {
         m_inputs.clear();
@@ -279,7 +277,7 @@ public:
     }
     void pushInput(const V3PreExprToken& token) {
         if (!m_firstFileline) m_firstFileline = token.fileline();
-        UINFO(9, "pushInput " << token.ascii() << endl);
+        UINFO(9, "pushInput " << token.ascii());
         m_inputs.push_back(token);
     }
     bool result() {

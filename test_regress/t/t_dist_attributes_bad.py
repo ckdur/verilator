@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import json
 import vltest_bootstrap
 
 test.scenarios('dist')
-
-root = ".."
 
 
 def have_clang_check():
@@ -27,15 +25,15 @@ def have_clang_check():
 
 if 'VERILATOR_TEST_NO_ATTRIBUTES' in os.environ:
     test.skip("Skipping due to VERILATOR_TEST_NO_ATTRIBUTES")
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 if not have_clang_check():
     test.skip("No libclang installed")
 
-aroot = os.path.abspath(root)
+aroot = os.path.abspath(test.root)
 ccjson_file = test.obj_dir + "/compile_commands.json"
 
-aroot_dir = os.path.abspath(root)
+aroot_dir = os.path.abspath(test.root)
 srcs_dir = os.path.abspath("./t/t_dist_attributes")
 common_args = [
     "clang++", "-std=c++14", "-I" + aroot_dir + "/include", "-I" + aroot_dir + "/src", "-c"
@@ -54,7 +52,7 @@ ccjson = [
         "file": srcs_dir + "/mt_disabled.cpp",
         "output": srcs_dir + "/mt_disabled.o",
         "arguments":
-        [*common_args, "-o", srcs_dir + "/mt_enabled.o", srcs_dir + "/mt_enabled.cpp"]
+        [*common_args, "-o", srcs_dir + "/mt_disabled.o", srcs_dir + "/mt_disabled.cpp"]
     },
 ]
 ccjson_str = json.dumps(ccjson)

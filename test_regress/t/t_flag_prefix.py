@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
@@ -13,12 +13,10 @@ test.scenarios('vlt')
 
 test.compile(
     verilator_flags2=[
+        "--binary",
         "--prefix t_flag_prefix",  # should be overridden
         "--prefix Vprefix",
-        "--exe",
-        "--main",
-        "--stats",
-        "--build"
+        "--stats"
     ],
     verilator_make_cmake=False,
     verilator_make_gmake=False)
@@ -35,6 +33,10 @@ def check_files():
             test.error("bad filename '" + filename + "'")
             continue
         if re.search(r'^(.*\.(o|a)|Vprefix)$', filename):
+            continue
+        if re.search(r'\.gcda$', filename):
+            continue
+        if re.search(r'\.gcno$', filename):
             continue
         with open(path, 'r', encoding="utf8") as fh:
             for line in fh:

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2005-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -45,8 +45,8 @@ public:
         return *this;
     }
     VDouble0 operator++(int) {  // postfix
-        VDouble0 old = *this;
-        m_d++;
+        const VDouble0 old = *this;
+        ++m_d;
         return old;
     }
     VDouble0& operator=(const double v) {
@@ -90,7 +90,7 @@ public:
     }
     // CONSTRUCTORS
     V3Statistic(const string& stage, const string& name, double value, unsigned precision,
-                bool sumit = false, bool perf = false)
+                bool sumit, bool perf)
         : m_name{name}
         , m_value{value}
         , m_precision{precision}
@@ -121,13 +121,22 @@ public:
     static void addStat(const V3Statistic&);
     static void addStat(const string& stage, const string& name, double value,
                         unsigned precision = 0) {
-        addStat(V3Statistic{stage, name, value, precision});
+        addStat(V3Statistic{stage, name, value, precision, false, false});
     }
     static void addStat(const string& name, double value, unsigned precision = 0) {
-        addStat(V3Statistic{"*", name, value, precision});
+        addStat(V3Statistic{"*", name, value, precision, false, false});
     }
     // Add summary statistic - Threadsafe _unlike most other functions here_
-    static void addStatSum(const string& name, double count) VL_MT_SAFE_EXCLUDES(s_mutex);
+    static void addStatSum(const char* name, double count) VL_MT_SAFE_EXCLUDES(s_mutex) {
+        // Avoid memory blow-up when called frequently with zero adds,
+        // e.g. from V3Const invoked on individual expressions.
+        if (count == 0.0) return;
+        const V3LockGuard lock{s_mutex};
+        addStat(V3Statistic{"*", name, count, 0, true, false});
+    }
+    static void addStatSum(const std::string& name, double count) {
+        addStatSum(name.c_str(), count);
+    }
     static void addStatPerf(const string& name, double value) {
         addStat(V3Statistic{"*", name, value, 6, true, true});
     }

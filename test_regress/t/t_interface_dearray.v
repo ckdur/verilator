@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2025 by Wilson Snyder
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2025 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 interface A;
@@ -10,41 +10,50 @@ endinterface
 typedef virtual A a_t;
 typedef a_t a_array_t[6];
 
-class C;
-   a_array_t vif;
+class B;
+  function new(virtual A va);
+  endfunction
 endclass
 
-module tb_top();
-   A a[6](), b[6]();
-   C c, d, e;
-   a_array_t g;
+class C;
+  a_array_t vif;
 
-   initial begin
-      static a_t aa = a[0];
+  function void set(int index, a_t iface);
+    vif[index] = iface;
+  endfunction
+endclass
 
-      b = a;
+module tb_top ();
+  A a[6] ();
+  C c, d, e;
+  a_array_t g;
 
-      c = new();
-      c.vif = a;
+  initial begin
+    static a_t aa = a[0];
 
-      d = new();
-      d.vif[0] = a[0];
-      d.vif[1] = a[1];
+    automatic B b = new(a[0]);
 
-      g[0] = a[0];
-      g = a;
+    c = new();
+    c.vif = a;
 
-      d.vif[0] = g[0];
-      d.vif = g;
+    d = new();
+    d.set(0, a[0]);
+    d.vif[1] = a[1];
 
-      e = new();
+    g[0] = a[0];
+    g = a;
 
-      for (int i = 0; i < 6; ++i) begin
-         e.vif[i] = g[i];
-      end
+    d.vif[0] = g[0];
+    d.vif = g;
 
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+    e = new();
+
+    for (int i = 0; i < 6; ++i) begin
+      e.vif[i] = g[i];
+    end
+
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 
 endmodule

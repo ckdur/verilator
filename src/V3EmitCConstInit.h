@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -29,11 +29,9 @@
 class EmitCConstInit VL_NOT_FINAL : public EmitCBaseVisitorConst {
     // MEMBERS
     uint32_t m_unpackedWord = 0;
-    bool m_inUnpacked = false;
 
     // METHODS
-
-    uint32_t tabModulus(AstNodeDType* dtypep) {
+    uint32_t tabModulus(const AstNodeDType* dtypep) {
         const uint32_t elemBytes = dtypep->widthTotalBytes();
         return dtypep->isString() ? 1  // String
                : elemBytes <= 2   ? 8  // CData, SData
@@ -45,9 +43,7 @@ class EmitCConstInit VL_NOT_FINAL : public EmitCBaseVisitorConst {
 protected:
     // VISITORS
     void visit(AstInitArray* nodep) override {
-        VL_RESTORER(m_inUnpacked);
         VL_RESTORER(m_unpackedWord);
-        m_inUnpacked = true;
         if (VN_IS(nodep->dtypep()->skipRefp(), AssocArrayDType)) {
             // Note the double {{ initializer. The first { starts the initializer of the
             // VlAssocArray, and the second starts the initializer of m_storage within the
@@ -101,52 +97,12 @@ protected:
     void visit(AstConst* nodep) override {
         const V3Number& num = nodep->num();
         UASSERT_OBJ(!num.isFourState(), nodep, "4-state value in constant pool");
-        const AstNodeDType* const dtypep = nodep->dtypep();
-        if (num.isNull()) {
-            putns(nodep, "VlNull{}");
-        } else if (num.isString()) {
-            // Note: putsQuoted does not track indentation, so we use this instead
-            putns(nodep, "\"");
-            puts(num.toString());
-            puts("\"");
-        } else if (dtypep->isWide()) {
-            const uint32_t size = dtypep->widthWords();
-            // Note the double {{ initializer. The first { starts the initializer of the VlWide,
-            // and the second starts the initializer of m_storage within the VlWide.
-            putns(nodep, "{");
-            ofp()->putsNoTracking("{");
-            if (m_inUnpacked) puts(" // VlWide " + cvtToStr(m_unpackedWord));
-            puts("\n");
-            for (uint32_t n = 0; n < size; ++n) {
-                if (n) puts((n % 4) ? ", " : ",\n");
-                ofp()->printf("0x%08" PRIx32, num.edataWord(n));
-            }
-            puts("\n");
-            puts("}");
-            ofp()->putsNoTracking("}");
-        } else if (dtypep->isDouble()) {
-            const double dnum = num.toDouble();
-            const char* const fmt
-                = !m_inUnpacked && (static_cast<int>(dnum) == dnum && -1000 < dnum && dnum < 1000)
-                      ? "%3.1f"  // Force decimal point
-                      : "%.17e";  // %e always yields a float literal
-            putns(nodep, "");
-            ofp()->printf(fmt, dnum);
-        } else if (dtypep->isQuad()) {
-            const uint64_t qnum = static_cast<uint64_t>(num.toUQuad());
-            const char* const fmt
-                = !m_inUnpacked && (qnum < 10) ? ("%" PRIx64 "ULL") : ("0x%016" PRIx64 "ULL");
-            putns(nodep, "");
-            ofp()->printf(fmt, qnum);
-        } else {
-            const uint32_t unum = num.toUInt();
-            const char* const fmt = !m_inUnpacked && (unum < 10) ? ("%" PRIu32 "U")
-                                    : (dtypep->widthMin() > 16)  ? ("0x%08" PRIx32 "U")
-                                    : (dtypep->widthMin() > 8)   ? ("0x%04" PRIx32 "U")
-                                                                 : ("0x%02" PRIx32 "U");
-            putns(nodep, "");
-            ofp()->printf(fmt, unum);
-        }
+        putns(nodep, num.emitC());
+    }
+    void visit(AstUnbounded* nodep) override {
+        // e.g. when emitting a public parameter's "$" value
+        // But Unbounded is only special during elaboration, so just use zero
+        putns(nodep, "0");
     }
 
     // Default

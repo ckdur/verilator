@@ -1,10 +1,10 @@
 #!/usr/bin/env perl
 ######################################################################
 #
-# Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2025-2026 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 #
 ######################################################################
@@ -27,7 +27,23 @@ use vars qw($Debug @Opt_Verilator_Sw);
 autoflush STDOUT 1;
 autoflush STDERR 1;
 
+# Guard against unbounded recursive re-entry. Hierarchical / --build flows
+# legitimately re-enter the wrapper a few levels deep (wrapper -> verilator_bin
+# -> make -> wrapper -> ...); a misconfigured VERILATOR_BIN, VERILATOR_GDB or
+# VERILATOR_VALGRIND that points back at this wrapper, however, recurses
+# without bound and exhausts the OS PID table. Use VERILATOR_RUNNING as a
+# depth counter and cap it well above any real nesting.
+my $verilator_running_max = 16;
+my $verilator_running_depth = ($ENV{VERILATOR_RUNNING} || 0) + 1;
+if ($verilator_running_depth > $verilator_running_max) {
+    die "%Error: verilator: re-entered $verilator_running_depth levels deep"
+        . " via \$VERILATOR_RUNNING; check that VERILATOR_BIN, VERILATOR_GDB"
+        . " and VERILATOR_VALGRIND do not resolve back to this wrapper script.\n";
+}
+$ENV{VERILATOR_RUNNING} = $verilator_running_depth;
+
 $Debug = 0;
+my $opt_aslr;
 my $opt_gdb;
 my $opt_rr;
 my $opt_gdbbt;
@@ -41,6 +57,7 @@ if ($#ARGV < 0) {
 }
 
 # Insert debugging options up front
+# (VERILATOR_TEST_FLAGS is not a documented nor official supported feature)
 push @ARGV, (split ' ', $ENV{VERILATOR_TEST_FLAGS} || "");
 
 # We sneak a look at the flags so we can do some pre-environment checks
@@ -56,6 +73,7 @@ if (! GetOptions(
           "debug"            => \&debug,
           # "version!"       => \&version,   # Also passthru'ed
           # Switches
+          "aslr!"            => \$opt_aslr,
           "gdb!"             => \$opt_gdb,
           "gdbbt!"           => \$opt_gdbbt,
           "quiet!"           => \$opt_quiet_exit,  # As -quiet implies -quiet-exit
@@ -97,7 +115,7 @@ my @quoted_sw = map { sh_escape($_) } @Opt_Verilator_Sw;
 if ($opt_gdb) {
     # Generic GDB interactive
     run (ulimit_stack_unlimited()
-         . aslr_off()
+         . aslr(0)
          . ($ENV{VERILATOR_GDB} || "gdb")
          . " " . verilator_bin()
          # Note, uncomment to set breakpoints before running:
@@ -114,13 +132,13 @@ if ($opt_gdb) {
 } elsif ($opt_rr) {
     # Record with rr
     run (ulimit_stack_unlimited()
-         . aslr_off()
+         . aslr(0)
          . "rr record " . verilator_bin()
          . " " . join(' ', @quoted_sw));
 } elsif ($opt_gdbbt && $Debug) {
     # Run under GDB to get gdbbt
     run (ulimit_stack_unlimited()
-         . aslr_off()
+         . aslr(0)
          . "gdb"
          . " " . verilator_bin()
          . " --batch --quiet --return-child-result"
@@ -130,24 +148,24 @@ if ($opt_gdb) {
 } elsif ($opt_valgrind) {
     # Run under valgrind
     my $valgrind_bin = ($ENV{VERILATOR_VALGRIND} || "valgrind --error-exitcode=1 --max-stackframe=2815880"
-        # Magic number sugested by valgrind, may need to be increased in future
+        # Magic number suggested by Valgrind, may need to be increased in future
         # if you get warnings. See: https://valgrind.org/docs/manual/manual-core.html#opt.max-stackframe
         );
 
     run (ulimit_stack_unlimited()
-         . aslr_off()
+         . aslr(0)
          . $valgrind_bin
          . " " . verilator_bin()
          . " " . join(' ', @quoted_sw));
 } elsif ($Debug) {
     # Debug
     run(ulimit_stack_unlimited()
-        . aslr_off()
+        . aslr(0)
         . verilator_bin()
         . " " . join(' ', @quoted_sw));
 } else {
-    # Normal, non gdb
-    run(ulimit_stack_unlimited() . verilator_bin() . " " . join(' ', @quoted_sw));
+    # Normal, non-gdb
+    run(ulimit_stack_unlimited() . aslr(1) . verilator_bin() . " " . join(' ', @quoted_sw));
 }
 
 #----------------------------------------------------------------------
@@ -192,21 +210,45 @@ sub gdb_works {
     return $status == 0;
 }
 
-sub aslr_off {
-    my $ok = `setarch --addr-no-randomize echo ok 2>/dev/null` || "";
-    if ($ok =~ /ok/) {
-        return "setarch --addr-no-randomize ";
-    } else {
-        return "";
+sub aslr {
+    my $want_on = shift;
+    $want_on = $opt_aslr if defined $opt_aslr;
+    if (!$want_on) {
+        my $ok = `setarch --addr-no-randomize echo ok 2>/dev/null` || "";
+        if ($ok =~ /ok/) {
+            return "setarch --addr-no-randomize ";
+        }
     }
+    return "";
 }
 
 sub ulimit_stack_unlimited {
     return "" if !$opt_unlimited_stack;
-    system("ulimit -s unlimited 2>/dev/null");
+    my $limit = "unlimited";
+    # AddressSanitizer doesn't work with 'ulimit -s unlimted'
+    if (`${\(verilator_bin())} --get-supported DEV_ASAN` eq "1\n") {
+        # Use host 'physical memory / #cores / 8' instead
+        if ($^O eq "darwin") {
+            my $membytes = `sysctl -n hw.memsize`;
+            chomp $membytes;
+            my $ncpu = `sysctl -n hw.ncpu`;
+            chomp $ncpu;
+            $limit = int(int($membytes / 1024) / $ncpu / 8);
+        } else {
+            open(my $fh, "<", "/proc/meminfo") || die "Can't read host memory for asan";
+            while (<$fh>) {
+                if (m/MemTotal:\s+(\d+)\s+kB/) {
+                    $limit = int(int($1)/`nproc`/8);
+                    last;
+                }
+            }
+            close($fh);
+        }
+    }
+    system("ulimit -s $limit 2>/dev/null");
     my $status = $?;
     if ($status == 0) {
-        return "ulimit -s unlimited 2>/dev/null; exec ";
+        return "ulimit -s $limit 2>/dev/null; exec ";
     } else {
         return "";
     }
@@ -227,17 +269,18 @@ sub run {
             warn "%Error: export VERILATOR_ROOT=" . ($ENV{VERILATOR_ROOT} || "") . "\n";
             warn "%Error: $command\n";
         }
-        if ($status & 127) {
-            if (($status & 127) == 4  # SIGILL
-                || ($status & 127) == 8  # SIGFPA
-                || ($status & 127) == 11) {  # SIGSEGV
+        my $signal = ($status & 127);
+        if ($signal) {
+            if ($signal == 4  # SIGILL
+                || $signal == 8  # SIGFPA
+                || $signal == 11) {  # SIGSEGV
                 warn "%Error: Verilator internal fault, sorry. "
                     . "Suggest trying --debug --gdbbt\n" if !$Debug;
-            } elsif (($status & 127) == 6) {  # SIGABRT
+            } elsif ($signal == 6) {  # SIGABRT
                 warn "%Error: Verilator aborted. "
                     . "Suggest trying --debug --gdbbt\n" if !$Debug;
             } else {
-                warn "%Error: Verilator threw signal $status. "
+                warn "%Error: Verilator threw signal $signal. "
                     . "Suggest trying --debug --gdbbt\n" if !$Debug;
             }
         }
@@ -245,8 +288,8 @@ sub run {
             warn "%Error: Command Failed $command\n";
         }
         exit $! if $!;  # errno
-        exit $? >> 8 if $? >> 8;  # child exit status
-        exit 255;  # last resort
+        exit $? >> 8 if $? >> 8;  # pass along child exit code
+        exit 128 + $signal;  # last resort
     }
 }
 
@@ -311,8 +354,9 @@ detailed descriptions of these arguments.
      +1800-2012ext+<ext>        Use SystemVerilog 2012 with file extension <ext>
      +1800-2017ext+<ext>        Use SystemVerilog 2017 with file extension <ext>
      +1800-2023ext+<ext>        Use SystemVerilog 2023 with file extension <ext>
-    --assert                    Enable all assertions
-    --assert-case               Enable unique/unique0/priority case related checks
+    --no-aslr                   Disable address space layout randomization
+    --no-assert                 Disable all assertions
+    --no-assert-case            Disable unique/unique0/priority-case assertions
     --autoflush                 Flush streams after all $displays
     --bbox-sys                  Blackbox unknown $system calls
     --bbox-unsup                Blackbox unsupported language features
@@ -322,14 +366,14 @@ detailed descriptions of these arguments.
     --build-jobs <jobs>         Parallelism for --build
     --cc                        Create C++ output
      -CFLAGS <flags>            C++ compiler arguments for makefile
-    --clk <signal-name>         Mark specified signal as clock
-    --no-clk <signal-name>      Prevent marking specified signal as clock
     --compiler <compiler-name>  Tune for specified C++ compiler
     --compiler-include          Include additional header in the precompiled one
+    --constraint-array-limit <size>   Maximum array size for constraint array reduction
     --converge-limit <loops>    Tune convergence settle time
     --coverage                  Enable all coverage
     --coverage-expr             Enable expression coverage
     --coverage-expr-max <value>     Maximum permutations allowed for an expression
+    --coverage-fsm              Enable FSM state/arc coverage
     --coverage-line             Enable line coverage
     --coverage-max-width <width>   Maximum array depth for coverage
     --coverage-toggle           Enable toggle coverage
@@ -345,11 +389,15 @@ detailed descriptions of these arguments.
     --decorations <level>       Set output comment and spacing level
     --default-language <lang>   Default language to parse
      +define+<var>=<value>      Set preprocessor define
+    --diagnostics-sarif         Enable SARIF diagnostics output
+    --diagnostics-sarif-output <filename>  Set SARIF diagnostics output file
     --dpi-hdr-only              Only produce the DPI header file
     --dump-<srcfile>            Enable dumping everything in source file
     --dump-defines              Show preprocessor defines with -E
     --dump-dfg                  Enable dumping DfgGraphs to .dot files
+    --dump-dfg-patterns         Enable dumping Dfg pattern statistics
     --dump-graph                Enable dumping V3Graphs to .dot files
+    --dump-inputs               Enable dumping preprocessed input files
     --dump-tree                 Enable dumping Ast .tree files
     --dump-tree-addrids         Use short identifiers instead of addresses
     --dump-tree-dot             Enable dumping Ast .tree.dot debug files
@@ -368,6 +416,9 @@ detailed descriptions of these arguments.
      -f <file>                  Parse arguments from a file
      -FI <file>                 Force include of a file
     --flatten                   Force inlining of all modules, tasks and functions
+    --fourstate                 Enable fourstate logic
+    --no-fourstate              Disable fourstate logic
+    --func-recursion-depth <value>  Maximum recursive constant function depth
     --future0 <option>          Ignore an option for compatibility
     --future1 <option>          Ignore an option with argument for compatibility
      -fno-<optimization>        Disable internal optimization stage
@@ -380,23 +431,30 @@ detailed descriptions of these arguments.
     --getenv <var>              Get environment variable with defaults
     --help                      Show this help
     --hierarchical              Enable hierarchical Verilation
-    --hierarchical-params-file <name> Internal option that specifies parameters file for hier blocks
+    --hierarchical-block <block>  Internal use only for --hierarchical
+    --hierarchical-child <block>  Internal use only for --hierarchical
+    --hierarchical-params-file <name>  Internal option that specifies parameters file for hier blocks
+    --hierarchical-threads <threads>  Number of threads for hierarchical scheduling
      -I<dir>                    Directory to search for includes
     --if-depth <value>          Tune IFDEPTH warning
      +incdir+<dir>              Directory to search for includes
+    --inline-cfuncs <value>     Inline CFuncs with <=value nodes (0=off)
+    --inline-cfuncs-product <value>  Inline CFuncs if size*calls <= value
     --inline-mult <value>       Tune module inlining
     --instr-count-dpi <value>   Assumed dynamic instruction count of DPI imports
      -j <jobs>                  Parallelism for --build-jobs/--verilate-jobs
     --no-json-edit-nums         Don't dump editNum in .tree.json files
-    --no-json-ids               Don't use short identifiers instead of adresses/paths in .tree.json
+    --no-json-ids               Don't use short identifiers instead of addresses/paths in .tree.json
     --json-only                 Create JSON parser output (.tree.json and .meta.json)
-    --json-only-meta-output     .tree.meta.json output filename
-    --json-only-output          .tree.json output filename
+    --json-only-meta-output <filename>  Set .tree.meta.json output filename
+    --json-only-output <filename>       Set .tree.json output filename
     --l2-name <value>           Verilog scope name of the top module
     --language <lang>           Default language standard to parse
      -LDFLAGS <flags>           Linker pre-object arguments for makefile
+     -libmap                    Specify library mapping file
     --lib-create <name>         Create a DPI library
      +libext+<ext>+[ext]...     Extensions for finding modules
+     +librescan                 Ignored for compatibility
     --lint-only                 Lint, but do not make output
     --localize-max-size <value>  Tune localize optimization variable size
     --main                      Generate C++ main() file
@@ -411,6 +469,8 @@ detailed descriptions of these arguments.
      +notimingchecks            Ignored
      -o <executable>            Name of final executable
      -O0                        Disable optimizations
+     -O1                        Default optimizations
+     -O2                        Stronger optimizations
      -O3                        High-performance optimizations
      -O<optimization-letter>    Selectable optimizations
     --output-groups <numfiles>  Group .cpp files into larger ones
@@ -426,8 +486,9 @@ detailed descriptions of these arguments.
     --pins-uint8                Specify types for top-level ports
     --no-pins64                 Don't use uint64_t's for 33-64 bit sigs
     --pipe-filter <command>     Filter all input through a script
-    --pp-comments               Show preprocessor comments with -E
     --prefix <topname>          Name of top-level class
+    --preproc-comments          Include preprocessor comments in the output with -E
+    --preproc-defines           Include preprocessor defines in the output with -E
     --preproc-resolve           Include all found modules in the output with -E
     --preproc-token-limit       Maximum tokens on a line allowed by preprocessor
     --private                   Debugging; see docs
@@ -445,15 +506,18 @@ detailed descriptions of these arguments.
     --public-params             Mark all parameters as public_flat
      -pvalue+<name>=<value>     Overwrite toplevel parameter
     --quiet                     Minimize additional printing
+    --quiet-build               Don't print build progress
     --quiet-exit                Don't print the command on failure
     --quiet-stats               Don't print statistics
     --relative-includes         Resolve includes relative to current file
-    --reloop-limit              Minimum iterations for forming loops
+    --reloop-limit <value>      Minimum iterations for forming loops
+    --replication-limit <value> Replication concatenation limit (default: 8k)
     --report-unoptflat          Extra diagnostics for UNOPTFLAT
     --rr                        Run Verilator and record with rr
     --runtime-debug             Enable model runtime debugging
     --savable                   Enable model save-restore
     --sc                        Create SystemC output
+    --sched-zero-delay          Specify #0 delay support
     --no-skip-identical         Disable skipping identical output
     --stats                     Create statistics file
     --stats-vars                Provide statistics on variables
@@ -461,7 +525,6 @@ detailed descriptions of these arguments.
     --no-std-package            Prevent parsing standard package
     --no-std-waiver             Prevent parsing standard lint waivers
     --no-stop-fail              Do not call $stop when assertion fails
-    --structs-packed            Convert all unpacked structures to packed structures
      -sv                        Enable SystemVerilog parsing
      +systemverilogext+<ext>    Synonym for +1800-2023ext+<ext>
     --threads <threads>         Enable multithreading
@@ -482,13 +545,13 @@ detailed descriptions of these arguments.
     --trace-params              Enable tracing of parameters
     --trace-saif                Enable SAIF file creation
     --trace-structs             Enable tracing structure names
-    --trace-threads <threads>   Enable FST waveform creation on separate threads
     --no-trace-top              Do not emit traces for signals in the top module generated by verilator
     --trace-underscore          Enable tracing of _signals
     --trace-vcd                 Enable VCD waveform creation
      -U<var>                    Undefine preprocessor define
     --no-unlimited-stack        Don't disable stack size limit
     --unroll-count <loops>      Tune maximum loop iterations
+    --unroll-limit <loops>      Maximum loop iterations before assuming infinite loop
     --unroll-stmts <stmts>      Tune maximum loop body size
     --unused-regexp <regexp>    Tune UNUSED lint signals
      -V                         Verbose version and config
@@ -510,6 +573,7 @@ detailed descriptions of these arguments.
      -Wno-fatal                 Disable fatal exit on warnings
      -Wno-lint                  Disable all lint warnings
      -Wno-style                 Disable all style warnings
+     -work <libname>            Set config library for following files
      -Wpedantic                 Warn on compliance-test issues
      -Wwarn-<message>           Enable specified warning message
      -Wwarn-lint                Enable lint warning message
@@ -517,8 +581,6 @@ detailed descriptions of these arguments.
     --x-assign <mode>           Assign non-initial Xs to this value
     --x-initial <mode>          Assign initial Xs to this value
     --x-initial-edge            Enable initial X->0 and X->1 edge triggers
-    --xml-only                  Create XML parser output
-    --xml-output                XML output filename
      -y <dir>                   Directory to search for modules
 
 This is a short summary of the simulation runtime arguments, i.e. for the
@@ -541,15 +603,17 @@ description of these arguments.
      +verilator+quiet                      Minimize additional printing
      +verilator+rand+reset+<value>         Set random reset technique
      +verilator+seed+<value>               Set random seed
+     +verilator+solver+file+<filename>     Set random solver log filename
      +verilator+V                          Show verbose version and config
      +verilator+version                    Show version and exit
+     +verilator+wno+unsatconstr+<value>    Disable constraint warnings
 
 
 =head1 DISTRIBUTION
 
 The latest version is available from L<https://verilator.org>.
 
-Copyright 2003-2025 by Wilson Snyder. This program is free software; you can
+Copyright 2003-2026 by Wilson Snyder. This program is free software; you can
 redistribute it and/or modify the Verilator internals under the terms of
 either the GNU Lesser General Public License Version 3 or the Perl Artistic
 License Version 2.0.

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -70,7 +70,7 @@ class InlineIntfRefVisitor final : public VNVisitor {
 
         iterateChildren(modp);
     }
-    void visit(AstAssignVarScope* nodep) override {
+    void visit(AstAliasScope* nodep) override {
         // Reference
         const AstVarRef* const reflp = VN_CAST(nodep->lhsp(), VarRef);
         // What the reference refers to
@@ -109,7 +109,7 @@ public:
 // Interface class functions
 
 void V3Interface::interfaceAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
 
     { InlineIntfRefVisitor{nodep}; }
 

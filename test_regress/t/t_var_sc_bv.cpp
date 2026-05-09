@@ -1,7 +1,7 @@
 // -*- mode: C++; c-file-style: "cc-mode" -*-
 //
-// This file ONLY is placed into the Public Domain, for any use,
-// without warranty, 2022 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2022 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 #include VM_PREFIX_INCLUDE
@@ -44,7 +44,7 @@ void compareWls(int obits, WDataInP const lwp, WDataInP const rwp) {
         sc_biguint<(obits)> _butemp; \
         for (int i = 0; i < VL_WORDS_I(obits); ++i) { \
             int msb = ((i + 1) * VL_IDATASIZE) - 1; \
-            msb = (msb >= (obits)) ? ((obits)-1) : msb; \
+            msb = (msb >= (obits)) ? ((obits) - 1) : msb; \
             _butemp.range(msb, i* VL_IDATASIZE) = (rwp)[i]; \
         } \
         (svar).write(_butemp); \

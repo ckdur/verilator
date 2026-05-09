@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2004-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2004-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -22,13 +22,30 @@
 #include "V3Error.h"
 #include "V3File.h"
 #include "V3HierBlock.h"
+#include "V3LibMap.h"
 #include "V3LinkCells.h"
 #include "V3Parse.h"
-#include "V3ParseSym.h"
+#include "V3ParseImp.h"
+#include "V3PreShell.h"
 #include "V3Stats.h"
 #include "V3ThreadPool.h"
 
 VL_DEFINE_DEBUG_FUNCTIONS;
+
+//######################################################################
+// AddressSanitizer default options
+
+#ifdef VL_ASAN
+extern "C" const char* __asan_default_options() {
+    // See https://github.com/google/sanitizers/wiki/SanitizerCommonFlags
+    // or 'env ASAN_OPTIONS=help=1 ./verilator_bin'
+    return ""
+#ifndef VL_LEAK_CHECKS
+           ":detect_leaks=0"
+#endif
+        ;
+}
+#endif
 
 //######################################################################
 // V3Global
@@ -36,14 +53,23 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 void V3Global::boot() {
     UASSERT(!m_rootp, "call once");
     m_rootp = new AstNetlist;
+    m_libMapp = new V3LibMap;
 }
 
 void V3Global::shutdown() {
-    VL_DO_CLEAR(delete m_hierPlanp, m_hierPlanp = nullptr);  // delete nullptr is safe
+    V3PreShell::shutdown();
+    VL_DO_CLEAR(delete m_hierGraphp, m_hierGraphp = nullptr);  // delete nullptr is safe
     VL_DO_CLEAR(delete m_threadPoolp, m_threadPoolp = nullptr);  // delete nullptr is safe
+    VL_DO_CLEAR(delete m_libMapp, m_libMapp = nullptr);  // delete nullptr is safe
 #ifdef VL_LEAK_CHECKS
     if (m_rootp) VL_DO_CLEAR(m_rootp->deleteTree(), m_rootp = nullptr);
 #endif
+    FileLine::deleteAllRemaining();
+}
+
+void V3Global::vlExit(int status) {
+    shutdown();
+    std::exit(status);
 }
 
 void V3Global::checkTree() const { rootp()->checkTree(); }
@@ -54,51 +80,64 @@ void V3Global::readFiles() {
     const VNUser4InUse inuser4;
 
     VInFilter filter{v3Global.opt.pipeFilter()};
-    V3ParseSym parseSyms{v3Global.rootp()};  // Symbol table must be common across all parsing
 
-    V3Parse parser{v3Global.rootp(), &filter, &parseSyms};
+    {
+        V3Parse parser{v3Global.rootp(), &filter};
 
-    // Parse the std waivers
-    if (v3Global.opt.stdWaiver()) {
-        parser.parseFile(
-            new FileLine{V3Options::getStdWaiverPath()}, V3Options::getStdWaiverPath(), false,
-            "Cannot find verilated_std_waiver.vlt containing built-in lint waivers: ");
-    }
-    // Read .vlt files
-    const V3StringSet& vltFiles = v3Global.opt.vltFiles();
-    for (const string& filename : vltFiles) {
-        parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filename, false,
-                         "Cannot find file containing .vlt file: ");
-    }
+        // Parse the std waivers
+        if (v3Global.opt.stdWaiver()) {
+            parser.parseFile(
+                new FileLine{V3Options::getStdWaiverPath()}, V3Options::getStdWaiverPath(), false,
+                false, "work",
+                "Cannot find verilated_std_waiver.vlt containing built-in lint waivers: ");
+        }
+        // Read .vlt files
+        for (const VFileLibName& filelib : v3Global.opt.vltFiles()) {
+            parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filelib.filename(),
+                             false, false, filelib.libname(),
+                             "Cannot find file containing .vlt file: ");
+        }
 
-    // Parse the std package
-    if (v3Global.opt.stdPackage()) {
-        parser.parseFile(new FileLine{V3Options::getStdPackagePath()},
-                         V3Options::getStdPackagePath(), false,
-                         "Cannot find verilated_std.sv containing built-in std:: definitions: ");
-    }
+        // Parse the std package
+        if (v3Global.opt.stdPackage()) {
+            parser.parseFile(
+                new FileLine{V3Options::getStdPackagePath()}, V3Options::getStdPackagePath(),
+                false, false, "work",
+                "Cannot find verilated_std.sv containing built-in std:: definitions: ");
+        }
 
-    // Read top module
-    const V3StringList& vFiles = v3Global.opt.vFiles();
-    for (const string& filename : vFiles) {
-        parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filename, false,
-                         "Cannot find file containing module: ");
-    }
+        // Parse libmap files
+        for (const string& filename : v3Global.opt.libmapFiles()) {
+            parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filename, false, true,
+                             "work", "Cannot find file containing libmap definitions: ");
+        }
+        // Create library mapping
+        V3LibMap::map(v3Global.rootp());
 
-    // Read libraries
-    // To be compatible with other simulators,
-    // this needs to be done after the top file is read
-    const V3StringSet& libraryFiles = v3Global.opt.libraryFiles();
-    for (const string& filename : libraryFiles) {
-        parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filename, true,
-                         "Cannot find file containing library module: ");
-    }
+        // Read top module
+        for (const auto& filelib : v3Global.opt.vFiles()) {
+            const string& libname = filelib.libname() == "work"
+                                        ? v3Global.libMapp()->matchMapping(filelib.filename())
+                                        : filelib.libname();
+            parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filelib.filename(),
+                             false, false, libname, "Cannot find file containing module: ");
+        }
 
-    // Read hierarchical type parameter file
-    const string filename = v3Global.opt.hierParamFile();
-    if (!filename.empty()) {
-        parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filename, false,
-                         "Cannot open file containing hierarchical parameter declarations: ");
+        // Read libraries
+        // To be compatible with other simulators,
+        // this needs to be done after the top file is read
+        for (const auto& filelib : v3Global.opt.libraryFiles()) {
+            parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filelib.filename(),
+                             true, false, filelib.libname(),
+                             "Cannot find file containing library module: ");
+        }
+
+        // Read hierarchical type parameter file
+        for (const auto& filelib : v3Global.opt.hierParamFile()) {
+            parser.parseFile(new FileLine{FileLine::commandLineFilename()}, filelib.filename(),
+                             false, false, filelib.libname(),
+                             "Cannot open file containing hierarchical parameter declarations: ");
+        }
     }
 
     // v3Global.rootp()->dumpTreeFile(v3Global.debugFilename("parse.tree"));
@@ -106,7 +145,7 @@ void V3Global::readFiles() {
 
     if (!v3Global.opt.preprocOnly() || v3Global.opt.preprocResolve()) {
         // Resolve all modules cells refer to
-        V3LinkCells::link(v3Global.rootp(), &filter, &parseSyms);
+        V3LinkCells::link(v3Global.rootp(), &filter);
     }
 
     V3Global::dumpCheckGlobalTree("cells", false, dumpTreeEitherLevel() >= 9);
@@ -115,8 +154,10 @@ void V3Global::readFiles() {
 void V3Global::removeStd() {
     // Delete the std package if unused
     if (!usesStdPackage()) {
+        UINFO(3, "Removing unused std:: package");
         if (AstNodeModule* stdp = v3Global.rootp()->stdPackagep()) {
             v3Global.rootp()->stdPackagep(nullptr);
+            v3Global.rootp()->stdPackageClassp(nullptr);
             VL_DO_DANGLING(stdp->unlinkFrBack()->deleteTree(), stdp);
         }
     }
@@ -134,7 +175,8 @@ string V3Global::digitsFilename(int number) {
     return ss.str();
 }
 
-void V3Global::dumpCheckGlobalTree(const string& stagename, int newNumber, bool doDump) {
+void V3Global::dumpCheckGlobalTree(const string& stagename, int newNumber, bool doDump,
+                                   bool doCheck) {
     const string treeFilename = v3Global.debugFilename(stagename + ".tree", newNumber);
     if (dumpTreeLevel()) v3Global.rootp()->dumpTreeFile(treeFilename, doDump);
     if (dumpTreeJsonLevel()) {
@@ -146,7 +188,7 @@ void V3Global::dumpCheckGlobalTree(const string& stagename, int newNumber, bool 
     if (v3Global.opt.stats()) V3Stats::statsStage(stagename);
 
     if (doDump && v3Global.opt.debugEmitV()) V3EmitV::debugEmitV(treeFilename + ".v");
-    if (v3Global.opt.debugCheck() || dumpTreeEitherLevel()) {
+    if (doCheck && (v3Global.opt.debugCheck() || dumpTreeEitherLevel())) {
         // Error check
         v3Global.rootp()->checkTree();
         // Broken isn't part of check tree because it can munge iterp's
@@ -203,7 +245,8 @@ std::vector<std::string> V3Global::verilatedCppFiles() {
     if (v3Global.opt.vpi()) result.emplace_back("verilated_vpi.cpp");
     if (v3Global.opt.savable()) result.emplace_back("verilated_save.cpp");
     if (v3Global.opt.coverage()) result.emplace_back("verilated_cov.cpp");
-    if (v3Global.opt.trace()) result.emplace_back(v3Global.opt.traceSourceBase() + "_c.cpp");
+    for (const string& base : v3Global.opt.traceSourceBases())
+        result.emplace_back(base + "_c.cpp");
     if (v3Global.usesProbDist()) result.emplace_back("verilated_probdist.cpp");
     if (v3Global.usesTiming()) result.emplace_back("verilated_timing.cpp");
     if (v3Global.useRandomizeMethods()) result.emplace_back("verilated_random.cpp");

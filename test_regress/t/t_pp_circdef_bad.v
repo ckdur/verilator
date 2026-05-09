@@ -1,11 +1,11 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2011 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2011 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 //
 // bug445
-
+// verilog_format: off
 `define WIDTH  12
 `define SEL_NUM_BITS `WIDTH-`SEL_NUM_BITS +: `SEL_NUM_BITS
 `define SEL_BITS     `WIDTH-`SEL_NUM_BITS +: `SEL_NUM_BITS

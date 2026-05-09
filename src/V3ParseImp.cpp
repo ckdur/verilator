@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -48,8 +48,6 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 
 V3ParseImp* V3ParseImp::s_parsep = nullptr;
 
-int V3ParseSym::s_anonNum = 0;
-
 //######################################################################
 // Parser constructor
 
@@ -60,17 +58,12 @@ V3ParseImp::~V3ParseImp() {
     m_numberps.clear();
     lexDestroy();
     parserClear();
-
-    if (debug() >= 9) {
-        UINFO(0, "~V3ParseImp\n");
-        symp()->dumpSelf(cout, "-vpi: ");
-    }
 }
 
 //######################################################################
 // Parser utility methods
 
-void V3ParseImp::importIfInStd(FileLine* fileline, const string& id) {
+void V3ParseImp::importIfInStd(FileLine* fileline, const string& id, bool doImport) {
     // Keywords that auto-import to require use of verilated_std.vh.
     // OK if overly sensitive; will over-import and keep std:: around
     // longer than migt otherwise.
@@ -82,10 +75,21 @@ void V3ParseImp::importIfInStd(FileLine* fileline, const string& id) {
     if (fileline->filename() == V3Options::getStdPackagePath()) return;
     if (AstPackage* const stdpkgp
         = v3Global.rootp()->stdPackagep()) {  // else e.g. --no-std-package
-        UINFO(9, "import and keep std:: for " << fileline << "\n");
-        AstPackageImport* const impp = new AstPackageImport{stdpkgp->fileline(), stdpkgp, "*"};
-        unitPackage(stdpkgp->fileline())->addStmtsp(impp);
+        UINFO(9, "import and keep std:: for " << fileline);
         v3Global.setUsesStdPackage();
+        if (doImport) {
+            AstPackageImport* const impp = new AstPackageImport{stdpkgp->fileline(), stdpkgp, "*"};
+            unitPackage(stdpkgp->fileline())->addStmtsp(impp);
+            for (AstNode* itemp = v3Global.rootp()->stdPackagep()->stmtsp(); itemp;
+                 itemp = itemp->nextp()) {
+                if (itemp->name() == "process") {
+                    v3Global.rootp()->stdPackageClassp(VN_AS(itemp, Class));
+                    UASSERT_OBJ(v3Global.rootp()->stdPackageClassp(), v3Global.rootp(),
+                                "'std' package class should be found");
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -124,16 +128,16 @@ void V3ParseImp::lexTimescaleParse(FileLine* fl, const char* textp) {
     VTimescale prec;
     VTimescale::parseSlashed(fl, textp, unit /*ref*/, prec /*ref*/);
     m_timeLastUnit = v3Global.opt.timeComputeUnit(unit);
-    v3Global.rootp()->timeprecisionMerge(fl, prec);
+    m_timeLastPrec = v3Global.opt.timeComputePrec(prec);
 }
-void V3ParseImp::timescaleMod(FileLine* fl, AstNodeModule* modp, bool unitSet, double unitVal,
-                              bool precSet, double precVal) {
+AstPragma* V3ParseImp::createTimescale(FileLine* fl, bool unitSet, double unitVal, bool precSet,
+                                       double precVal) {
     VTimescale unit{VTimescale::NONE};
     if (unitSet) {
         bool bad;
         unit = VTimescale{unitVal, bad /*ref*/};
         if (bad) {
-            UINFO(1, "Value = " << unitVal << endl);
+            UINFO(1, "Value = " << unitVal);
             fl->v3error("timeunit illegal value");
         }
     }
@@ -142,20 +146,17 @@ void V3ParseImp::timescaleMod(FileLine* fl, AstNodeModule* modp, bool unitSet, d
         bool bad;
         prec = VTimescale{precVal, bad /*ref*/};
         if (bad) {
-            UINFO(1, "Value = " << precVal << endl);
+            UINFO(1, "Value = " << precVal);
             fl->v3error("timeprecision illegal value");
         }
     }
-    if (!unit.isNone()) {
-        unit = v3Global.opt.timeComputeUnit(unit);
-        if (modp) {
-            modp->timeunit(unit);
-        } else {
-            v3Global.rootp()->timeunit(unit);
-            unitPackage(fl)->timeunit(unit);
-        }
-    }
     v3Global.rootp()->timeprecisionMerge(fl, prec);
+    if (unit.isNone()) {
+        return nullptr;
+    } else {
+        unit = v3Global.opt.timeComputeUnit(unit);
+        return new AstPragma{fl, unit};
+    }
 }
 
 void V3ParseImp::lexVerilatorCmtLintSave(const FileLine* fl) { m_lexLintState.push_back(*fl); }
@@ -169,22 +170,19 @@ void V3ParseImp::lexVerilatorCmtLintRestore(FileLine* fl) {
     m_lexLintState.pop_back();
 }
 
-void V3ParseImp::lexVerilatorCmtLint(FileLine* fl, const char* textp, bool warnOff) {
+void V3ParseImp::lexVerilatorCmtLint(FileLine* fl, const char* textp, bool turnOff) {
     const char* sp = textp;
     while (*sp && !std::isspace(*sp)) ++sp;
     while (*sp && std::isspace(*sp)) ++sp;
     while (*sp && !std::isspace(*sp)) ++sp;
     while (*sp && std::isspace(*sp)) ++sp;
     string msg = sp;
-    string::size_type pos;
-    if ((pos = msg.find('*')) != string::npos) msg.erase(pos);
+    string::size_type pos = msg.find('*');
+    if (pos != string::npos) msg.erase(pos);
     // Use parsep()->lexFileline() as want to affect later FileLine's warnings
-    if (!(parsep()->lexFileline()->warnOff(msg, warnOff))) {
-        if (!v3Global.opt.isFuture(msg)) {
-            fl->v3error("Unknown verilator lint message code: '" << msg << "', in '" << textp
-                                                                 << "'");
-        }
-    }
+    const string err = parsep()->lexFileline()->warnOffParse(msg, turnOff);
+    if (!err.empty())
+        fl->v3error("Unknown verilator lint message code: '" << err << "', in '" << textp << "'");
 }
 
 void V3ParseImp::lexVerilatorCmtBad(FileLine* fl, const char* textp) {
@@ -196,7 +194,7 @@ void V3ParseImp::lexVerilatorCmtBad(FileLine* fl, const char* textp) {
     string cmtname;
     for (int i = 0; std::isalnum(cmtparse[i]); i++) cmtname += cmtparse[i];
     if (!v3Global.opt.isFuture(cmtname)) {
-        fl->v3error("Unknown verilator comment: '" << textp << "'");
+        fl->v3warn(BADVLTPRAGMA, "Unknown verilator comment: '" << textp << "'");
     }
 }
 
@@ -218,8 +216,8 @@ void V3ParseImp::lexErrorPreprocDirective(FileLine* fl, const char* textp) {
 
 string V3ParseImp::lexParseTag(const char* textp) {
     string tmp = textp + std::strlen("/*verilator tag ");
-    string::size_type pos;
-    if ((pos = tmp.rfind("*/")) != string::npos) tmp.erase(pos);
+    string::size_type pos = tmp.rfind("*/");
+    if (pos != string::npos) tmp.erase(pos);
     return tmp;
 }
 
@@ -269,7 +267,7 @@ size_t V3ParseImp::ppInputToLex(char* buf, size_t max_size) {
         size_t len = front.length();
         if (len > (max_size - got)) {  // Front string too big
             const string remainder = front.substr(max_size - got);
-            front = front.substr(0, max_size - got);
+            front.resize(max_size - got);
             m_ppBuffers.push_front(remainder);  // Put back remainder for next time
             len = (max_size - got);
         }
@@ -278,15 +276,17 @@ size_t V3ParseImp::ppInputToLex(char* buf, size_t max_size) {
     }
     if (debug() >= 9) {
         const string out = std::string{buf, got};
-        cout << "   inputToLex  got=" << got << " '" << out << "'" << endl;
+        cout << "   inputToLex  got=" << got << " '" << out << "'\n";
     }
     // Note returns 0 at EOF
     return got;
 }
 
 void V3ParseImp::preprocDumps(std::ostream& os, bool forInputs) {
-    bool noblanks = forInputs || (v3Global.opt.preprocOnly() && v3Global.opt.preprocNoLine());
-    bool nolines = forInputs;
+    const bool noblanks
+        = forInputs || (v3Global.opt.preprocOnly() && v3Global.opt.preprocNoLine());
+    const bool nolines = forInputs;
+    bool anyNonVerilog = false;
     for (auto& buf : m_ppBuffers) {
         if (noblanks) {
             bool blank = true;
@@ -298,28 +298,35 @@ void V3ParseImp::preprocDumps(std::ostream& os, bool forInputs) {
             }
             if (blank) continue;
             if (nolines && buf.rfind("`line ", 0) == 0) continue;
+            // Ignores comments, but over-positive match search should be ok
+            if (forInputs && buf.rfind("`verilator_config", 0) == 0) anyNonVerilog = true;
         }
         os << buf;
     }
+    if (forInputs && anyNonVerilog) os << "\n`verilog\n";
 }
 
 void V3ParseImp::parseFile(FileLine* fileline, const string& modfilename, bool inLibrary,
+                           bool inLibMap, const string& libname,
                            const string& errmsg) {  // "" for no error, make fake node
     const string nondirname = V3Os::filenameNonDir(modfilename);
     const string modname = V3Os::filenameNonDirExt(modfilename);
 
-    UINFO(2, __FUNCTION__ << ": " << modname << (inLibrary ? " [LIB]" : "") << endl);
+    UINFO(2, __FUNCTION__ << ": " << modname << (inLibrary ? " [LIB]" : "")
+                          << (inLibMap ? " [LIBMAP]" : ""));
     m_lexFileline = new FileLine{fileline};
     m_lexFileline->newContent();
     m_bisonLastFileline = m_lexFileline;
     m_inLibrary = inLibrary;
+    m_inLibMap = inLibMap;
+    m_libname = libname;
 
     // Preprocess into m_ppBuffer
     const bool ok = V3PreShell::preproc(fileline, modfilename, m_filterp, this, errmsg);
     if (!ok) {
         if (errmsg != "") return;  // Threw error already
         // Create fake node for later error reporting
-        AstNodeModule* const nodep = new AstNotFoundModule{fileline, modname};
+        AstNodeModule* const nodep = new AstNotFoundModule{fileline, modname, libname};
         v3Global.rootp()->addModulesp(nodep);
         return;
     }
@@ -351,7 +358,8 @@ void V3ParseImp::parseFile(FileLine* fileline, const string& modfilename, bool i
     }
 
     V3Stats::addStatSum(V3Stats::STAT_SOURCE_CHARS, m_ppBytes);
-    if (debug() && modfilename != V3Options::getStdPackagePath()
+    if ((debug() || v3Global.opt.dumpLevel("inputs"))
+        && modfilename != V3Options::getStdPackagePath()
         && modfilename != V3Options::getStdWaiverPath())
         dumpInputsFile();
 
@@ -366,31 +374,61 @@ void V3ParseImp::parseFile(FileLine* fileline, const string& modfilename, bool i
 void V3ParseImp::dumpInputsFile() {
     // Create output file with joined preprocessor output we buffered up,
     // Useful for debug to feed back into Verilator
-    static bool append = false;
+    static bool s_append = false;
     const string vppfilename
         = v3Global.opt.hierTopDataDir() + "/" + v3Global.opt.prefix() + "__inputs.vpp";
-    std::ofstream* ofp = V3File::new_ofstream(vppfilename, append);
+    std::ofstream* ofp = V3File::new_ofstream(vppfilename, s_append);
     if (ofp->fail()) {
         v3error("Can't write file: " + vppfilename);
         return;
     }
-    if (!append) {
-        append = true;
-        UINFO(1, "Writing all preprocessed output to " << vppfilename << endl);
+    if (!s_append) {
+        s_append = true;
+        UINFO(1, "Writing all preprocessed output to " << vppfilename);
         *ofp << "// Dump of all post-preprocessor input\n";
         *ofp << "// Blank lines and `line directives have been removed\n";
         *ofp << "//\n";
         V3Stats::infoHeader(*ofp, "// ");
+        *ofp << '\n';
+        for (const auto& pair : v3Global.opt.allArgs()) {
+            if (!pair.second) continue;
+            *ofp << "// verilator fargs";
+            for (const std::string& arg : pair.first) {
+                // Apply some quoting, pretty basic, update as needed ...
+                std::string quoted;
+                bool quoteIt = false;
+                for (const char c : arg) {
+                    if (c == '"' || c == '\\') {
+                        quoteIt = true;
+                        quoted += '\\';
+                    } else if (std::isspace(c)) {
+                        quoteIt = true;
+                    }
+                    quoted += c;
+                }
+                *ofp << " " << (quoteIt ? '"' + quoted + '"' : arg);
+            }
+            *ofp << "\n";
+        }
+        *ofp << "\n";
     }
-    *ofp << "\n";
     preprocDumps(*ofp, true);
     ofp->close();
     VL_DO_DANGLING(delete ofp, ofp);
 }
 
+void V3ParseImp::dumpTokensAhead(int line) {  // LCOV_EXCL_START
+    int i = 0;
+    UINFO(1, "dumpTokensAhead @ " << line << " [ ] " << yylval);
+    for (const V3ParseBisonYYSType& t : m_tokensAhead) {
+        UINFO(1, "dumpTokensAhead @ " << line << " [" << i << "] " << t);
+        ++i;
+    }
+}  // LCOV_EXCL_STOP
+
 void V3ParseImp::lexFile(const string& modname) {
     // Prepare for lexing
-    UINFO(3, "Lexing " << modname << endl);
+    UINFO(3, "Lexing " << modname);
     s_parsep = this;
     lexFileline()->warnResetDefault();  // Reenable warnings on each file
     lexDestroy();  // Restart from clean slate.
@@ -404,8 +442,11 @@ void V3ParseImp::tokenPull() {
     // Pull token from lex into the pipeline
     // This corrupts yylval, must save/restore if required
     // Fetch next token from prefetch or real lexer
+    VL_RESTORER(yylval);
     yylexReadTok();  // sets yylval
+    UINFO(9, "tokenPulled " << yylval);
     m_tokensAhead.push_back(yylval);
+    if (debug() >= 10) dumpTokensAhead(__LINE__);
 }
 
 const V3ParseBisonYYSType* V3ParseImp::tokenPeekp(size_t depth) {
@@ -415,7 +456,7 @@ const V3ParseBisonYYSType* V3ParseImp::tokenPeekp(size_t depth) {
     return &m_tokensAhead.at(depth);
 }
 
-size_t V3ParseImp::tokenPipeScanIdCell(size_t depthIn) {
+size_t V3ParseImp::tokenPipeScanIdInst(size_t depthIn) {
     // Search around IEEE module_instantiation/interface_instantiation/program_instantiation
     // Return location of following token, or input if not found
     // yaID/*module_identifier*/ [ '#' '('...')' ] yaID/*name_of_instance*/ [ '['...']' ] '(' ...
@@ -428,6 +469,35 @@ size_t V3ParseImp::tokenPipeScanIdCell(size_t depthIn) {
 
     depth = tokenPipeScanBracket(depth);  // [ '['..']' ]*
     if (tokenPeekp(depth)->token != '(') return depthIn;
+
+    return depth;
+}
+
+size_t V3ParseImp::tokenPipeScanIdType(size_t depthIn) {
+    // Search around IEEE data type identifier
+    // Return location of following token, or input if not found
+    // tokenPipeScanIdCell has precedence over this search
+    //   yaID/*type_identifier*/ [ '#' '('...')' ] [{ '['...']' }] yaID/*identifier*/
+    // assignment_pattern_expression:
+    //   yaID/*type_identifier*/ [ '#' '('...')' ] [{ '['...']' }] yP_TICKBRA
+    // class_type parameter_value_assignment  // often followed by ) as in e.g. ClsA#(ClsB#(...))
+    //   yaID/*type_identifier*/ '#' '('...')'  [^ '::']
+    // and caller must check does NOT match tokenPipeScanIdCell
+    size_t depth = depthIn;
+    // UINFO(9, "tokenPipeScanType START d="
+    //       << depth << " " << V3ParseImp::tokenName(tokenPeekp(depth)->token));
+    if (tokenPeekp(depth)->token == '#' && tokenPeekp(depth + 1)->token == '(') {
+        depth = tokenPipeScanParam(depth, false);
+        // Not :: as then it's a yaID__CC, we'll parse that in tokenPipeScanId
+        if (tokenPeekp(depth)->token != yP_COLONCOLON) return depth;
+    }
+
+    depth = tokenPipeScanBracket(depth);  // [ '['..']' ]*
+
+    if (tokenPeekp(depth)->token != yaID__LEX && tokenPeekp(depth)->token != yP_TICKBRA)
+        return depthIn;
+    ++depth;
+    // UINFO(9, "tokenPipeScanType MATCH");
 
     return depth;
 }
@@ -469,7 +539,7 @@ size_t V3ParseImp::tokenPipeScanParam(size_t inDepth, bool forCell) {
     if (tokenPeekp(depth)->token != '(') {
         if (!forCell) return inDepth;
         // For module cells, we can have '#' and a number, or, annoyingly an idDotted
-        int ntoken = tokenPeekp(depth)->token;
+        const int ntoken = tokenPeekp(depth)->token;
         if (ntoken == yaINTNUM || ntoken == yaFLOATNUM || ntoken == yaTIMENUM
             || ntoken == yaID__LEX) {
             ++depth;
@@ -498,17 +568,20 @@ size_t V3ParseImp::tokenPipeScanParam(size_t inDepth, bool forCell) {
     return depth;
 }
 
-size_t V3ParseImp::tokenPipeScanTypeEq(size_t depth) {
+size_t V3ParseImp::tokenPipeScanParens(size_t depth) {
     // Search around IEEE type_reference to see if is expression
     // Return location of following token, or input if not found
     // yTYPE__ETC '(' ... ')'  ['==' '===' '!=' '!===']
+    //             ^- depth
+    // yRANDOMIZE yWITH '(' ... ')'  ['{']
+    //                   ^- depth
     if (tokenPeekp(depth)->token != '(') return depth;
     depth += 1;  // Past the (
     int parens = 1;  // Count first (
     while (true) {
         const int tok = tokenPeekp(depth)->token;
         if (tok == 0) {  // LCOV_EXCL_BR_LINE
-            UINFO(9, "tokenPipeScanTypeEq hit EOF; probably syntax error to come");
+            UINFO(9, "tokenPipeScanTypeParens hit EOF; probably syntax error to come");
             break;  // LCOV_EXCL_LINE
         } else if (tok == '(') {
             ++parens;
@@ -524,16 +597,71 @@ size_t V3ParseImp::tokenPipeScanTypeEq(size_t depth) {
     return depth;
 }
 
+size_t V3ParseImp::tokenPipeScanEqNew(size_t depth) {
+    // Search around IEEE class_new to see if is expression
+    // Return location of following token, or input if not found
+    // '=' { packageClassScopeNoId } yNEW__LEX
+    UINFO(9, "tokenPipelineScanEqNew tok=" << yylval.token);
+    UASSERT(yylval.token == '=', "Start with '='");
+    while (true) {
+        const int tok = tokenPeekp(depth)->token;
+        if (tok == 0) {  // LCOV_EXCL_BR_LINE
+            UINFO(9, "tokenPipeScanEqNew hit EOF; probably syntax error to come");
+            break;  // LCOV_EXCL_LINE
+        } else if (tok == yNEW__LEX) {
+            break;
+        } else if (tok == yaID__LEX) {
+            ++depth;  // yaID__LEX
+            depth = tokenPipeScanParam(depth, false);
+            if (tokenPeekp(depth)->token != yP_COLONCOLON) return 0;
+            ++depth;  // yP_COLONCOLON
+            continue;
+        } else {
+            return 0;  // Miss
+        }
+        ++depth;
+    }
+    return depth;
+}
+
+bool V3ParseImp::tokenPipeScanTaggedFollowsPrimary(size_t depth) {
+    // Check if token at depth is a primary-starting token
+    // Used to disambiguate tagged union expressions
+    // Returns true if the token starts a primary expression (IEEE A.8.4)
+    // Note: '.' and '.*' are pattern-specific, NOT primaries
+    const int tok = tokenPeekp(depth)->token;
+    if (tok == '(') return true;  // Parenthesized expression
+    if (tok == '{') return true;  // Concatenation
+    if (tok == yP_TICKBRA) return true;  // Assignment pattern '{
+    if (tok == yaINTNUM) return true;  // Integer literal
+    if (tok == yaFLOATNUM) return true;  // Float literal
+    if (tok == yaTIMENUM) return true;  // Time literal
+    if (tok == yaSTRING) return true;  // String literal
+    if (tok == yNULL) return true;  // null
+    if (tok == yTHIS) return true;  // this
+    if (tok == '$') return true;  // $
+    if (tok == yaID__LEX) return true;  // Identifier (raw)
+    if (tok == yaID__ETC) return true;  // Identifier
+    if (tok == yaID__CC) return true;  // Identifier with ::
+    if (tok == yaID__aTYPE) return true;  // Type identifier
+    if (tok == yaID__aINST) return true;  // Instance identifier
+    if (tok == yTAGGED__LEX) return true;  // Nested tagged (raw)
+    if (tok == yTAGGED) return true;  // Nested tagged
+    if (tok == yTAGGED__NONPRIMARY) return true;  // Nested tagged (no primary)
+    return false;
+}
+
 int V3ParseImp::tokenPipelineId(int token) {
     const V3ParseBisonYYSType* nexttokp = tokenPeekp(0);  // First char after yaID
     const int nexttok = nexttokp->token;
-    UINFO(9, "tokenPipelineId tok=" << yylval.token << endl);
+    UINFO(9, "tokenPipelineId tok=" << yylval.token);
     UASSERT(yylval.token == yaID__LEX, "Start with ID");
     if (nexttok == yP_COLONCOLON) return yaID__CC;
     VL_RESTORER(yylval);  // Remember value, as about to read ahead
     if (m_tokenLastBison.token != '@' && m_tokenLastBison.token != '#'
         && m_tokenLastBison.token != '.') {
-        if (const size_t depth = tokenPipeScanIdCell(0)) return yaID__aCELL;
+        if (tokenPipeScanIdInst(0)) return yaID__aINST;
+        if (tokenPipeScanIdType(0)) return yaID__aTYPE;
     }
     if (nexttok == '#') {  // e.g. class_type parameter_value_assignment '::'
         const size_t depth = tokenPipeScanParam(0, false);
@@ -551,19 +679,19 @@ void V3ParseImp::tokenPipeline() {
     // If a paren, read another
     if (token == '('  //
         || token == ':'  //
+        || token == '='  //
         || token == yCONST__LEX  //
         || token == yGLOBAL__LEX  //
         || token == yLOCAL__LEX  //
         || token == yNEW__LEX  //
         || token == ySTATIC__LEX  //
+        || token == yTAGGED__LEX  //
         || token == yTYPE__LEX  //
         || token == yVIRTUAL__LEX  //
         || token == yWITH__LEX  //
         || token == yaID__LEX  //
     ) {
-        if (debugFlex() >= 6) {
-            cout << "   tokenPipeline: reading ahead to find possible strength" << endl;
-        }
+        if (debugFlex() >= 6) UINFO(0, "tokenPipeline: reading ahead");
         const V3ParseBisonYYSType curValue = yylval;  // Remember value, as about to read ahead
         const V3ParseBisonYYSType* nexttokp = tokenPeekp(0);
         const int nexttok = nexttokp->token;
@@ -577,6 +705,10 @@ void V3ParseImp::tokenPipeline() {
             } else if (nexttok == yFORK) {
                 token = yP_COLON__FORK;
             }
+        } else if (token == '=') {
+            if (nexttokp->token == yNEW__LEX || tokenPipeScanEqNew(0)) {
+                token = yP_EQ__NEW;
+            }  // else still '='
         } else if (token == yCONST__LEX) {
             if (nexttok == yREF) {
                 token = yCONST__REF;
@@ -614,11 +746,11 @@ void V3ParseImp::tokenPipeline() {
             }
         } else if (token == yTYPE__LEX) {
             VL_RESTORER(yylval);  // Remember value, as about to read ahead
-            const size_t depth = tokenPipeScanTypeEq(0);
+            const size_t depth = tokenPipeScanParens(0);
             const int postToken = tokenPeekp(depth)->token;
-            if (  // v-- token                v-- postToken
-                  // yTYPE__EQ '(' .... ')' EQ_OPERATOR yTYPE_ETC '(' ... ')'
-                postToken == yP_EQUAL || postToken == yP_NOTEQUAL || postToken == yP_CASEEQUAL
+            // v-- token                v-- postToken
+            // yTYPE__EQ '(' .... ')' EQ_OPERATOR yTYPE_ETC '(' ... ')'
+            if (postToken == yP_EQUAL || postToken == yP_NOTEQUAL || postToken == yP_CASEEQUAL
                 || postToken == yP_CASENOTEQUAL) {
                 token = yTYPE__EQ;
             } else {
@@ -636,9 +768,34 @@ void V3ParseImp::tokenPipeline() {
             } else {
                 token = yVIRTUAL__ETC;
             }
+        } else if (token == yTAGGED__LEX) {
+            // Look past 'tagged id' to see if primary follows
+            // Check for all ID token types (both raw and processed forms)
+            if (nexttok == yaID__LEX || nexttok == yaID__ETC || nexttok == yaID__aTYPE
+                || nexttok == yaID__aINST) {
+                VL_RESTORER(yylval);  // Remember value, as about to read ahead
+                // Check token after the identifier
+                if (tokenPipeScanTaggedFollowsPrimary(1)) {
+                    token = yTAGGED;  // Has value expression following
+                } else {
+                    token = yTAGGED__NONPRIMARY;  // No primary follows
+                }
+            } else {
+                // No identifier follows, not a tagged expression (e.g., 'union tagged {')
+                token = yTAGGED;
+            }
         } else if (token == yWITH__LEX) {
             if (nexttok == '(') {
-                token = yWITH__PAREN;
+                VL_RESTORER(yylval);  // Remember value, as about to read ahead
+                const size_t depth = tokenPipeScanParens(0);
+                const int postToken = tokenPeekp(depth)->token;
+                // v-- token           v-- postToken
+                // yWITH '(' .... ')' '{'
+                if (postToken == '{') {
+                    token = yWITH__PAREN_CUR;
+                } else {
+                    token = yWITH__PAREN;
+                }
             } else if (nexttok == '[') {
                 token = yWITH__BRA;
             } else if (nexttok == '{') {
@@ -666,65 +823,13 @@ void V3ParseImp::tokenPipelineSym() {
     // Note above sometimes converts yGLOBAL to a yaID__LEX
     tokenPipeline();  // sets yylval
     int token = yylval.token;
-    if (token == yaID__LEX || token == yaID__CC || token == yaID__aTYPE) {
-        importIfInStd(yylval.fl, *(yylval.strp));
-    }
-    if (token == yaID__LEX || token == yaID__CC) {
-        const VSymEnt* foundp;
-        if (const VSymEnt* const look_underp = V3ParseImp::parsep()->symp()->nextId()) {
-            UINFO(7, "   tokenPipelineSym: next id lookup forced under " << look_underp << endl);
-            // if (debug() >= 7) V3ParseImp::parsep()->symp()->dumpSelf(cout, " -symtree: ");
-            foundp = look_underp->findIdFlat(*(yylval.strp));
-            // "consume" it.  Must set again if want another token under temp scope
-            V3ParseImp::parsep()->symp()->nextId(nullptr);
-        } else {
-            UINFO(7, "   tokenPipelineSym: find upward "
-                         << V3ParseImp::parsep()->symp()->symCurrentp() << " for '"
-                         << *(yylval.strp) << "'" << endl);
-            // if (debug()>=9) V3ParseImp::parsep()->symp()->symCurrentp()->dumpSelf(cout,
-            // " -findtree: ", true);
-            foundp = V3ParseImp::parsep()->symp()->symCurrentp()->findIdFallback(*(yylval.strp));
-        }
-        if (!foundp && !m_afterColonColon) {  // Check if the symbol can be found in std
-            AstPackage* const stdpkgp = v3Global.rootp()->stdPackagep();
-            if (stdpkgp) {
-                VSymEnt* const stdsymp = stdpkgp->user4u().toSymEnt();
-                foundp = stdsymp->findIdFallback(*(yylval.strp));
-            }
-        }
-        if (foundp) {
-            AstNode* const scp = foundp->nodep();
-            yylval.scp = scp;
-            UINFO(7, "   tokenPipelineSym: Found " << scp << endl);
-            if (token == yaID__LEX) {  // i.e. not yaID__CC
-                if (VN_IS(scp, Typedef)) {
-                    token = yaID__aTYPE;
-                } else if (VN_IS(scp, TypedefFwd)) {
-                    token = yaID__aTYPE;
-                } else if (VN_IS(scp, Class)) {
-                    token = yaID__aTYPE;
-                } else if (VN_IS(scp, Package)) {
-                    token = yaID__ETC;
-                } else {
-                    token = yaID__ETC;
-                }
-            }
-        } else {  // Not found
-            yylval.scp = nullptr;
-            if (token == yaID__CC) {
-                if (!m_afterColonColon && !v3Global.opt.bboxUnsup()) {
-                    // IEEE does require this, but we may relax this as UVM breaks it, so allow
-                    // bbox for today
-                    // We'll get a parser error eventually but might not be obvious
-                    // is missing package, and this confuses people
-                    static int warned = false;
-                    if (!warned++) {
-                        yylval.fl->v3warn(PKGNODECL, "Package/class '" + *yylval.strp
-                                                         + "' not found, and needs to be "
-                                                           "predeclared (IEEE 1800-2023 26.3)");
-                    }
-                }
-            } else if (token == yaID__LEX) {
+    if (token == yRANDOMIZE) importIfInStd(yylval.fl, "randomize", false);
+    if (token == yaID__ETC || token == yaID__CC || token == yaID__LEX || token == yaID__aTYPE) {
+        importIfInStd(yylval.fl, *(yylval.strp), true);
+        if (token == yaID__LEX) {
+            if (VString::startsWith(*(yylval.strp), "PATHPULSE__024")) {
+                token = yaID__PATHPULSE;
+            } else {
                 token = yaID__ETC;
             }
         }
@@ -740,9 +845,9 @@ int V3ParseImp::tokenToBison() {
     m_bisonLastFileline = yylval.fl;
     m_tokenLastBison = yylval;
 
-    // yylval.scp = nullptr;   // Symbol table not yet needed - no packages
     if (debug() >= 6 || debugFlex() >= 6
         || debugBison() >= 6) {  // --debugi-flex and --debugi-bison
+        if (debug() >= 10) dumpTokensAhead(__LINE__);
         cout << "tokenToBison  " << yylval << endl;
     }
     return yylval.token;
@@ -752,12 +857,17 @@ int V3ParseImp::tokenToBison() {
 // V3ParseBisonYYSType functions
 
 std::ostream& operator<<(std::ostream& os, const V3ParseBisonYYSType& rhs) {
-    os << "TOKEN {" << rhs.fl->filenameLetters() << rhs.fl->asciiLineCol() << "}";
+    os << "TOKEN {";
+    if (VL_UNCOVERABLE(!rhs.fl))
+        os << "%E-null-fileline";
+    else
+        os << rhs.fl->filenameLetters() << rhs.fl->asciiLineCol();
+    os << "}";
     os << "=" << rhs.token << " " << V3ParseImp::tokenName(rhs.token);
     if (rhs.token == yaID__ETC  //
         || rhs.token == yaID__CC  //
         || rhs.token == yaID__LEX  //
-        || rhs.token == yaID__aCELL  //
+        || rhs.token == yaID__aINST  //
         || rhs.token == yaID__aTYPE) {
         os << " strp='" << *(rhs.strp) << "'";
     }
@@ -767,15 +877,15 @@ std::ostream& operator<<(std::ostream& os, const V3ParseBisonYYSType& rhs) {
 //======================================================================
 // V3Parse functions
 
-V3Parse::V3Parse(AstNetlist* rootp, VInFilter* filterp, V3ParseSym* symp) {
-    m_impp = new V3ParseImp{rootp, filterp, symp};
+V3Parse::V3Parse(AstNetlist* rootp, VInFilter* filterp) {
+    m_impp = new V3ParseImp{rootp, filterp};
 }
 V3Parse::~V3Parse() {  //
     VL_DO_CLEAR(delete m_impp, m_impp = nullptr);
 }
-void V3Parse::parseFile(FileLine* fileline, const string& modname, bool inLibrary,
-                        const string& errmsg) {
-    m_impp->parseFile(fileline, modname, inLibrary, errmsg);
+void V3Parse::parseFile(FileLine* fileline, const string& modname, bool inLibrary, bool inLibMap,
+                        const string& libname, const string& errmsg) {
+    m_impp->parseFile(fileline, modname, inLibrary, inLibMap, libname, errmsg);
 }
 void V3Parse::ppPushText(V3ParseImp* impp, const string& text) {
     if (text != "") impp->ppPushText(text);

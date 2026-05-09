@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -121,12 +121,9 @@ public:
     // METHODS
     VlcSource& findNewSource(const string& name) {
         NameMap::iterator iter = m_sources.find(name);
-        if (iter != m_sources.end()) {
-            return iter->second;
-        } else {
-            iter = m_sources.emplace(name, VlcSource{name}).first;
-            return iter->second;
-        }
+        if (iter != m_sources.end()) return iter->second;
+        iter = m_sources.emplace(name, VlcSource{name}).first;
+        return iter->second;
     }
 };
 

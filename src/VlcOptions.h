@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -20,6 +20,7 @@
 #include "config_build.h"
 #include "verilatedos.h"
 
+#include "VlcPoint.h"
 #include "config_rev.h"
 
 #include <map>
@@ -38,6 +39,8 @@ class VlcOptions final {
     bool m_annotateAll = false;  // main switch: --annotate-all
     int m_annotateMin = 10;     // main switch: --annotate-min I<count>
     bool m_annotatePoints = false;  // main switch: --annotate-points
+    bool m_includeResetArcs = false;  // main switch: --include-reset-arcs
+    string m_filterType = "*";  // main switch: --filter-type
     VlStringSet m_readFiles;    // main switch: --read
     bool m_rank = false;        // main switch: --rank
     bool m_unlink = false;      // main switch: --unlink
@@ -65,10 +68,14 @@ public:
     int annotateMin() const { return m_annotateMin; }
     bool countOk(uint64_t count) const { return count >= static_cast<uint64_t>(m_annotateMin); }
     bool annotatePoints() const { return m_annotatePoints; }
+    bool includeResetArcs() const { return m_includeResetArcs; }
     bool rank() const { return m_rank; }
     bool unlink() const { return m_unlink; }
     string writeFile() const { return m_writeFile; }
     string writeInfoFile() const { return m_writeInfoFile; }
+    bool isTypeMatch(const char* name) const {
+        return VString::wildmatch(VlcPoint::typeExtract(name), m_filterType);
+    }
 
     // METHODS (from main)
     static string version() VL_MT_DISABLED;

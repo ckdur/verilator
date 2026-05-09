@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -22,13 +22,18 @@
 
 // No V3 headers here - this is a base class for Vlc etc
 
+#include <deque>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+
+using VStringList = std::vector<std::string>;
+using VStringSet = std::set<std::string>;
 
 //######################################################################
 // Global string-related functions
@@ -51,22 +56,6 @@ typename std::enable_if<std::is_integral<T>::value, std::string>::type cvtToHex(
     std::ostringstream os;
     os << std::hex << std::setw(sizeof(T) * 8 / 4) << std::setfill('0') << t;
     return os.str();
-}
-
-inline uint32_t cvtToHash(const void* vp) {
-    // We can shove a 64 bit pointer into a 32 bit bucket
-    // On 32-bit systems, lower is always 0, but who cares?
-    union {
-        const void* up;
-        struct {
-            uint32_t upper;
-            uint32_t lower;
-        } l;
-    } u;
-    u.l.upper = 0;
-    u.l.lower = 0;
-    u.up = vp;
-    return u.l.upper ^ u.l.lower;
 }
 
 inline string ucfirst(const string& text) {
@@ -94,11 +83,11 @@ public:
     // Convert string to upper case (toupper)
     static string upcase(const string& str) VL_PURE;
     // Insert esc just before tgt
-    static string quoteAny(const string& str, char tgt, char esc);
+    static string quoteAny(const string& str, char tgt, char esc) VL_PURE;
     // Replace any \'s with \\  (two consecutive backslashes)
-    static string quoteBackslash(const string& str) { return quoteAny(str, '\\', '\\'); }
+    static string quoteBackslash(const string& str) VL_PURE { return quoteAny(str, '\\', '\\'); }
     // Replace any %'s with %%
-    static string quotePercent(const string& str) { return quoteAny(str, '%', '%'); }
+    static string quotePercent(const string& str) VL_PURE { return quoteAny(str, '%', '%'); }
     // Replace any %%'s with %
     static string dequotePercent(const string& str);
     // Surround a raw string by double quote and escape if necessary
@@ -116,6 +105,8 @@ public:
     static string spaceUnprintable(const string& str) VL_PURE;
     // Remove any whitespace
     static string removeWhitespace(const string& str);
+    // Trim leading/trailing whitespace on each line
+    static string trimWhitespace(const string& str);
     // Return true if only identifer or ""
     static bool isIdentifier(const string& str);
     // Return true if char is valid character in C identifiers
@@ -126,17 +117,30 @@ public:
     static string::size_type leadingWhitespaceCount(const string& str);
     // Return double by parsing string
     static double parseDouble(const string& str, bool* successp);
+    // Replace substring. Often replaceWord is more appropriate.
+    static string replaceSubstr(const string& str, const string& from, const string& to);
     // Replace all occurrences of the word 'from' in 'str' with 'to'. A word is considered
     // to be a consecutive sequence of the characters [a-zA-Z0-9_]. Sub-words are not replaced.
     // e.g.: replaceWords("one apple bad_apple", "apple", "banana") -> "one banana bad_apple"
     static string replaceWord(const string& str, const string& from, const string& to);
+    // Return deque of strings split by the given delimiter
+    static std::deque<string> split(const string& str, char delimiter = ',');
     // Predicate to check if 'str' starts with 'prefix'
-    static bool startsWith(const string& str, const string& prefix);
+    static bool startsWith(const string& str, const char* prefixp) {
+        return !str.rfind(prefixp, 0);  // Faster than .find(_) == 0
+    }
+    static bool startsWith(const string& str, const string& prefix) {
+        return !str.rfind(prefix, 0);  // Faster than .find(_) == 0
+    }
     // Predicate to check if 'str' ends with 'suffix'
     static bool endsWith(const string& str, const string& suffix);
     // Return proper article (a/an) for a word. May be inaccurate for some special words
     static string aOrAn(const char* word);
     static string aOrAn(const string& word) { return aOrAn(word.c_str()); }
+    // Hash the string
+    static uint64_t hashMurmur(const string& str) VL_PURE;
+
+    static void selfTest();  // Test this class
 };
 
 //######################################################################
@@ -184,6 +188,7 @@ public:
         insert(data.data(), data.length());
     }  // Process data into the digest
     void insert(uint64_t value) { insert(cvtToStr(value)); }
+    void insertFile(const string& filename);
 
 private:
     static void selfTestOne(const string& data, const string& data2, const string& exp,
@@ -218,7 +223,6 @@ public:
     // CONFIG STATIC METHODS
     // Length at which to start hashing, 0=disable
     static void maxLength(size_t flag) { s_maxLength = flag; }
-    static size_t maxLength() { return s_maxLength; }
     static string dehash(const string& in);
 };
 
@@ -251,13 +255,11 @@ public:
     // Return friendly message
     string bestCandidateMsg(const string& goal) const {
         const string candidate = bestCandidate(goal);
-        if (candidate.empty()) {
-            return "";
-        } else {
-            return "... Suggested alternative: '"s + candidate + "'";
-        }
+        if (candidate.empty()) return "";
+        return "... Suggested alternative: '"s + candidate + "'";
     }
     static void selfTest();
+    const std::vector<std::string> candidates() const { return m_candidates; }
 
 private:
     static EditDistance editDistance(const string& s, const string& t);

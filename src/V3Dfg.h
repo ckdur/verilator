@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -34,6 +34,8 @@
 #include "verilatedos.h"
 
 #include "V3Ast.h"
+#include "V3Cfg.h"
+#include "V3DfgDataType.h"
 #include "V3Error.h"
 #include "V3Global.h"
 #include "V3Hash.h"
@@ -53,33 +55,29 @@
 #define VL_NOT_FINAL  // This #define fixes broken code folding in the CLion IDE
 #endif
 
+// Can T be stored in the memory allocted for U?
+template <typename T, typename U>
+inline constexpr bool fitsSpaceAllocatedFor() {
+    return sizeof(T) <= sizeof(U) && alignof(T) <= alignof(U);
+}
+
 class DfgEdge;
 class DfgVertex;
 class DfgGraph;
 class DfgVisitor;
+template <typename T_User, bool = fitsSpaceAllocatedFor<T_User, void*>()>
+class DfgUserMap;
 
 //------------------------------------------------------------------------------
-
-// Specialization of std::hash for a std::pair<const DfgVertex*, const DfgVertex*> for use below
-template <>
-struct std::hash<std::pair<const DfgVertex*, const DfgVertex*>> final {
-    size_t operator()(const std::pair<const DfgVertex*, const DfgVertex*>& item) const {
-        const size_t a = reinterpret_cast<std::uintptr_t>(item.first);
-        const size_t b = reinterpret_cast<std::uintptr_t>(item.second);
-        constexpr size_t halfWidth = 8 * sizeof(b) / 2;
-        return a ^ ((b << halfWidth) | (b >> halfWidth));
-    }
-};
-
-//------------------------------------------------------------------------------
-// Dataflow vertex type enum
-//------------------------------------------------------------------------------
+// Dataflow graph vertex type enum
 
 class VDfgType final {
 public:
 #include "V3Dfg__gen_type_enum.h"  // From ./astgen
-    enum en m_e;
-    VDfgType() = default;
+    const en m_e;
+    VDfgType() = delete;
+
+    // VDfgType is interconvetible with VDfgType::en
     // cppcheck-suppress noExplicitConstructor
     constexpr VDfgType(en _e)
         : m_e{_e} {}
@@ -92,63 +90,67 @@ inline std::ostream& operator<<(std::ostream& os, const VDfgType& t) { return os
 
 //------------------------------------------------------------------------------
 // Dataflow graph edge
-//------------------------------------------------------------------------------
-
 class DfgEdge final {
     friend class DfgVertex;
 
-    DfgEdge* m_nextp = nullptr;  // Next edge in sink list
-    DfgEdge* m_prevp = nullptr;  // Previous edge in sink list
-    DfgVertex* m_sourcep = nullptr;  // The source vertex driving this edge
-    // Note that the sink vertex owns the edge, so it is immutable, but because we want to be able
-    // to allocate these as arrays, we use a default constructor + 'init' method to set m_sinkp.
-    DfgVertex* const m_sinkp = nullptr;  // The sink vertex
+    DfgVertex* m_srcp = nullptr;  // The source vertex driving this edge - might be unconnected
+    DfgVertex* const m_dstp;  // The vertex driven by this edge, which owns this edge, so immutable
+    V3ListLinks<DfgEdge> m_links;  // V3List links in the list of sinks of m_srcp
+
+    VL_UNCOPYABLE(DfgEdge);
+    VL_UNMOVABLE(DfgEdge);
+
+    V3ListLinks<DfgEdge>& links() { return m_links; }
+    using List = V3List<DfgEdge, &DfgEdge::links>;
 
 public:
-    DfgEdge() {}
-    void init(DfgVertex* sinkp) { const_cast<DfgVertex*&>(m_sinkp) = sinkp; }
+    explicit DfgEdge(DfgVertex* dstp)
+        : m_dstp{dstp} {}
+    ~DfgEdge() { unlinkSrcp(); }
+    DfgEdge() = delete;
 
     // The source (driver) of this edge
-    DfgVertex* sourcep() const { return m_sourcep; }
+    DfgVertex* srcp() const { return m_srcp; }
     // The sink (consumer) of this edge
-    DfgVertex* sinkp() const { return m_sinkp; }
+    DfgVertex* dstp() const { return m_dstp; }
     // Remove driver of this edge
-    void unlinkSource() VL_MT_DISABLED;
+    inline void unlinkSrcp();
     // Relink this edge to be driven from the given new source vertex
-    void relinkSource(DfgVertex* newSourcep) VL_MT_DISABLED;
+    inline void relinkSrcp(DfgVertex* srcp);
 };
 
 //------------------------------------------------------------------------------
 // Dataflow graph vertex
-//------------------------------------------------------------------------------
-
-// Base data flow graph vertex
 class DfgVertex VL_NOT_FINAL {
     friend class DfgGraph;
     friend class DfgEdge;
     friend class DfgVisitor;
-
-    using UserDataStorage = void*;  // Storage allocated for user data
+    template <typename, bool>
+    friend class DfgUserMap;
 
     // STATE
-    V3ListLinks<DfgVertex> m_links;  // V3List links
+    V3ListLinks<DfgVertex> m_links;  // V3List links in the DfgGraph
+    std::vector<std::unique_ptr<DfgEdge>> m_inputps;  // Input edges, as vector, for fast indexing
+    DfgEdge::List m_sinks;  // List of sink edges of this vertex
 
-protected:
-    DfgEdge* m_sinksp = nullptr;  // List of sinks of this vertex
     FileLine* const m_filelinep;  // Source location
-    AstNodeDType* m_dtypep;  // Data type of the result of this vertex - mutable for efficiency
-    DfgGraph* m_graphp;  // The containing DfgGraph
+    const DfgDataType& m_dtype;  // Data type of the result of this vertex
     const VDfgType m_type;  // Vertex type tag
-    uint32_t m_userCnt = 0;  // User data generation number
-    UserDataStorage m_userDataStorage;  // User data storage
 
-    // CONSTRUCTOR
-    DfgVertex(DfgGraph& dfg, VDfgType type, FileLine* flp, AstNodeDType* dtypep) VL_MT_DISABLED;
+    // The only way to access thes is via DfgUserMap, so mutable is appropriate,
+    // the map can change while the keys (DfgVertex) are const.
+    mutable uint32_t m_userGeneration = 0;  // User data generation number
+    mutable void* m_userStorage = nullptr;  // User data storage - one pointer worth
 
-public:
-    virtual ~DfgVertex() VL_MT_DISABLED;
+#ifdef VL_DEBUG
+    DfgGraph* m_dfgp = nullptr;  // Graph this vertex belongs to
+#endif
 
-private:
+    // METHODS
+    // Visitor accept method
+    virtual void accept(DfgVisitor& v) = 0;
+
+    // Acessor for type List
     V3ListLinks<DfgVertex>& links() { return m_links; }
 
 public:
@@ -156,189 +158,140 @@ public:
     template <typename Vertex>
     using List = V3List<DfgVertex, &DfgVertex::links, Vertex>;
 
-    // METHODS
-private:
-    // Visitor accept method
-    virtual void accept(DfgVisitor& v) = 0;
+protected:
+    // CONSTRUCTOR
+    DfgVertex(DfgGraph& dfg, VDfgType type, FileLine* flp, const DfgDataType& dt) VL_MT_DISABLED;
+    // Use unlinkDelete instead
+    virtual ~DfgVertex() VL_MT_DISABLED = default;
 
-    // Part of Vertex equality only dependent on this vertex
-    virtual bool selfEquals(const DfgVertex& that) const VL_MT_DISABLED;
-
-    // Part of Vertex hash only dependent on this vertex
-    virtual V3Hash selfHash() const VL_MT_DISABLED;
+    // Create a new input edge and return it
+    DfgEdge* newInput() {
+        m_inputps.emplace_back(new DfgEdge{this});
+        return m_inputps.back().get();
+    }
 
 public:
-    // Supported packed types
-    static bool isSupportedPackedDType(const AstNodeDType* dtypep) {
-        dtypep = dtypep->skipRefp();
-        if (const AstBasicDType* const typep = VN_CAST(dtypep, BasicDType)) {
-            return typep->keyword().isIntNumeric();
-        }
-        if (const AstPackArrayDType* const typep = VN_CAST(dtypep, PackArrayDType)) {
-            return isSupportedPackedDType(typep->subDTypep());
-        }
-        if (const AstNodeUOrStructDType* const typep = VN_CAST(dtypep, NodeUOrStructDType)) {
-            return typep->packed();
-        }
-        return false;
-    }
+    // Get input 'i'
+    DfgVertex* inputp(size_t i) const { return m_inputps[i]->srcp(); }
+    // Relink input 'i'
+    void inputp(size_t i, DfgVertex* vtxp) { m_inputps[i]->relinkSrcp(vtxp); }
+    // The number of inputs this vertex has. Some might be unconnected.
+    size_t nInputs() const { return m_inputps.size(); }
+    // Unlink all inputs and reset to no inputs - use very carefully
+    void resetInputs() { m_inputps.clear(); }
 
-    // Returns true if an AstNode with the given 'dtype' can be represented as a DfgVertex
-    static bool isSupportedDType(const AstNodeDType* dtypep) {
-        dtypep = dtypep->skipRefp();
-        // Support unpacked arrays of packed types
-        if (const AstUnpackArrayDType* const typep = VN_CAST(dtypep, UnpackArrayDType)) {
-            return isSupportedPackedDType(typep->subDTypep());
-        }
-        // Support packed types
-        return isSupportedPackedDType(dtypep);
-    }
-
-    // Return data type used to represent any packed value of the given 'width'. All packed types
-    // of a given width use the same canonical data type, as the only interesting information is
-    // the total width.
-    static AstNodeDType* dtypeForWidth(uint32_t width) {
-        return v3Global.rootp()->typeTablep()->findLogicDType(width, width, VSigning::UNSIGNED);
-    }
-
-    // Return data type used to represent the type of 'nodep' when converted to a DfgVertex
-    static AstNodeDType* dtypeFor(const AstNode* nodep) {
-        UDEBUGONLY(UASSERT_OBJ(isSupportedDType(nodep->dtypep()), nodep, "Unsupported dtype"););
-        // For simplicity, all packed types are represented with a fixed type
-        if (AstUnpackArrayDType* const typep = VN_CAST(nodep->dtypep(), UnpackArrayDType)) {
-            AstNodeDType* const adtypep = new AstUnpackArrayDType{
-                typep->fileline(), dtypeForWidth(typep->subDTypep()->width()),
-                typep->rangep()->cloneTree(false)};
-            v3Global.rootp()->typeTablep()->addTypesp(adtypep);
-            return adtypep;
-        }
-        return dtypeForWidth(nodep->width());
-    }
-
-    // Source location
-    FileLine* fileline() const { return m_filelinep; }
-    // The data type of the result of the nodes
-    AstNodeDType* dtypep() const { return m_dtypep; }
-    void dtypep(AstNodeDType* nodep) { m_dtypep = nodep; }
     // The type of this vertex
     VDfgType type() const { return m_type; }
-
-    // Retrieve user data, constructing it fresh on first try.
-    template <typename T>
-    inline T& user();
-
-    // Retrieve user data, must be current.
-    template <typename T>
-    inline T& getUser();
-
-    // Set user data, becomes current.
-    template <typename T>
-    inline void setUser(T value);
-
-    // Width of result
+    // Source location
+    FileLine* fileline() const { return m_filelinep; }
+    // The data type of the result of the vertex
+    const DfgDataType& dtype() const { return m_dtype; }
+    // Shorthands for accessors of 'dtype()'
+    bool isPacked() const { return m_dtype.isPacked(); }
+    bool isArray() const { return m_dtype.isArray(); }
+    uint32_t size() const { return m_dtype.size(); }
+    // Type check + size
     uint32_t width() const {
-        // This is a hot enough function that this is an expensive check, so in debug build only.
-        UDEBUGONLY(UASSERT_OBJ(VN_IS(dtypep(), BasicDType), this, "non-packed has no 'width()'"););
-        return dtypep()->width();
+        UASSERT_OBJ(m_dtype.isPacked(), this, "Non packed vertex has no 'width'");
+        return m_dtype.size();
     }
 
-    // Cache type for 'equals' below
-    using EqualsCache = std::unordered_map<std::pair<const DfgVertex*, const DfgVertex*>, uint8_t>;
-
-    // Vertex equality (based on this vertex and all upstream vertices feeding into this vertex).
-    // Returns true, if the vertices can be substituted for each other without changing the
-    // semantics of the logic. The 'cache' argument is used to store results to avoid repeat
-    // evaluations, but it requires that the upstream sources of the compared vertices do not
-    // change between invocations.
-    bool equals(const DfgVertex& that, EqualsCache& cache) const VL_MT_DISABLED;
-
-    // Uncached version of 'equals'
-    bool equals(const DfgVertex& that) const {
-        EqualsCache cache;  // Still cache recursive calls within this invocation
-        return equals(that, cache);
-    }
-
-    // Hash of vertex (depends on this vertex and all upstream vertices feeding into this vertex).
-    // Uses user data for caching hashes
-    V3Hash hash() VL_MT_DISABLED;
-
-    // Source edges of this vertex
-    virtual std::pair<DfgEdge*, size_t> sourceEdges() = 0;
-
-    // Source edges of this vertex
-    virtual std::pair<const DfgEdge*, size_t> sourceEdges() const = 0;
-
-    // Arity (number of sources) of this vertex
-    size_t arity() const { return sourceEdges().second; }
+    // Type check vertex (for debugging)
+    void typeCheck(const DfgGraph& dfg) const;
 
     // Predicate: has 1 or more sinks
-    bool hasSinks() const { return m_sinksp != nullptr; }
+    bool hasSinks() const { return !m_sinks.empty(); }
 
     // Predicate: has 2 or more sinks
-    bool hasMultipleSinks() const { return m_sinksp && m_sinksp->m_nextp; }
+    bool hasMultipleSinks() const { return m_sinks.hasMultipleElements(); }
 
     // Fanout (number of sinks) of this vertex (expensive to compute)
     uint32_t fanout() const VL_MT_DISABLED;
+
+    // Return a canonical variable vertex that holds the value of this vertex,
+    // or nullptr if no such variable exists in the graph. This is O(fanout).
+    DfgVertexVar* getResultVar() VL_MT_DISABLED;
+
+    // Cache type for 'scopep' below
+    using ScopeCache = std::unordered_map<const DfgVertex*, AstScope*>;
+
+    // Retrieve the prefred AstScope this vertex belongs to. For variable
+    // vertices this is defined. For operation vertices, we try to find a
+    // scope based on variables in the upstream logic cone (inputs). If
+    // there isn't one, (beceuse the whole upstream cone is constant...),
+    // then the root scope is returned. If 'tryResultVar' is true, we will
+    // condier the scope of 'getResultVar' first, if it exists.
+    // Only call this with a scoped DfgGraph
+    AstScope* scopep(ScopeCache& cache, bool tryResultVar = false) VL_MT_DISABLED;
+
+    // If the node has a single sink, return it, otherwise return nullptr
+    DfgVertex* singleSink() const {
+        return m_sinks.hasSingleElement() ? m_sinks.frontp()->dstp() : nullptr;
+    }
+
+    // First sink of the vertex, if any, otherwise nullptr
+    DfgVertex* firtsSinkp() { return m_sinks.empty() ? nullptr : m_sinks.frontp()->dstp(); }
 
     // Unlink from container (graph or builder), then delete this vertex
     void unlinkDelete(DfgGraph& dfg) VL_MT_DISABLED;
 
     // Relink all sinks to be driven from the given new source
-    void replaceWith(DfgVertex* newSourcep) VL_MT_DISABLED;
+    void replaceWith(DfgVertex* vtxp) {
+        UASSERT_OBJ(vtxp != this, this, "Replacing DfgVertex with itself");
+        UASSERT_OBJ(vtxp->dtype() == dtype(), this, "Replacement DfgVertex has different type");
+        while (!m_sinks.empty()) m_sinks.frontp()->relinkSrcp(vtxp);
+    }
 
-    // Calls given function 'f' for each source vertex of this vertex
-    // Unconnected source edges are not iterated.
-    inline void forEachSource(std::function<void(DfgVertex&)> f) VL_MT_DISABLED;
+    // Calls given function 'f' for each source vertex of this vertex. If 'f'
+    // returns true, further sources are not iterated and this method returns
+    // true itself. Unconnected source edges are not iterated.
+    bool foreachSource(std::function<bool(DfgVertex&)> f) {
+        for (const std::unique_ptr<DfgEdge>& edgep : m_inputps) {
+            if (DfgVertex* const srcp = edgep->srcp()) {
+                if (f(*srcp)) return true;
+            }
+        }
+        return false;
+    }
 
-    // Calls given function 'f' for each source vertex of this vertex
-    // Unconnected source edges are not iterated.
-    inline void forEachSource(std::function<void(const DfgVertex&)> f) const VL_MT_DISABLED;
+    // Calls given function 'f' for each source vertex of this vertex. If 'f'
+    // returns true, further sources are not iterated and this method returns
+    // true itself. Unconnected source edges are not iterated.
+    bool foreachSource(std::function<bool(const DfgVertex&)> f) const {
+        for (const std::unique_ptr<DfgEdge>& edgep : m_inputps) {
+            if (DfgVertex* const srcp = edgep->srcp()) {
+                if (f(*srcp)) return true;
+            }
+        }
+        return false;
+    }
 
-    // Calls given function 'f' for each source edge of this vertex. Also passes source index.
-    inline void forEachSourceEdge(std::function<void(DfgEdge&, size_t)> f) VL_MT_DISABLED;
+    // Calls given function 'f' for each sink vertex of this vertex. If 'f'
+    // returns true, further sinks are not iterated and this method returns
+    // true itself. Unlinking/deleting the given sink during iteration is safe,
+    // but not other sinks of this vertex.
+    bool foreachSink(std::function<bool(DfgVertex&)> f) {
+        for (const DfgEdge* const edgep : m_sinks.unlinkable()) {
+            if (f(*edgep->dstp())) return true;
+        }
+        return false;
+    }
 
-    // Calls given function 'f' for each source edge of this vertex. Also passes source index.
-    inline void
-    forEachSourceEdge(std::function<void(const DfgEdge&, size_t)> f) const VL_MT_DISABLED;
+    // Calls given function 'f' for each sink vertex of this vertex. If 'f'
+    // returns true, further sinks are not iterated and this method returns
+    // true itself.
+    bool foreachSink(std::function<bool(const DfgVertex&)> f) const {
+        for (const DfgEdge& edge : m_sinks) {
+            if (f(*edge.dstp())) return true;
+        }
+        return false;
+    }
 
-    // Calls given function 'f' for each sink vertex of this vertex
-    // Unlinking/deleting the given sink during iteration is safe, but not other sinks of this
-    // vertex.
-    inline void forEachSink(std::function<void(DfgVertex&)> f) VL_MT_DISABLED;
-
-    // Calls given function 'f' for each sink vertex of this vertex
-    inline void forEachSink(std::function<void(const DfgVertex&)> f) const VL_MT_DISABLED;
-
-    // Calls given function 'f' for each sink edge of this vertex.
-    // Unlinking/deleting the given sink during iteration is safe, but not other sinks of this
-    // vertex.
-    inline void forEachSinkEdge(std::function<void(DfgEdge&)> f) VL_MT_DISABLED;
-
-    // Calls given function 'f' for each sink edge of this vertex.
-    inline void forEachSinkEdge(std::function<void(const DfgEdge&)> f) const VL_MT_DISABLED;
-
-    // Returns first source edge which satisfies the given predicate 'p', or nullptr if no such
-    // sink vertex exists
-    inline const DfgEdge*
-    findSourceEdge(std::function<bool(const DfgEdge&, size_t)> p) const VL_MT_DISABLED;
-
-    // Returns first sink vertex of type 'Vertex' which satisfies the given predicate 'p',
-    // or nullptr if no such sink vertex exists
-    template <typename Vertex>
-    inline Vertex* findSink(std::function<bool(const Vertex&)> p) const VL_MT_DISABLED;
-
-    // Returns first sink vertex of type 'Vertex', or nullptr if no such sink vertex exists.
-    // This is a special case of 'findSink' above with the predicate always true.
-    template <typename Vertex>
-    inline Vertex* findSink() const VL_MT_DISABLED;
-
-    // Is this a DfgConst that is all zeroes
-    inline bool isZero() const VL_MT_DISABLED;
-
-    // Is this a DfgConst that is all ones
-    inline bool isOnes() const VL_MT_DISABLED;
+    // Is this vertex cheaper to re-compute than to load out of memoy
+    inline bool isCheaperThanLoad() const;
 
     // Methods that allow DfgVertex to participate in error reporting/messaging
+    // LCOV_EXCL_START
     void v3errorEnd(std::ostringstream& str) const VL_RELEASE(V3Error::s().m_mutex) {
         m_filelinep->v3errorEnd(str);
     }
@@ -352,6 +305,7 @@ public:
     string warnContextSecondary() const { return fileline()->warnContextSecondary(); }
     string warnMore() const VL_REQUIRES(V3Error::s().m_mutex) { return fileline()->warnMore(); }
     string warnOther() const VL_REQUIRES(V3Error::s().m_mutex) { return fileline()->warnOther(); }
+    // LCOV_EXCL_STOP
 
 private:
     // For internal use only.
@@ -394,232 +348,35 @@ public:
     }
 
     // Human-readable vertex type as string for debugging
-    const string typeName() const { return m_type.ascii(); }
+    std::string typeName() const { return m_type.ascii(); }
 
     // Human-readable name for source operand with given index for debugging
-    virtual const string srcName(size_t idx) const = 0;
+    virtual std::string srcName(size_t idx) const = 0;
+
+    // S-expression inspired dump of vertex and operands for debugging
+    std::string patternString(uint32_t depth = 0) const;
 };
 
-//------------------------------------------------------------------------------
-// Dfg vertex visitor
-//------------------------------------------------------------------------------
-
+// DfgVertex visitor
 class DfgVisitor VL_NOT_FINAL {
 public:
     // Dispatch to most specific 'visit' method on 'vtxp'
     void iterate(DfgVertex* vtxp) { vtxp->accept(*this); }
-
+    // Least specific visit method is abstract
     virtual void visit(DfgVertex* nodep) = 0;
 #include "V3Dfg__gen_visitor_decls.h"  // From ./astgen
-};
-
-//------------------------------------------------------------------------------
-// DfgVertex sub-types follow
-//------------------------------------------------------------------------------
-
-// Include macros generated by 'astgen'. These include DFGGEN_MEMBERS_<Node>
-// for each DfgVertex sub-type. The generated members include boilerplate
-// methods related to cloning, visitor dispatch, and other functionality.
-// For precise details please read the generated macros.
-#include "V3Dfg__gen_macros.h"
-
-//------------------------------------------------------------------------------
-// Implementation of dataflow graph vertices with a fixed number of sources
-//------------------------------------------------------------------------------
-
-template <size_t N_Arity>
-class DfgVertexWithArity VL_NOT_FINAL : public DfgVertex {
-    static_assert(1 <= N_Arity && N_Arity <= 4, "N_Arity must be between 1 and 4 inclusive");
-
-    std::array<DfgEdge, N_Arity> m_srcs;  // Source edges
-
-protected:
-    DfgVertexWithArity(DfgGraph& dfg, VDfgType type, FileLine* flp, AstNodeDType* dtypep)
-        : DfgVertex{dfg, type, flp, dtypep} {
-        // Initialize source edges
-        for (size_t i = 0; i < N_Arity; ++i) m_srcs[i].init(this);
-    }
-
-    ~DfgVertexWithArity() override = default;
-
-public:
-    std::pair<DfgEdge*, size_t> sourceEdges() final override {  //
-        return {m_srcs.data(), N_Arity};
-    }
-    std::pair<const DfgEdge*, size_t> sourceEdges() const final override {
-        return {m_srcs.data(), N_Arity};
-    }
-
-    template <size_t N_Index>
-    DfgEdge* sourceEdge() {
-        static_assert(N_Index < N_Arity, "Source index out of range");
-        return &m_srcs[N_Index];
-    }
-
-    template <size_t N_Index>
-    const DfgEdge* sourceEdge() const {
-        static_assert(N_Index < N_Arity, "Source index out of range");
-        return &m_srcs[N_Index];
-    }
-
-    template <size_t N_Index>
-    DfgVertex* source() const {
-        static_assert(N_Index < N_Arity, "Source index out of range");
-        return m_srcs[N_Index].sourcep();
-    }
-
-    template <size_t N_Index>
-    void relinkSource(DfgVertex* newSourcep) {
-        static_assert(N_Index < N_Arity, "Source index out of range");
-        UASSERT_OBJ(m_srcs[N_Index].sinkp() == this, this, "Inconsistent");
-        m_srcs[N_Index].relinkSource(newSourcep);
-    }
-};
-
-class DfgVertexUnary VL_NOT_FINAL : public DfgVertexWithArity<1> {
-protected:
-    DfgVertexUnary(DfgGraph& dfg, VDfgType type, FileLine* flp, AstNodeDType* dtypep)
-        : DfgVertexWithArity<1>{dfg, type, flp, dtypep} {}
-
-public:
-    ASTGEN_MEMBERS_DfgVertexUnary;
-
-    // Named getter/setter for sources
-    DfgVertex* srcp() const { return source<0>(); }
-    void srcp(DfgVertex* vtxp) { relinkSource<0>(vtxp); }
-};
-
-class DfgVertexBinary VL_NOT_FINAL : public DfgVertexWithArity<2> {
-protected:
-    DfgVertexBinary(DfgGraph& dfg, VDfgType type, FileLine* flp, AstNodeDType* dtypep)
-        : DfgVertexWithArity<2>{dfg, type, flp, dtypep} {}
-
-public:
-    ASTGEN_MEMBERS_DfgVertexBinary;
-
-    // Named getter/setter for sources
-    DfgVertex* lhsp() const { return source<0>(); }
-    void lhsp(DfgVertex* vtxp) { relinkSource<0>(vtxp); }
-    DfgVertex* rhsp() const { return source<1>(); }
-    void rhsp(DfgVertex* vtxp) { relinkSource<1>(vtxp); }
-};
-
-class DfgVertexTernary VL_NOT_FINAL : public DfgVertexWithArity<3> {
-protected:
-    DfgVertexTernary(DfgGraph& dfg, VDfgType type, FileLine* flp, AstNodeDType* dtypep)
-        : DfgVertexWithArity<3>{dfg, type, flp, dtypep} {}
-
-public:
-    ASTGEN_MEMBERS_DfgVertexTernary;
-};
-
-//------------------------------------------------------------------------------
-// Implementation of dataflow graph vertices with a variable number of sources
-//------------------------------------------------------------------------------
-
-class DfgVertexVariadic VL_NOT_FINAL : public DfgVertex {
-    DfgEdge* m_srcsp;  // The source edges
-    uint32_t m_srcCnt = 0;  // Number of sources used
-    uint32_t m_srcCap;  // Number of sources allocated
-
-    // Allocate a new source edge array
-    DfgEdge* allocSources(size_t n) {
-        DfgEdge* const srcsp = new DfgEdge[n];
-        for (size_t i = 0; i < n; ++i) srcsp[i].init(this);
-        return srcsp;
-    }
-
-    // Double the capacity of m_srcsp
-    void growSources() {
-        m_srcCap *= 2;
-        DfgEdge* const newsp = allocSources(m_srcCap);
-        for (size_t i = 0; i < m_srcCnt; ++i) {
-            DfgEdge* const oldp = m_srcsp + i;
-            // Skip over unlinked source edge
-            if (!oldp->sourcep()) continue;
-            // New edge driven from the same vertex as the old edge
-            newsp[i].relinkSource(oldp->sourcep());
-            // Unlink the old edge, it will be deleted
-            oldp->unlinkSource();
-        }
-        // Delete old source edges
-        delete[] m_srcsp;
-        // Keep hold of new source edges
-        m_srcsp = newsp;
-    }
-
-protected:
-    DfgVertexVariadic(DfgGraph& dfg, VDfgType type, FileLine* flp, AstNodeDType* dtypep,
-                      uint32_t initialCapacity = 1)
-        : DfgVertex{dfg, type, flp, dtypep}
-        , m_srcsp{allocSources(initialCapacity)}
-        , m_srcCap{initialCapacity} {}
-
-    ~DfgVertexVariadic() override { delete[] m_srcsp; };
-
-    DfgEdge* addSource() {
-        if (m_srcCnt == m_srcCap) growSources();
-        return m_srcsp + m_srcCnt++;
-    }
-
-    void resetSources() {
-        // #ifdef VL_DEBUG TODO: DEBUG ONLY
-        for (uint32_t i = 0; i < m_srcCnt; ++i) {
-            UASSERT_OBJ(!m_srcsp[i].sourcep(), m_srcsp[i].sourcep(), "Connected source");
-        }
-        // #endif
-        m_srcCnt = 0;
-    }
-
-public:
-    ASTGEN_MEMBERS_DfgVertexVariadic;
-
-    DfgEdge* sourceEdge(size_t idx) const { return &m_srcsp[idx]; }
-    DfgVertex* source(size_t idx) const { return m_srcsp[idx].sourcep(); }
-
-    std::pair<DfgEdge*, size_t> sourceEdges() override { return {m_srcsp, m_srcCnt}; }
-    std::pair<const DfgEdge*, size_t> sourceEdges() const override { return {m_srcsp, m_srcCnt}; }
 };
 
 // DfgVertex subclasses
 #include "V3DfgVertices.h"
 
-// The rest of the DfgVertex subclasses are generated by 'astgen' from AstNodeExpr nodes
-#include "V3Dfg__gen_auto_classes.h"
+// Specializations of privateTypeTest
+#include "V3Dfg__gen_type_tests.h"  // From ./astgen
 
 //------------------------------------------------------------------------------
 // Dataflow graph
-//------------------------------------------------------------------------------
-
 class DfgGraph final {
-    friend class DfgVertex;
-
-    // TYPES
-
-    // RAII handle for DfgVertex user data
-    class UserDataInUse final {
-        DfgGraph* m_graphp;  // The referenced graph
-
-    public:
-        // cppcheck-suppress noExplicitConstructor
-        UserDataInUse(DfgGraph* graphp)
-            : m_graphp{graphp} {}
-        // cppcheck-suppress noExplicitConstructor
-        UserDataInUse(UserDataInUse&& that) {
-            UASSERT(that.m_graphp, "Moving from empty");
-            m_graphp = std::exchange(that.m_graphp, nullptr);
-        }
-        VL_UNCOPYABLE(UserDataInUse);
-        UserDataInUse& operator=(UserDataInUse&& that) {
-            UASSERT(that.m_graphp, "Moving from empty");
-            m_graphp = std::exchange(that.m_graphp, nullptr);
-            return *this;
-        }
-
-        ~UserDataInUse() {
-            if (m_graphp) m_graphp->m_userCurrent = 0;
-        }
-    };
+    friend class DfgUserMapBase;
 
     // MEMBERS
 
@@ -628,67 +385,128 @@ class DfgGraph final {
     // enables significant Verilation performance gains, so we keep these in separate lists for
     // direct access.
     DfgVertex::List<DfgVertexVar> m_varVertices;  // The variable vertices in the graph
+    DfgVertex::List<DfgVertexAst> m_astVertices;  // The ast reference vertices in the graph
     DfgVertex::List<DfgConst> m_constVertices;  // The constant vertices in the graph
     DfgVertex::List<DfgVertex> m_opVertices;  // The operation vertices in the graph
-
     size_t m_size = 0;  // Number of vertices in the graph
-    uint32_t m_userCurrent = 0;  // Vertex user data generation number currently in use
-    uint32_t m_userCnt = 0;  // Vertex user data generation counter
-    // Parent of the graph (i.e.: the module containing the logic represented by this graph).
-    AstModule* const m_modulep;
-    const string m_name;  // Name of graph (for debugging)
+    const std::string m_name;  // Name of graph - need not be unique
+    std::string m_tmpNameStub{""};  // Name stub for temporary variables - computed lazy
+
+    // The only way to access thes is via DfgUserMap, so mutable is appropriate,
+    // the map can change while the graph is const.
+    mutable bool m_vertexUserInUse = false;  // Vertex user data currently in use
+    mutable uint32_t m_vertexUserGeneration = 0;  // Vertex user data generation counter
 
 public:
     // CONSTRUCTOR
-    explicit DfgGraph(AstModule& module, const string& name = "") VL_MT_DISABLED;
+    explicit DfgGraph(const string& name = "") VL_MT_DISABLED;
     ~DfgGraph() VL_MT_DISABLED;
     VL_UNCOPYABLE(DfgGraph);
 
     // METHODS
-public:
-    // Add DfgVertex to this graph (assumes not yet contained).
-    inline void addVertex(DfgVertex& vtx);
-    // Remove DfgVertex form this graph (assumes it is contained).
-    inline void removeVertex(DfgVertex& vtx);
     // Number of vertices in this graph
     size_t size() const { return m_size; }
-    // Parent module
-    AstModule* modulep() const { return m_modulep; }
     // Name of this graph
     const string& name() const { return m_name; }
 
-    // Reset Vertex user data
-    UserDataInUse userDataInUse() {
-        UASSERT(!m_userCurrent, "Conflicting use of DfgVertex user data");
-        ++m_userCnt;
-        UASSERT(m_userCnt, "'m_userCnt' overflow");
-        m_userCurrent = m_userCnt;
-        return UserDataInUse{this};
-    }
+    // Create a new DfgUserMap
+    template <typename T_User>
+    inline DfgUserMap<T_User> makeUserMap() const;
 
     // Access to vertex lists
     DfgVertex::List<DfgVertexVar>& varVertices() { return m_varVertices; }
     const DfgVertex::List<DfgVertexVar>& varVertices() const { return m_varVertices; }
+    DfgVertex::List<DfgVertexAst>& astVertices() { return m_astVertices; }
+    const DfgVertex::List<DfgVertexAst>& astVertices() const { return m_astVertices; }
     DfgVertex::List<DfgConst>& constVertices() { return m_constVertices; }
     const DfgVertex::List<DfgConst>& constVertices() const { return m_constVertices; }
     DfgVertex::List<DfgVertex>& opVertices() { return m_opVertices; }
     const DfgVertex::List<DfgVertex>& opVertices() const { return m_opVertices; }
 
+    // Add DfgVertex to this graph (assumes not yet contained).
+    void addVertex(DfgVertex& vtx) {
+#ifdef VL_DEBUG
+        UASSERT_OBJ(!vtx.m_dfgp, &vtx, "Vertex already in a graph");
+#endif
+        // Note: changes here need to be replicated in DfgGraph::mergeGraphs
+        ++m_size;
+        if (DfgVertexVar* const vVtxp = vtx.cast<DfgVertexVar>()) {
+            m_varVertices.linkBack(vVtxp);
+        } else if (DfgVertexAst* const aVtxp = vtx.cast<DfgVertexAst>()) {
+            m_astVertices.linkBack(aVtxp);
+        } else if (DfgConst* const cVtxp = vtx.cast<DfgConst>()) {
+            m_constVertices.linkBack(cVtxp);
+        } else {
+            m_opVertices.linkBack(&vtx);
+        }
+        vtx.m_userGeneration = 0;
+#ifdef VL_DEBUG
+        vtx.m_dfgp = this;
+#endif
+    }
+
+    // Remove DfgVertex form this graph (assumes it is contained).
+    void removeVertex(DfgVertex& vtx) {
+#ifdef VL_DEBUG
+        UASSERT_OBJ(vtx.m_dfgp == this, &vtx, "Vertex not in this graph");
+#endif
+        // Note: changes here need to be replicated in DfgGraph::mergeGraphs
+        --m_size;
+        if (DfgVertexVar* const vVtxp = vtx.cast<DfgVertexVar>()) {
+            m_varVertices.unlink(vVtxp);
+        } else if (DfgVertexAst* const aVtxp = vtx.cast<DfgVertexAst>()) {
+            m_astVertices.unlink(aVtxp);
+        } else if (DfgConst* const cVtxp = vtx.cast<DfgConst>()) {
+            m_constVertices.unlink(cVtxp);
+        } else {
+            m_opVertices.unlink(&vtx);
+        }
+        vtx.m_userGeneration = 0;
+#ifdef VL_DEBUG
+        vtx.m_dfgp = nullptr;
+#endif
+    }
+
     // Calls given function 'f' for each vertex in the graph. It is safe to manipulate any vertices
     // in the graph, or to delete/unlink the vertex passed to 'f' during iteration. It is however
     // not safe to delete/unlink any vertex in the same graph other than the one passed to 'f'.
-    inline void forEachVertex(std::function<void(DfgVertex&)> f);
+    void forEachVertex(std::function<void(DfgVertex&)> f) {
+        for (DfgVertexVar* const vtxp : m_varVertices.unlinkable()) f(*vtxp);
+        for (DfgVertexAst* const vtxp : m_astVertices.unlinkable()) f(*vtxp);
+        for (DfgConst* const vtxp : m_constVertices.unlinkable()) f(*vtxp);
+        for (DfgVertex* const vtxp : m_opVertices.unlinkable()) f(*vtxp);
+    }
 
     // 'const' variant of 'forEachVertex'. No mutation allowed.
-    inline void forEachVertex(std::function<void(const DfgVertex&)> f) const;
+    void forEachVertex(std::function<void(const DfgVertex&)> f) const {
+        for (const DfgVertexVar& vtx : m_varVertices) f(vtx);
+        for (const DfgVertexAst& vtx : m_astVertices) f(vtx);
+        for (const DfgConst& vtx : m_constVertices) f(vtx);
+        for (const DfgVertex& vtx : m_opVertices) f(vtx);
+    }
 
-    // Add contents of other graph to this graph. Leaves other graph empty.
-    void addGraph(DfgGraph& other) VL_MT_DISABLED;
+    // Return an identical, independent copy of this graph. Vertex and edge order might differ.
+    std::unique_ptr<DfgGraph> clone() const VL_MT_DISABLED;
+
+    // Merge contents of other graphs into this graph. Deletes the other graphs.
+    // DfgVertexVar instances representing the same Ast variable are unified.
+    void mergeGraphs(std::vector<std::unique_ptr<DfgGraph>>&& otherps) VL_MT_DISABLED;
+
+    // Genarete a unique name. The provided 'prefix' and 'n' values will be part of the name, and
+    // must be unique (as a pair) in each invocation for this graph.
+    std::string makeUniqueName(const std::string& prefix, size_t n) VL_MT_DISABLED;
+
+    // Create a new variable with the given name and data type. For a Scoped
+    // Dfg, the AstScope where the corresponding AstVarScope will be inserted
+    // must be provided
+    DfgVertexVar* makeNewVar(FileLine*, const std::string& name, const DfgDataType&,
+                             AstScope*) VL_MT_DISABLED;
 
     // Split this graph into individual components (unique sub-graphs with no edges between them).
     // Also removes any vertices that are not weakly connected to any variable.
     // Leaves 'this' graph empty.
-    std::vector<std::unique_ptr<DfgGraph>> splitIntoComponents(std::string label) VL_MT_DISABLED;
+    std::vector<std::unique_ptr<DfgGraph>>
+    splitIntoComponents(const std::string& label) VL_MT_DISABLED;
 
     // Extract cyclic sub-graphs from 'this' graph. Cyclic sub-graphs are those that contain at
     // least one strongly connected component (SCC) plus any other vertices that feed or sink from
@@ -699,222 +517,359 @@ public:
     // to be a DAG (acyclic). 'this' will not necessarily be a connected graph at the end, even if
     // it was originally connected.
     std::vector<std::unique_ptr<DfgGraph>>
-    extractCyclicComponents(std::string label) VL_MT_DISABLED;
+    extractCyclicComponents(const std::string& label) VL_MT_DISABLED;
+
+    //-----------------------------------------------------------------------
+    // Debug dumping
 
     // Dump graph in Graphviz format into the given stream 'os'. 'label' is added to the name of
     // the graph which is included in the output.
-    void dumpDot(std::ostream& os, const string& label = "") const VL_MT_DISABLED;
+    // If the predicate function 'p' is provided, only those vertices are dumped that satifty it.
+    void dumpDot(std::ostream& os, const std::string& label,
+                 std::function<bool(const DfgVertex&)> p = {}) const VL_MT_DISABLED;
     // Dump graph in Graphviz format into a new file with the given 'filename'. 'label' is added to
     // the name of the graph which is included in the output.
-    void dumpDotFile(const string& filename, const string& label = "") const VL_MT_DISABLED;
+    // If the predicate function 'p' is provided, only those vertices are dumped that satifty it.
+    void dumpDotFile(const std::string& filename, const std::string& label,
+                     std::function<bool(const DfgVertex&)> p = {}) const VL_MT_DISABLED;
+    // Same as dumpDotFile, but returns the contents as a string.
+    std::string dumpDotString(const std::string& label,
+                              std::function<bool(const DfgVertex&)> p = {}) const VL_MT_DISABLED;
     // Dump graph in Graphviz format into a new automatically numbered debug file. 'label' is
     // added to the name of the graph, which is included in the file name and the output.
-    void dumpDotFilePrefixed(const string& label = "") const VL_MT_DISABLED;
-    // Dump upstream (source) logic cone starting from given vertex into a file with the given
-    // 'filename'. 'name' is the name of the graph, which is included in the output.
-    void dumpDotUpstreamCone(const string& filename, const DfgVertex& vtx,
-                             const string& name = "") const VL_MT_DISABLED;
-    // Dump all individual logic cones driving external variables in Graphviz format into separate
-    // new automatically numbered debug files. 'label' is added to the name of the graph, which is
-    // included in the file names and the output. This is useful for very large graphs that are
-    // otherwise difficult to browse visually due to their size.
-    void dumpDotAllVarConesPrefixed(const string& label = "") const VL_MT_DISABLED;
+    // If the predicate function 'p' is provided, only those vertices are dumped that satifty it.
+    void dumpDotFilePrefixed(const std::string& label,
+                             std::function<bool(const DfgVertex&)> p = {}) const VL_MT_DISABLED;
+
+    // Returns the set of vertices in the upstream cones of the given vertices
+    std::unique_ptr<std::unordered_set<const DfgVertex*>>
+    sourceCone(const std::vector<const DfgVertex*>&) const VL_MT_DISABLED;
+    // Returns the set of vertices in the downstream cones of the given vertices
+    std::unique_ptr<std::unordered_set<const DfgVertex*>>
+    sinkCone(const std::vector<const DfgVertex*>&) const VL_MT_DISABLED;
+    // Returns the set of vertices within an 'n' hop neighborhood of the given vertices
+    std::unique_ptr<std::unordered_set<const DfgVertex*>>
+    neighborhood(const std::vector<const DfgVertex*>&, size_t n) const VL_MT_DISABLED;
 };
 
-// Specializations of privateTypeTest
-#include "V3Dfg__gen_type_tests.h"  // From ./astgen
+namespace V3Dfg {
+//-----------------------------------------------------------------------
+// Functions for compatibility tests
+
+// Returns true if variable can be represented in the graph
+inline bool isSupported(const AstVarScope* vscp) {
+    const AstNodeModule* const modp = vscp->scopep()->modp();
+    if (VN_IS(modp, Module)) {
+        // Regular module supported
+    } else if (const AstIface* const ifacep = VN_CAST(modp, Iface)) {
+        // Interfaces supported if there are no virtual interfaces for
+        // them, otherwise they cannot be resovled statically.
+        if (ifacep->hasVirtualRef()) return false;
+    } else {
+        return false;  // Anything else (package, class, etc) not supported
+    }
+    if (DfgVertexVar::hasRWRefs(vscp)) return false;  // Referenced via READWRITE references
+    // Check the AstVar
+    AstVar* const varp = vscp->varp();
+    if (varp->isIfaceRef()) return false;  // Cannot handle interface references
+    if (varp->delayp()) return false;  // Cannot handle delayed variables
+    if (varp->isSc()) return false;  // SystemC variables are special and rare, we can ignore
+    return DfgDataType::fromAst(varp->dtypep());
+}
+
+}  //namespace V3Dfg
 
 //------------------------------------------------------------------------------
-// Inline method definitions - for DfgVertex
+// Map from DfgVertices to T_Value implemeneted via DfgVertex::m_userStorage
+
+// Base class with common behavour
+class DfgUserMapBase VL_NOT_FINAL {
+    template <typename, bool>
+    friend class DfgUserMap;
+
+protected:
+    // STATE
+    const DfgGraph* m_dfgp;  // The graph this map is for
+    // The current generation number
+    const uint32_t m_currentGeneration;
+
+    // CONSTRUCTOR
+    explicit DfgUserMapBase(const DfgGraph* dfgp)
+        : m_dfgp{dfgp}
+        , m_currentGeneration{++m_dfgp->m_vertexUserGeneration} {
+        UASSERT(m_currentGeneration, "DfgGraph user data generation number overflow");
+        UASSERT(!m_dfgp->m_vertexUserInUse, "DfgUserMap already in use for this DfgGraph");
+        m_dfgp->m_vertexUserInUse = true;
+    }
+    VL_UNCOPYABLE(DfgUserMapBase);
+    DfgUserMapBase(DfgUserMapBase&& that)
+        : m_dfgp{that.m_dfgp}
+        , m_currentGeneration{that.m_currentGeneration} {
+        that.m_dfgp = nullptr;
+    }
+
+public:
+    ~DfgUserMapBase() {
+        if (m_dfgp) m_dfgp->m_vertexUserInUse = false;
+    }
+    DfgUserMapBase& operator=(DfgUserMapBase&&) = delete;
+};
+
+// Specialization where T_Value fits in DfgVertex::m_userStorage directly
+template <typename T_Value>
+class DfgUserMap<T_Value, true> final : public DfgUserMapBase {
+    static_assert(fitsSpaceAllocatedFor<T_Value, decltype(DfgVertex::m_userStorage)>(),
+                  "'T_Value' does not fit 'DfgVertex::m_userStorage'");
+    friend class DfgGraph;
+
+    // CONSTRUCTOR
+    explicit DfgUserMap(const DfgGraph* dfgp)
+        : DfgUserMapBase{dfgp} {}
+    VL_UNCOPYABLE(DfgUserMap);
+
+public:
+    DfgUserMap(DfgUserMap&&) = default;
+    ~DfgUserMap() = default;
+    DfgUserMap& operator=(DfgUserMap&&) = delete;
+
+    // METHODS
+    // Retrieve mapped value for 'vtx', value initializing it on first access
+    T_Value& operator[](const DfgVertex& vtx) {
+#ifdef VL_DEBUG
+        UASSERT_OBJ(vtx.m_dfgp == m_dfgp, &vtx, "Vertex not in this graph");
+#endif
+        T_Value* const storagep = reinterpret_cast<T_Value*>(&vtx.m_userStorage);
+        if (vtx.m_userGeneration != m_currentGeneration) {
+            new (storagep) T_Value{};
+            vtx.m_userGeneration = m_currentGeneration;
+        }
+        return *storagep;
+    }
+    // Same as above with pointer as key
+    T_Value& operator[](const DfgVertex* vtxp) { return (*this)[*vtxp]; }
+
+    // Retrieve mapped value of 'vtx', must be alerady present
+    T_Value& at(const DfgVertex& vtx) const {
+#ifdef VL_DEBUG
+        UASSERT_OBJ(vtx.m_dfgp == m_dfgp, &vtx, "Vertex not in this graph");
+#endif
+        UASSERT_OBJ(vtx.m_userGeneration == m_currentGeneration, &vtx, "Vertex not in map");
+        T_Value* const storagep = reinterpret_cast<T_Value*>(&vtx.m_userStorage);
+        return *storagep;
+    }
+    // Same as above with pointer as key
+    T_Value& at(const DfgVertex* vtxp) const { return (*this).at(*vtxp); }
+};
+
+// Specialization where T_Value does not fit in DfgVertex::m_userStorage directly
+template <typename T_Value>
+class DfgUserMap<T_Value, false> final : public DfgUserMapBase {
+    static_assert(fitsSpaceAllocatedFor<T_Value*, decltype(DfgVertex::m_userStorage)>(),
+                  "'T_Value*' does not fit 'DfgVertex::m_userStorage'");
+    friend class DfgGraph;
+
+    // STATE
+    std::deque<T_Value> m_storage;  // Storage for T_Value instances
+
+    // CONSTRUCTOR
+    explicit DfgUserMap(const DfgGraph* dfgp)
+        : DfgUserMapBase{dfgp} {}
+    VL_UNCOPYABLE(DfgUserMap);
+
+public:
+    DfgUserMap(DfgUserMap&&) = default;
+    ~DfgUserMap() = default;
+    DfgUserMap& operator=(DfgUserMap&&) = delete;
+
+    // METHODS
+    // Retrieve mapped value for 'vtx', value initializing it on first access
+    T_Value& operator[](const DfgVertex& vtx) {
+#ifdef VL_DEBUG
+        UASSERT_OBJ(vtx.m_dfgp == m_dfgp, &vtx, "Vertex not in this graph");
+#endif
+        T_Value*& storagepr = reinterpret_cast<T_Value*&>(vtx.m_userStorage);
+        if (vtx.m_userGeneration != m_currentGeneration) {
+            m_storage.emplace_back();
+            storagepr = &m_storage.back();
+            vtx.m_userGeneration = m_currentGeneration;
+        }
+        return *storagepr;
+    }
+    // Same as above with pointer as key
+    T_Value& operator[](const DfgVertex* vtxp) { return (*this)[*vtxp]; }
+
+    // Retrieve mapped value of 'vtx', must be alerady present
+    T_Value& at(const DfgVertex& vtx) const {
+#ifdef VL_DEBUG
+        UASSERT_OBJ(vtx.m_dfgp == m_dfgp, &vtx, "Vertex not in this graph");
+#endif
+        UASSERT_OBJ(vtx.m_userGeneration == m_currentGeneration, &vtx, "Vertex not in map");
+        return *reinterpret_cast<T_Value*&>(vtx.m_userStorage);
+    }
+    // Same as above with pointer as key
+    T_Value& at(const DfgVertex* vtxp) const { return (*this).at(*vtxp); }
+};
+
 //------------------------------------------------------------------------------
+// Worklist for processing DfgVertices, implemented via DfgUserMap
 
-template <typename T>
-T& DfgVertex::user() {
-    static_assert(sizeof(T) <= sizeof(UserDataStorage),
-                  "Size of user data type 'T' is too large for allocated storage");
-    static_assert(alignof(T) <= alignof(UserDataStorage),
-                  "Alignment of user data type 'T' is larger than allocated storage");
-    T* const storagep = reinterpret_cast<T*>(&m_userDataStorage);
-    const uint32_t userCurrent = m_graphp->m_userCurrent;
-    UDEBUGONLY(UASSERT_OBJ(userCurrent, this, "DfgVertex user data used without reserving"););
-    if (m_userCnt != userCurrent) {
-        m_userCnt = userCurrent;
-        // cppcheck-has-bug-suppress uninitvar
-        VL_ATTR_UNUSED T* const resultp = new (storagep) T{};
-        UDEBUGONLY(UASSERT_OBJ(resultp == storagep, this, "Something is odd"););
+class DfgWorklist final {
+    // STATE
+
+    // The Graph being processed
+    DfgGraph& m_dfg;
+    // Map from vertex to next vertex in the work list
+    DfgUserMap<DfgVertex*> m_nextp = m_dfg.makeUserMap<DfgVertex*>();
+    // We want all 'nextp' pointers for vertices that are in the worklist to be
+    // non-zero (including that of the last element). This allows us to do two
+    // important things: detect if an element is in the list by checking for a
+    // non-zero 'nextp'', and easy prefetching without conditionals. The
+    // address of the worklist itself is a good sentinel as it is a valid
+    // memory address, and we can easily check for the end of the list.
+    DfgVertex* const m_sentinelp = reinterpret_cast<DfgVertex*>(this);
+    // Head of work list
+    DfgVertex* m_headp = m_sentinelp;
+
+public:
+    // CONSTRUCTOR
+    explicit DfgWorklist(DfgGraph& dfg)
+        : m_dfg{dfg} {}
+    VL_UNCOPYABLE(DfgWorklist);
+    VL_UNMOVABLE(DfgWorklist);
+    ~DfgWorklist() = default;
+
+    // METHODS
+
+    // If 'vtx' is not in the worklist already, add it at the head of the list
+    // and return ture. If 'vtx' is already in the work list, then do nothing
+    // and return false.
+    bool push_front(DfgVertex& vtx) {
+        // Pick up reference to the next pointer
+        DfgVertex*& nextpr = m_nextp[vtx];
+        // If already in work list then nothing to do
+        if (nextpr) return false;
+        // Prepend to work list
+        nextpr = m_headp;
+        m_headp = &vtx;
+        return true;
     }
-    return *storagep;
-}
 
-template <typename T>
-T& DfgVertex::getUser() {
-    static_assert(sizeof(T) <= sizeof(UserDataStorage),
-                  "Size of user data type 'T' is too large for allocated storage");
-    static_assert(alignof(T) <= alignof(UserDataStorage),
-                  "Alignment of user data type 'T' is larger than allocated storage");
-    T* const storagep = reinterpret_cast<T*>(&m_userDataStorage);
-#if VL_DEBUG
-    const uint32_t userCurrent = m_graphp->m_userCurrent;
-    UASSERT_OBJ(userCurrent, this, "DfgVertex user data used without reserving");
-    UASSERT_OBJ(m_userCnt == userCurrent, this, "DfgVertex user data is stale");
-#endif
-    return *storagep;
-}
+    // Returns ture iff 'vtx' is in the worklist
+    bool contains(const DfgVertex& vtx) { return m_nextp[vtx]; }
 
-template <typename T>
-void DfgVertex::setUser(T value) {
-    static_assert(sizeof(T) <= sizeof(UserDataStorage),
-                  "Size of user data type 'T' is too large for allocated storage");
-    static_assert(alignof(T) <= alignof(UserDataStorage),
-                  "Alignment of user data type 'T' is larger than allocated storage");
-    T* const storagep = reinterpret_cast<T*>(&m_userDataStorage);
-    const uint32_t userCurrent = m_graphp->m_userCurrent;
-#if VL_DEBUG
-    UASSERT_OBJ(userCurrent, this, "DfgVertex user data used without reserving");
-#endif
-    m_userCnt = userCurrent;
-    *storagep = value;
-}
+    // Process the worklist by removing the first element, calling on it the
+    // given callable 'f', and repeat until the worklist is empty. The callable
+    // 'f' can add furthere vertices to the worklist.
+    template <typename T_Callable>
+    void foreach(T_Callable&& f) {
+        static_assert(vlstd::is_invocable_r<void, T_Callable, DfgVertex&>::value,
+                      "T_Callable 'f' must have a signature compatible with 'void(DfgVertex&)'");
 
-void DfgVertex::forEachSource(std::function<void(DfgVertex&)> f) {
-    const auto pair = sourceEdges();
-    const DfgEdge* const edgesp = pair.first;
-    const size_t arity = pair.second;
-    for (size_t i = 0; i < arity; ++i) {
-        if (DfgVertex* const sourcep = edgesp[i].m_sourcep) f(*sourcep);
-    }
-}
-
-void DfgVertex::forEachSource(std::function<void(const DfgVertex&)> f) const {
-    const auto pair = sourceEdges();
-    const DfgEdge* const edgesp = pair.first;
-    const size_t arity = pair.second;
-    for (size_t i = 0; i < arity; ++i) {
-        if (DfgVertex* const sourcep = edgesp[i].m_sourcep) f(*sourcep);
-    }
-}
-
-void DfgVertex::forEachSink(std::function<void(DfgVertex&)> f) {
-    for (const DfgEdge *edgep = m_sinksp, *nextp; edgep; edgep = nextp) {
-        nextp = edgep->m_nextp;
-        f(*edgep->m_sinkp);
-    }
-}
-
-void DfgVertex::forEachSink(std::function<void(const DfgVertex&)> f) const {
-    for (const DfgEdge* edgep = m_sinksp; edgep; edgep = edgep->m_nextp) f(*edgep->m_sinkp);
-}
-
-void DfgVertex::forEachSourceEdge(std::function<void(DfgEdge&, size_t)> f) {
-    const auto pair = sourceEdges();
-    DfgEdge* const edgesp = pair.first;
-    const size_t arity = pair.second;
-    for (size_t i = 0; i < arity; ++i) f(edgesp[i], i);
-}
-
-void DfgVertex::forEachSourceEdge(std::function<void(const DfgEdge&, size_t)> f) const {
-    const auto pair = sourceEdges();
-    const DfgEdge* const edgesp = pair.first;
-    const size_t arity = pair.second;
-    for (size_t i = 0; i < arity; ++i) f(edgesp[i], i);
-}
-
-void DfgVertex::forEachSinkEdge(std::function<void(DfgEdge&)> f) {
-    for (DfgEdge *edgep = m_sinksp, *nextp; edgep; edgep = nextp) {
-        nextp = edgep->m_nextp;
-        f(*edgep);
-    }
-}
-
-void DfgVertex::forEachSinkEdge(std::function<void(const DfgEdge&)> f) const {
-    for (DfgEdge *edgep = m_sinksp, *nextp; edgep; edgep = nextp) {
-        nextp = edgep->m_nextp;
-        f(*edgep);
-    }
-}
-
-const DfgEdge* DfgVertex::findSourceEdge(std::function<bool(const DfgEdge&, size_t)> p) const {
-    const auto pair = sourceEdges();
-    const DfgEdge* const edgesp = pair.first;
-    const size_t arity = pair.second;
-    for (size_t i = 0; i < arity; ++i) {
-        const DfgEdge& edge = edgesp[i];
-        if (p(edge, i)) return &edge;
-    }
-    return nullptr;
-}
-
-template <typename Vertex>
-Vertex* DfgVertex::findSink(std::function<bool(const Vertex&)> p) const {
-    static_assert(std::is_base_of<DfgVertex, Vertex>::value,
-                  "'Vertex' must be subclass of 'DfgVertex'");
-    for (DfgEdge* edgep = m_sinksp; edgep; edgep = edgep->m_nextp) {
-        if (Vertex* const sinkp = edgep->m_sinkp->cast<Vertex>()) {
-            if (p(*sinkp)) return sinkp;
+        // Process the work list
+        while (m_headp != m_sentinelp) {
+            // Pick up the head
+            DfgVertex& vtx = *m_headp;
+            // Detach the head
+            m_headp = m_nextp.at(vtx);
+            // Prefetch next item
+            VL_PREFETCH_RW(m_headp);
+            // This item is now off the work list
+            m_nextp.at(vtx) = nullptr;
+            // Apply 'f'
+            f(vtx);
         }
     }
-    return nullptr;
+};
+
+//------------------------------------------------------------------------------
+// Inline method definitions
+
+// DfgEdge {{{
+
+void DfgEdge::unlinkSrcp() {
+    if (!m_srcp) return;
+#ifdef VL_DEBUG
+    bool contained = false;
+    for (const DfgEdge& edge : m_srcp->m_sinks) {
+        if (&edge != this) continue;
+        contained = true;
+        break;
+    }
+    UASSERT_OBJ(contained, m_srcp, "'m_srcp' does not have this as sink");
+#endif
+    m_srcp->m_sinks.unlink(this);
+    m_srcp = nullptr;
 }
 
-template <typename Vertex>
-Vertex* DfgVertex::findSink() const {
-    static_assert(!std::is_same<DfgVertex, Vertex>::value,
-                  "'Vertex' must be proper subclass of 'DfgVertex'");
-    return findSink<Vertex>([](const Vertex&) { return true; });
+void DfgEdge::relinkSrcp(DfgVertex* srcp) {
+    // Unlink current source, if any
+    unlinkSrcp();
+    m_srcp = srcp;
+    if (m_srcp) m_srcp->m_sinks.linkFront(this);
 }
 
-bool DfgVertex::isZero() const {
-    if (const DfgConst* const constp = cast<DfgConst>()) return constp->isZero();
+// }}}
+
+// DfgVertex {{{
+
+bool DfgVertex::isCheaperThanLoad() const {
+    // Constants
+    if (is<DfgConst>()) return true;
+    // Variables
+    if (is<DfgVertexVar>()) return true;
+    // Array sels are just address computation
+    if (is<DfgArraySel>()) return true;
+    // Small select from variable
+    if (const DfgSel* const selp = cast<DfgSel>()) {
+        if (!selp->fromp()->is<DfgVarPacked>()) return false;
+        if (selp->fromp()->width() <= VL_QUADSIZE) return true;
+        const uint32_t lsb = selp->lsb();
+        const uint32_t msb = lsb + selp->width() - 1;
+        return VL_BITWORD_E(msb) == VL_BITWORD_E(lsb);
+    }
+    // Zero extend of a cheap vertex - Extend(_) was converted to Concat(0, _)
+    if (const DfgConcat* const catp = cast<DfgConcat>()) {
+        if (catp->width() > VL_QUADSIZE) return false;
+        const DfgConst* const lConstp = catp->lhsp()->cast<DfgConst>();
+        if (!lConstp || !lConstp->isZero()) return false;
+        return catp->rhsp()->isCheaperThanLoad();
+    }
+    // Reduction of a narrow cheap vertex
+    if (is<DfgRedOr>()  //
+        || is<DfgRedAnd>()  //
+        || is<DfgRedXor>()) {
+        const DfgVertex* const srcp = as<DfgVertexUnary>()->srcp();
+        return srcp->width() <= VL_QUADSIZE && srcp->isCheaperThanLoad();
+    }
+    // Comparisons of a narrow cheap vertex with constant
+    if (is<DfgEq>()  //
+        || is<DfgNeq>()  //
+        || is<DfgLt>()  //
+        || is<DfgLte>()  //
+        || is<DfgGt>()  //
+        || is<DfgGte>()  //
+        || is<DfgLtS>()  //
+        || is<DfgLteS>()  //
+        || is<DfgGtS>()  //
+        || is<DfgGteS>()) {
+        const DfgVertexBinary* const binp = as<DfgVertexBinary>();
+        const DfgVertex* const lhsp = binp->inputp(0);
+        const DfgVertex* const rhsp = binp->inputp(1);
+        return lhsp->width() <= VL_QUADSIZE && lhsp->is<DfgConst>() && rhsp->isCheaperThanLoad();
+    }
+    // Otherwise probably not
     return false;
 }
 
-bool DfgVertex::isOnes() const {
-    if (const DfgConst* const constp = cast<DfgConst>()) return constp->isOnes();
-    return false;
+// }}}
+
+// DfgGraph {{{
+
+template <typename T_User>
+DfgUserMap<T_User> DfgGraph::makeUserMap() const {
+    return DfgUserMap<T_User>{this};
 }
 
-//------------------------------------------------------------------------------
-// Inline method definitions - for DfgGraph
-//------------------------------------------------------------------------------
-
-void DfgGraph::addVertex(DfgVertex& vtx) {
-    // Note: changes here need to be replicated in DfgGraph::addGraph
-    ++m_size;
-    if (DfgConst* const cVtxp = vtx.cast<DfgConst>()) {
-        m_constVertices.linkBack(cVtxp);
-    } else if (DfgVertexVar* const vVtxp = vtx.cast<DfgVertexVar>()) {
-        m_varVertices.linkBack(vVtxp);
-    } else {
-        m_opVertices.linkBack(&vtx);
-    }
-    vtx.m_userCnt = 0;
-    vtx.m_graphp = this;
-}
-
-void DfgGraph::removeVertex(DfgVertex& vtx) {
-    // Note: changes here need to be replicated in DfgGraph::addGraph
-    --m_size;
-    if (DfgConst* const cVtxp = vtx.cast<DfgConst>()) {
-        m_constVertices.unlink(cVtxp);
-    } else if (DfgVertexVar* const vVtxp = vtx.cast<DfgVertexVar>()) {
-        m_varVertices.unlink(vVtxp);
-    } else {
-        m_opVertices.unlink(&vtx);
-    }
-    vtx.m_userCnt = 0;
-    vtx.m_graphp = nullptr;
-}
-
-void DfgGraph::forEachVertex(std::function<void(DfgVertex&)> f) {
-    for (DfgVertexVar* const vtxp : m_varVertices.unlinkable()) f(*vtxp);
-    for (DfgConst* const vtxp : m_constVertices.unlinkable()) f(*vtxp);
-    for (DfgVertex* const vtxp : m_opVertices.unlinkable()) f(*vtxp);
-}
-
-void DfgGraph::forEachVertex(std::function<void(const DfgVertex&)> f) const {
-    for (const DfgVertexVar& vtx : m_varVertices) f(vtx);
-    for (const DfgConst& vtx : m_constVertices) f(vtx);
-    for (const DfgVertex& vtx : m_opVertices) f(vtx);
-}
+// }}}
 
 #endif

@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -37,6 +37,10 @@
 #include <set>
 #include <string>
 #include <utility>
+
+class VlProcess;
+template <typename T_Value, std::size_t N_Depth>
+class VlUnpacked;
 
 //=========================================================================
 // Debug functions
@@ -74,11 +78,14 @@ extern std::string VL_TO_STRING_W(int words, const WDataInP obj);
 //=========================================================================
 // Declare net data types
 
+#ifndef VL_NO_LEGACY
 #define VL_SIG8(name, msb, lsb) CData name  ///< Declare signal, 1-8 bits
 #define VL_SIG16(name, msb, lsb) SData name  ///< Declare signal, 9-16 bits
 #define VL_SIG64(name, msb, lsb) QData name  ///< Declare signal, 33-64 bits
 #define VL_SIG(name, msb, lsb) IData name  ///< Declare signal, 17-32 bits
 #define VL_SIGW(name, msb, lsb, words) VlWide<words> name  ///< Declare signal, 65+ bits
+#endif
+
 #define VL_IN8(name, msb, lsb) CData name  ///< Declare input signal, 1-8 bits
 #define VL_IN16(name, msb, lsb) SData name  ///< Declare input signal, 9-16 bits
 #define VL_IN64(name, msb, lsb) QData name  ///< Declare input signal, 33-64 bits
@@ -103,16 +110,47 @@ constexpr IData VL_CLOG2_CE_Q(QData lhs) VL_PURE {
     return lhs <= 1 ? 0 : VL_CLOG2_CE_Q((lhs + 1) >> 1ULL) + 1;
 }
 
-// Metadata of processes
-class VlProcess;
+//===================================================================
+// Random
 
+// Random Number Generator with internal state
+class VlRNG final {
+    std::array<uint64_t, 2> m_state;
+
+public:
+    // The default constructor simply sets state, to avoid vl_rand64()
+    // having to check for construction at each call
+    // Alternative: seed with zero and check on rand64() call
+    VlRNG() VL_MT_SAFE;
+    explicit VlRNG(uint64_t seed) VL_PURE;
+    void srandom(uint64_t n) VL_MT_UNSAFE;
+    std::string get_randstate() const VL_MT_UNSAFE;
+    void set_randstate(const std::string& state) VL_MT_UNSAFE;
+    uint64_t rand64() VL_MT_UNSAFE;
+    // Threadsafe, but requires use on vl_thread_rng or vl_current_rng
+    static uint64_t vl_thread_rng_rand64() VL_MT_SAFE;
+    static uint64_t vl_current_rng_rand64() VL_MT_SAFE;
+    static VlRNG& vl_thread_rng() VL_MT_SAFE;
+};
+
+//===================================================================
+// Metadata of processes
 using VlProcessRef = std::shared_ptr<VlProcess>;
+class VlForkSync;
+class VlForkSyncState;
 
 class VlProcess final {
     // MEMBERS
     int m_state;  // Current state of the process
     VlProcessRef m_parentp = nullptr;  // Parent process, if exists
     std::set<VlProcess*> m_children;  // Active child processes
+    VlForkSyncState* m_forkSyncOnKillp
+        = nullptr;  // Optional fork..join counter to decrement on kill
+    bool m_forkSyncOnKillDone = false;  // Ensure on-kill callback fires only once
+    VlRNG m_rng;  // Per-process RNG (IEEE 1800-2023 18.14)
+
+    // Thread-local current process pointer for hierarchical object seeding
+    static thread_local VlProcess* t_currentp;
 
 public:
     // TYPES
@@ -143,75 +181,41 @@ public:
     void detach(VlProcess* childp) { m_children.erase(childp); }
 
     int state() const { return m_state; }
-    void state(int s) { m_state = s; }
+    void state(int s);
     void disable() {
         state(KILLED);
         disableFork();
     }
     void disableFork() {
-        for (VlProcess* childp : m_children) childp->disable();
+        // childp->disable() may resume coroutines and mutate m_children
+        const std::set<VlProcess*> children = m_children;
+        for (VlProcess* childp : children) childp->disable();
     }
+    void forkSyncOnKill(VlForkSyncState* forkSyncp);
+    void forkSyncOnKillClear(VlForkSyncState* forkSyncp);
     bool completed() const { return state() == FINISHED || state() == KILLED; }
     bool completedFork() const {
         for (const VlProcess* const childp : m_children)
             if (!childp->completed()) return false;
         return true;
     }
+
+    // Random state (IEEE 1800-2023 9.7, 18.14)
+    void srandom(uint64_t seed) VL_MT_UNSAFE { m_rng.srandom(seed); }
+    std::string randstate() const VL_MT_UNSAFE;
+    void randstate(const std::string& state) VL_MT_UNSAFE;
+
+    // Current process tracking for hierarchical object seeding
+    static VlProcess* currentp() VL_MT_UNSAFE { return t_currentp; }
+    static void currentp(VlProcess* processp) VL_MT_UNSAFE { t_currentp = processp; }
+    // Return process RNG if in a process, else thread RNG
+    static VlRNG& currentRng() VL_MT_SAFE;
 };
 
-inline std::string VL_TO_STRING(const VlProcessRef& p) { return std::string("process"); }
+inline std::string VL_TO_STRING(const VlProcessRef&) { return std::string("process"); }
 
-//===================================================================
-// Activity trigger vector
-
-template <std::size_t N_Size>  //
-class VlTriggerVec final {
-    // TODO: static assert N_Size > 0, and don't generate when empty
-
-    // MEMBERS
-    alignas(16) std::array<uint64_t, roundUpToMultipleOf<64>(N_Size) / 64> m_flags;  // The flags
-
-public:
-    // CONSTRUCTOR
-    VlTriggerVec() { clear(); }
-    ~VlTriggerVec() = default;
-
-    // METHODS
-
-    // Set all elements to false
-    void clear() { m_flags.fill(0); }
-
-    // Word at given 'wordIndex'
-    uint64_t word(size_t wordIndex) const { return m_flags[wordIndex]; }
-
-    // Set specified word to given value
-    void setWord(size_t wordIndex, uint64_t value) { m_flags[wordIndex] = value; }
-
-    // Set specified bit to given value
-    void setBit(size_t index, bool value) {
-        uint64_t& w = m_flags[index / 64];
-        const size_t bitIndex = index % 64;
-        w &= ~(1ULL << bitIndex);
-        w |= (static_cast<uint64_t>(value) << bitIndex);
-    }
-
-    // Return true iff at least one element is set
-    bool any() const {
-        for (size_t i = 0; i < m_flags.size(); ++i)
-            if (m_flags[i]) return true;
-        return false;
-    }
-
-    // Set all elements true in 'this' that are set in 'other'
-    void thisOr(const VlTriggerVec<N_Size>& other) {
-        for (size_t i = 0; i < m_flags.size(); ++i) m_flags[i] |= other.m_flags[i];
-    }
-
-    // Set elements of 'this' to 'a & !b' element-wise
-    void andNot(const VlTriggerVec<N_Size>& a, const VlTriggerVec<N_Size>& b) {
-        for (size_t i = 0; i < m_flags.size(); ++i) m_flags[i] = a.m_flags[i] & ~b.m_flags[i];
-    }
-};
+// Use process RNG if in a process, else thread RNG (IEEE 1800-2023 18.14)
+inline uint64_t vl_rand64() VL_MT_SAFE { return VlRNG::vl_current_rng_rand64(); }
 
 //===================================================================
 // SystemVerilog event type
@@ -279,30 +283,6 @@ inline std::string VL_TO_STRING(const VlEventBase& e) {
     return "triggered="s + (e.isTriggered() ? "true" : "false");
 }
 
-//===================================================================
-// Random
-
-// Random Number Generator with internal state
-class VlRNG final {
-    std::array<uint64_t, 2> m_state;
-
-public:
-    // The default constructor simply sets state, to avoid vl_rand64()
-    // having to check for construction at each call
-    // Alternative: seed with zero and check on rand64() call
-    VlRNG() VL_MT_SAFE;
-    explicit VlRNG(uint64_t seed0) VL_MT_SAFE : m_state{0x12341234UL, seed0} {}
-    void srandom(uint64_t n) VL_MT_UNSAFE;
-    std::string get_randstate() const VL_MT_UNSAFE;
-    void set_randstate(const std::string& state) VL_MT_UNSAFE;
-    uint64_t rand64() VL_MT_UNSAFE;
-    // Threadsafe, but requires use on vl_thread_rng
-    static uint64_t vl_thread_rng_rand64() VL_MT_SAFE;
-    static VlRNG& vl_thread_rng() VL_MT_SAFE;
-};
-
-inline uint64_t vl_rand64() VL_MT_SAFE { return VlRNG::vl_thread_rng_rand64(); }
-
 // RNG for shuffle()
 class VlURNG final {
 public:
@@ -367,6 +347,7 @@ public:
 // These require the class object to have the thread safety lock
 inline IData VL_RANDOM_RNG_I(VlRNG& rngr) VL_MT_UNSAFE { return rngr.rand64(); }
 inline QData VL_RANDOM_RNG_Q(VlRNG& rngr) VL_MT_UNSAFE { return rngr.rand64(); }
+extern double VL_RANDOM_RNG_D(VlRNG& rngr) VL_MT_UNSAFE;
 extern WDataOutP VL_RANDOM_RNG_W(VlRNG& rngr, int obits, WDataOutP outwp) VL_MT_UNSAFE;
 
 //===================================================================
@@ -474,6 +455,9 @@ std::string VL_TO_STRING(const VlWide<N_Words>& obj) {
     return VL_TO_STRING_W(N_Words, obj.data());
 }
 
+template <typename T_Class>
+class VlClassRef;
+
 //===================================================================
 // Verilog queue and dynamic array container
 // There are no multithreaded locks on this; the base variable must
@@ -484,6 +468,9 @@ std::string VL_TO_STRING(const VlWide<N_Words>& obj) {
 template <typename T_Value, size_t N_MaxSize = 0>
 class VlQueue final {
 private:
+    template <typename U_Value, size_t M_MaxSize>
+    friend class VlQueue;
+
     // TYPES
     using Deque = std::deque<T_Value>;
 
@@ -495,17 +482,24 @@ public:
 private:
     // MEMBERS
     Deque m_deque;  // State of the assoc array
-    T_Value m_defaultValue;  // Default value
+    T_Value m_defaultValue{};  // Default value
 
 public:
     // CONSTRUCTORS
-    // m_defaultValue isn't defaulted. Caller's constructor must do it.
+    // cppcheck-suppress uninitMemberVar // m_defaultValue isn't defaulted, caller must
     VlQueue() = default;
     ~VlQueue() = default;
     VlQueue(const VlQueue&) = default;
     VlQueue(VlQueue&&) = default;
     VlQueue& operator=(const VlQueue&) = default;
     VlQueue& operator=(VlQueue&&) = default;
+
+    // Template constuctors that construct from containers holding sub-classes
+    template <typename T_Subclass>
+    inline VlQueue(const VlQueue<VlClassRef<T_Subclass>>&);
+    template <typename T_Subclass>
+    inline VlQueue(VlQueue<VlClassRef<T_Subclass>>&&);
+
     bool operator==(const VlQueue& rhs) const { return m_deque == rhs.m_deque; }
     bool operator!=(const VlQueue& rhs) const { return m_deque != rhs.m_deque; }
     bool operator<(const VlQueue& rhs) const {
@@ -580,6 +574,10 @@ public:
             m_deque.resize(size, atDefault());
         }
     }
+    // Unpacked array new[]() becomes a renew_copy()
+    template <typename T_UnpackedValue, std::size_t N_UnpackedDepth>
+    void renew_copy(size_t size, const VlUnpacked<T_UnpackedValue, N_UnpackedDepth>& rhs);
+
     void resize(size_t size) { m_deque.resize(size, atDefault()); }
 
     // function void q.push_front(value)
@@ -621,11 +619,8 @@ public:
     T_Value& atWriteAppend(int32_t index) {
         // cppcheck-suppress variableScope
         static thread_local T_Value t_throwAway;
+        if (index == m_deque.size()) push_back(atDefault());
         if (VL_UNLIKELY(index < 0 || index >= m_deque.size())) {
-            if (index == m_deque.size()) {
-                push_back(atDefault());
-                return m_deque[index];
-            }
             t_throwAway = atDefault();
             return t_throwAway;
         }
@@ -634,11 +629,8 @@ public:
     // Accessing. Verilog: v = assoc[index]
     const T_Value& at(int32_t index) const {
         // Needs to work for dynamic arrays, so does not use N_MaxSize
-        if (VL_UNLIKELY(index < 0 || index >= m_deque.size())) {
-            return atDefault();
-        } else {
-            return m_deque[index];
-        }
+        if (VL_UNLIKELY(index < 0 || index >= m_deque.size())) return atDefault();
+        return m_deque[index];
     }
     // Access with an index counted from end (e.g. q[$])
     T_Value& atWriteAppendBack(int32_t index) { return atWriteAppend(m_deque.size() - 1 - index); }
@@ -669,6 +661,24 @@ public:
     }
     VlQueue sliceBackBack(int32_t lsb, int32_t msb) const {
         return slice(m_deque.size() - 1 - lsb, m_deque.size() - 1 - msb);
+    }
+    // Assign src elements to q[lsb:msb]
+    void sliceAssign(int32_t lsb, int32_t msb, const VlQueue& src) {
+        const int32_t sz = static_cast<int32_t>(m_deque.size());
+        const int32_t srcSz = static_cast<int32_t>(src.m_deque.size());
+        if (VL_UNLIKELY(sz <= 0 || srcSz <= 0)) return;
+        if (VL_UNLIKELY(lsb < 0)) lsb = 0;
+        if (VL_UNLIKELY(lsb >= sz)) lsb = sz - 1;
+        if (VL_UNLIKELY(msb >= sz)) msb = sz - 1;
+        const int32_t count = std::min(msb - lsb + 1, srcSz);
+        if (VL_UNLIKELY(count <= 0)) return;
+        std::copy_n(src.m_deque.begin(), count, m_deque.begin() + lsb);
+    }
+    void sliceAssignFrontBack(int32_t lsb, int32_t msb, const VlQueue& src) {
+        sliceAssign(lsb, m_deque.size() - 1 - msb, src);
+    }
+    void sliceAssignBackBack(int32_t lsb, int32_t msb, const VlQueue& src) {
+        sliceAssign(m_deque.size() - 1 - lsb, m_deque.size() - 1 - msb, src);
     }
 
     // For save/restore
@@ -809,6 +819,17 @@ public:
         }
         return VlQueue<IData>{};
     }
+    // Map method (IEEE 1800-2023 7.12.5)
+    template <typename T_Func>
+    VlQueue<WithFuncReturnType<T_Func>> map(T_Func with_func) const {
+        VlQueue<WithFuncReturnType<T_Func>> out;
+        IData index = 0;
+        for (const auto& i : m_deque) {
+            out.push_back(with_func(index, i));
+            ++index;
+        }
+        return out;
+    }
 
     // Reduction operators
     VlQueue min() const {
@@ -917,7 +938,7 @@ public:
             out += comma + VL_TO_STRING(i);
             comma = ", ";
         }
-        return out + "} ";
+        return out + "}";
     }
 };
 
@@ -969,6 +990,7 @@ public:
 
     // Size of array. Verilog: function int size(), or int num()
     int size() const { return m_map.size(); }
+    bool empty() const { return m_map.empty(); }
     // Clear array. Verilog: function void delete([input index])
     void clear() { m_map.clear(); }
     void erase(const T_Key& index) { m_map.erase(index); }
@@ -1020,11 +1042,8 @@ public:
     // Accessing. Verilog: v = assoc[index]
     const T_Value& at(const T_Key& index) const {
         const auto it = m_map.find(index);
-        if (it == m_map.end()) {
-            return m_defaultValue;
-        } else {
-            return it->second;
-        }
+        if (it == m_map.end()) return m_defaultValue;
+        return it->second;
     }
     // Setting as a chained operation
     VlAssocArray& set(const T_Key& index, const T_Value& value) {
@@ -1125,7 +1144,7 @@ public:
             = std::find_if(m_map.cbegin(), m_map.cend(), [=](const std::pair<T_Key, T_Value>& i) {
                   return with_func(i.first, i.second);
               });
-        if (it == m_map.end()) return VlQueue<T_Value>{};
+        if (it == m_map.end()) return VlQueue<T_Key>{};
         return VlQueue<T_Key>::consV(it->first);
     }
     template <typename T_Func>
@@ -1141,8 +1160,15 @@ public:
         const auto it = std::find_if(
             m_map.crbegin(), m_map.crend(),
             [=](const std::pair<T_Key, T_Value>& i) { return with_func(i.first, i.second); });
-        if (it == m_map.rend()) return VlQueue<T_Value>{};
+        if (it == m_map.rend()) return VlQueue<T_Key>{};
         return VlQueue<T_Key>::consV(it->first);
+    }
+    // Map method (IEEE 1800-2023 7.12.5)
+    template <typename T_Func>
+    VlQueue<WithFuncReturnType<T_Func>> map(T_Func with_func) const {
+        VlQueue<WithFuncReturnType<T_Func>> out;
+        for (const auto& i : m_map) out.push_back(with_func(i.first, i.second));
+        return out;
     }
 
     // Reduction operators
@@ -1228,8 +1254,8 @@ public:
         return out;
     }
     template <typename T_Func>
-    T_Value r_or(T_Func with_func) const {
-        T_Value out = T_Value(0);
+    WithFuncReturnType<T_Func> r_or(T_Func with_func) const {
+        WithFuncReturnType<T_Func> out = WithFuncReturnType<T_Func>(0);
         for (const auto& i : m_map) out |= with_func(i.first, i.second);
         return out;
     }
@@ -1255,7 +1281,7 @@ public:
             comma = ", ";
         }
         // Default not printed - maybe random init data
-        return out + "} ";
+        return out + "}";
     }
 };
 
@@ -1265,7 +1291,7 @@ std::string VL_TO_STRING(const VlAssocArray<T_Key, T_Value>& obj) {
 }
 
 template <typename T_Key, typename T_Value>
-struct VlContainsCustomStruct<VlAssocArray<T_Key, T_Value>> : VlContainsCustomStruct<T_Key> {};
+struct VlContainsCustomStruct<VlAssocArray<T_Key, T_Value>> : VlContainsCustomStruct<T_Value> {};
 
 template <typename T_Key, typename T_Value>
 void VL_READMEM_N(bool hex, int bits, const std::string& filename,
@@ -1312,6 +1338,9 @@ class VlUnpacked final {
     using Unpacked = T_Value[N_Depth];
 
 public:
+    template <typename T_Func>
+    using WithFuncReturnType = decltype(std::declval<T_Func>()(0, std::declval<T_Value>()));
+
     // MEMBERS
     // This should be the only data member, otherwise generated static initializers need updating
     Unpacked m_storage;  // Contents of the unpacked array
@@ -1325,12 +1354,16 @@ public:
     // Default copy assignment operators are used.
 
     // METHODS
-public:
     // Raw access
     WData* data() { return &m_storage[0]; }
     const WData* data() const { return &m_storage[0]; }
 
     constexpr std::size_t size() const { return N_Depth; }
+
+    void fill(const T_Value& value) {
+        std::fill(std::begin(m_storage), std::end(m_storage), value);
+    }
+
     // To fit C++14
     template <std::size_t N_CurrentDimension = 0, typename U = T_Value>
     int find_length(int dimension, std::false_type) const {
@@ -1339,11 +1372,8 @@ public:
 
     template <std::size_t N_CurrentDimension = 0, typename U = T_Value>
     int find_length(int dimension, std::true_type) const {
-        if (dimension == N_CurrentDimension) {
-            return size();
-        } else {
-            return m_storage[0].template find_length<N_CurrentDimension + 1>(dimension);
-        }
+        if (dimension == N_CurrentDimension) return size();
+        return m_storage[0].template find_length<N_CurrentDimension + 1>(dimension);
     }
 
     template <std::size_t N_CurrentDimension = 0>
@@ -1528,6 +1558,13 @@ public:
         }
         return VlQueue<T_Key>{};
     }
+    // Map method (IEEE 1800-2023 7.12.5)
+    template <typename T_Func>
+    VlQueue<WithFuncReturnType<T_Func>> map(T_Func with_func) const {
+        VlQueue<WithFuncReturnType<T_Func>> out;
+        for (IData i = 0; i < N_Depth; ++i) out.push_back(with_func(i, m_storage[i]));
+        return out;
+    }
 
     // Reduction operators
     VlQueue<T_Value> min() const {
@@ -1555,6 +1592,64 @@ public:
         return VlQueue<T_Value>::consV(*it);
     }
 
+    T_Value r_sum() const {
+        T_Value out(0);  // Type must have assignment operator
+        for (const auto& i : m_storage) out += i;
+        return out;
+    }
+    template <typename T_Func>
+    WithFuncReturnType<T_Func> r_sum(T_Func with_func) const {
+        WithFuncReturnType<T_Func> out
+            = WithFuncReturnType<T_Func>(0);  // Type must have assignment operator
+        for (const auto& i : m_storage) out += with_func(0, i);
+        return out;
+    }
+    T_Value r_product() const {
+        T_Value out = T_Value(1);
+        for (const auto& i : m_storage) out *= i;
+        return out;
+    }
+    template <typename T_Func>
+    WithFuncReturnType<T_Func> r_product(T_Func with_func) const {
+        WithFuncReturnType<T_Func> out = WithFuncReturnType<T_Func>(1);
+        for (const auto& i : m_storage) out *= with_func(0, i);
+        return out;
+    }
+    T_Value r_and() const {
+        if (m_storage.empty()) return T_Value(0);  // The big three do it this way
+        T_Value out = ~T_Value(0);
+        for (const auto& i : m_storage) out &= i;
+        return out;
+    }
+    template <typename T_Func>
+    WithFuncReturnType<T_Func> r_and(T_Func with_func) const {
+        WithFuncReturnType<T_Func> out = ~WithFuncReturnType<T_Func>(0);
+        for (const auto& i : m_storage) out &= with_func(0, i);
+        return out;
+    }
+    T_Value r_or() const {
+        T_Value out = T_Value(0);
+        for (const auto& i : m_storage) out |= i;
+        return out;
+    }
+    template <typename T_Func>
+    WithFuncReturnType<T_Func> r_or(T_Func with_func) const {
+        WithFuncReturnType<T_Func> out = WithFuncReturnType<T_Func>(0);
+        for (const auto& i : m_storage) out |= with_func(0, i);
+        return out;
+    }
+    T_Value r_xor() const {
+        T_Value out = T_Value(0);
+        for (const auto& i : m_storage) out ^= i;
+        return out;
+    }
+    template <typename T_Func>
+    WithFuncReturnType<T_Func> r_xor(T_Func with_func) const {
+        WithFuncReturnType<T_Func> out = WithFuncReturnType<T_Func>(0);
+        for (const auto& i : m_storage) out ^= with_func(0, i);
+        return out;
+    }
+
     // Dumping. Verilog: str = $sformatf("%p", assoc)
     std::string to_string() const {
         std::string out = "'{";
@@ -1563,7 +1658,7 @@ public:
             out += comma + VL_TO_STRING(m_storage[i]);
             comma = ", ";
         }
-        return out + "} ";
+        return out + "}";
     }
 
 private:
@@ -1591,14 +1686,29 @@ private:
         return a != b;
     }
 };
+// Trait to detect VlUnpacked types
+template <typename T>
+struct IsVlUnpacked : std::false_type {};
+template <typename T, std::size_t N>
+struct IsVlUnpacked<VlUnpacked<T, N>> : std::true_type {};
 
 template <typename T_Value, std::size_t N_Depth>
 std::string VL_TO_STRING(const VlUnpacked<T_Value, N_Depth>& obj) {
     return obj.to_string();
 }
 
-template <typename T, int N>
-struct VlContainsCustomStruct<VlUnpacked<T, N>> : VlContainsCustomStruct<T> {};
+template <typename T_Value, std::size_t N_Depth>
+struct VlContainsCustomStruct<VlUnpacked<T_Value, N_Depth>> : VlContainsCustomStruct<T_Value> {};
+
+template <typename T_Value, size_t N_MaxSize>
+template <typename T_UnpackedValue, std::size_t N_UnpackedDepth>
+void VlQueue<T_Value, N_MaxSize>::renew_copy(
+    size_t size, const VlUnpacked<T_UnpackedValue, N_UnpackedDepth>& rhs) {
+    clear();
+    if (size == 0) return;
+    m_deque.resize(size, atDefault());
+    for (size_t i = 0; i < std::min(size, N_UnpackedDepth); ++i) { m_deque[i] = rhs.m_storage[i]; }
+}
 
 //===================================================================
 // Helper to apply the given indices to a target expression
@@ -1846,8 +1956,13 @@ class VlClass VL_NOT_FINAL : public VlDeletable {
 public:
     // CONSTRUCTORS
     VlClass() {}
-    VlClass(const VlClass& copied) {}
+    VlClass(const VlClass& /*copied*/) {}
     ~VlClass() override = default;
+    // Polymorphic shallow clone. Overridden in each generated concrete class.
+    virtual VlClass* clone() const { return nullptr; }
+    // METHODS
+    virtual const char* typeName() const { return "VlClass"; }
+    virtual std::string to_string() const { return ""; }
 };
 
 //===================================================================
@@ -1858,7 +1973,10 @@ public:
 
 struct VlNull final {
     operator bool() const { return false; }
-    bool operator==(const void* ptr) const { return !ptr; }
+    template <class T>
+    operator T*() const {
+        return nullptr;
+    }
 };
 inline bool operator==(const void* ptr, VlNull) { return !ptr; }
 
@@ -1895,11 +2013,26 @@ public:
     VlClassRef(VlNull){};
     template <typename... T_Args>
     VlClassRef(VlDeleter& deleter, T_Args&&... args)
-        // () required here to avoid narrowing conversion warnings,
-        // when a new() has an e.g. CData type and passed a 1U.
-        : m_objp{new T_Class(std::forward<T_Args>(args)...)} {
-        // refCountInc was moved to the constructor of T_Class
-        // to fix self references in constructor.
+        : m_objp{new T_Class} {
+        // Instantly init the object to presevrve RAII
+        m_objp->init(std::forward<T_Args>(args)...);
+        m_objp->m_deleterp = &deleter;
+    }
+    VlClassRef(VlDeleter& deleter, T_Class&& args)
+        // Move constructor
+        : m_objp{new T_Class{std::forward<T_Class>(args)}} {
+        m_objp->m_deleterp = &deleter;
+    }
+    VlClassRef(VlDeleter& deleter, const T_Class& args)
+        // Copy constructor
+        : m_objp{new T_Class{args}} {
+        m_objp->m_deleterp = &deleter;
+    }
+    VlClassRef(VlDeleter& deleter, T_Class& args)
+        // Copy constructor - this is required since if `T_Class&`
+        // will be provided a compiler will match it to the constructor
+        // with variadic template instead of `T_Class&&`
+        : m_objp{new T_Class{args}} {
         m_objp->m_deleterp = &deleter;
     }
     // Explicit to avoid implicit conversion from 0
@@ -1968,6 +2101,15 @@ public:
     VlClassRef<T_OtherClass> dynamicCast() const {
         return VlClassRef<T_OtherClass>{dynamic_cast<T_OtherClass*>(m_objp)};
     }
+    // Polymorphic shallow clone (IEEE 1800-2023 8.7: new <handle> preserves runtime type)
+    VlClassRef clone(VlDeleter& deleter) const {
+        VlClass* clonedp = m_objp->clone();
+        if (VL_UNLIKELY(!clonedp)) return {};
+        clonedp->m_deleterp = &deleter;
+        VlClassRef result;
+        result.m_objp = dynamic_cast<T_Class*>(clonedp);
+        return result;
+    }
     // Dereference operators
     T_Class& operator*() const { return *m_objp; }
     T_Class* operator->() const { return m_objp; }
@@ -1998,15 +2140,38 @@ static inline bool VL_CAST_DYNAMIC(VlClassRef<T_Lhs> in, VlClassRef<T_Out>& outr
     if (VL_LIKELY(casted)) {
         outr = casted;
         return true;
-    } else {
-        return false;
     }
+    return false;
 }
 
 template <typename T_Lhs>
-static inline bool VL_CAST_DYNAMIC(VlNull in, VlClassRef<T_Lhs>& outr) {
+static inline bool VL_CAST_DYNAMIC(VlNull, VlClassRef<T_Lhs>& outr) {
     outr = VlNull{};
     return true;
+}
+
+// For printing class references under a container, several choices:
+// 1. Dump recursively the pointed-to object.  Can be huge.  Might be circular.
+// 2. Print object type and pointer as C pointer.  Astable when rerun.
+// 3. Print object type and pointer as an incrementing number.  Needs num storage.
+// 4. Print object type alone.  Avoids above issues.
+template <typename T_Lhs>
+inline std::string VL_TO_STRING(const VlClassRef<T_Lhs>& obj) {
+    return obj ? obj->typeName() : "null";
+}
+// Entry point for string conversion (called from not under a container);
+// dereference VlClassRef objects to print members
+template <typename T_Lhs>  // Default if no specialization
+inline std::string VL_TO_STRING_DEREF(T_Lhs obj) {
+    return VL_TO_STRING(obj);
+}
+template <typename T_Lhs>  // Specialization
+inline std::string VL_TO_STRING_DEREF(const VlClassRef<T_Lhs>& obj) {
+    return obj ? obj->to_string() : "null";
+}
+template <typename T_Lhs>  // Specialization
+inline std::string VL_TO_STRING_DEREF(VlClassRef<T_Lhs>& obj) {
+    return obj ? obj->to_string() : "null";
 }
 
 //=============================================================================
@@ -2060,5 +2225,18 @@ inline T VL_NULL_CHECK(T t, const char* filename, int linenum) {
 }
 
 //======================================================================
+
+template <typename T_Value, size_t N_MaxSize>
+template <typename T_Subclass>
+VlQueue<T_Value, N_MaxSize>::VlQueue(const VlQueue<VlClassRef<T_Subclass>>& that)
+    : m_deque{that.m_deque.begin(), that.m_deque.end()}
+    , m_defaultValue{that.m_defaultValue} {}
+
+template <typename T_Value, size_t N_MaxSize>
+template <typename T_Subclass>
+VlQueue<T_Value, N_MaxSize>::VlQueue(VlQueue<VlClassRef<T_Subclass>>&& that)
+    : m_deque{std::make_move_iterator(that.m_deque.begin()),
+              std::make_move_iterator(that.m_deque.end())}
+    , m_defaultValue{std::move(that.m_defaultValue)} {}
 
 #endif  // Guard

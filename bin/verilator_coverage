@@ -1,10 +1,10 @@
 #!/usr/bin/env perl
 ######################################################################
 #
-# Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2025-2026 Wilson Snyder
 #
 ######################################################################
 
@@ -52,7 +52,7 @@ if (! GetOptions (
     pod2usage(-exitstatus => 2, -verbose => 0);
 }
 
-# Normal, non gdb
+# Normal, non-gdb
 run(verilator_coverage_bin()
     . " " . join(' ', @Opt_Verilator_Sw));
 
@@ -118,21 +118,24 @@ sub run {
             warn "%Error: export VERILATOR_ROOT=" . ($ENV{VERILATOR_ROOT} || "") . "\n";
             warn "%Error: $command\n";
         }
-        if ($status & 127) {
-            if (($status & 127) == 8 || ($status & 127) == 11) {  # SIGFPA or SIGSEGV
+        my $signal = ($status & 127);
+        if ($signal) {
+            if ($signal == 4  # SIGILL
+                || $signal == 8  # SIGFPA
+                || $signal == 11) {  # SIGSEGV
                 warn "%Error: Verilator_coverage internal fault, sorry.\n" if !$Debug;
-            } elsif (($status & 127) == 6) {  # SIGABRT
+            } elsif ($signal == 6) {  # SIGABRT
                 warn "%Error: Verilator_coverage aborted.\n" if !$Debug;
             } else {
-                warn "%Error: Verilator_coverage threw signal $status.\n" if !$Debug;
+                warn "%Error: Verilator_coverage threw signal $signal.\n" if !$Debug;
             }
         }
         if ($status != 256 || $Debug) {  # i.e. not normal exit(1)
             warn "%Error: Command Failed $command\n";
         }
         exit $! if $!;  # errno
-        exit $? >> 8 if $? >> 8;  # child exit status
-        exit 255;  # last resort
+        exit $? >> 8 if $? >> 8;  # pass along child exit code
+        exit 128 + $signal;  # last resort
     }
 }
 
@@ -170,7 +173,9 @@ L<https://verilator.org/guide/latest/exe_verilator_coverage.html>.
     --annotate-all                All files should be shown.
     --annotate-min <count>        Minimum occurrence count for uncovered.
     --annotate-points             Annotates info from each coverage point.
+    --filter-type <regex>         Keep only records of given coverage type.
     --help                        Displays this message and version and exits.
+    --include-reset-arcs          Include reset arcs in FSM arc summaries.
     --rank                        Compute relative importance of tests.
     --unlink                      With --write, unlink all inputs
     --version                     Displays program version and exits.
@@ -188,11 +193,12 @@ L<https://verilator.org/guide/latest/exe_verilator_coverage.html>.
 
 The latest version is available from L<https://verilator.org>.
 
-Copyright 2003-2025 by Wilson Snyder. This program is free software; you
+Copyright 2003-2026 by Wilson Snyder. This program is free software; you
 can redistribute it and/or modify the Verilator internals under the terms
 of either the GNU Lesser General Public License Version 3 or the Perl
 Artistic License Version 2.0.
 
+SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 =head1 SEE ALSO

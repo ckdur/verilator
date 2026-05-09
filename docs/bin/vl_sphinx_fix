@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# mypy: disallow-untyped-defs
 # pylint: disable=C0112,C0114,C0115,C0116,C0209,C0301,R0903
 # -*- Python -*- See copyright, etc below
 ######################################################################
@@ -12,19 +13,17 @@ import re
 
 class VlSphinxFix:
     debug = 0
-    SkipBasenames = {}
 
-    def process(self, path):
+    def process(self, path: str) -> None:
         if os.path.isdir(path):
             for basefile in os.listdir(path):
                 file = os.path.join(path, basefile)
-                if ((basefile != ".") and (basefile != "..") and basefile not in self.SkipBasenames
-                        and not os.path.islink(file)):
+                if ((basefile != ".") and (basefile != "..") and not os.path.islink(file)):
                     self.process(file)
         elif re.search(r'\.(html|tex)$', path):
             self._edit(path)
 
-    def _edit(self, filename):
+    def _edit(self, filename: str) -> None:
         is_html = re.search(r'\.(html)$', filename)
         with open(filename, "r", encoding="utf8") as fhr:
             origfile = fhr.read()
@@ -53,12 +52,13 @@ parser = argparse.ArgumentParser(
     allow_abbrev=False,
     formatter_class=argparse.RawDescriptionHelpFormatter,
     description="""Post-process Sphinx HTML.""",
-    epilog=""" Copyright 2021-2025 by Wilson Snyder.  This package is free software;
-you can redistribute it and/or modify it under the terms of either the GNU
-Lesser General Public License Version 3 or the Perl Artistic License
-Version 2.0.
+    epilog="""This program is free software; you can redistribute it and/or modify it
+under the terms of either the GNU Lesser General Public License Version 3
+or the Perl Artistic License Version 2.0.
 
-SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0""")
+SPDX-FileCopyrightText: 2021-2026 Wilson Snyder
+SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
+""")
 
 parser.add_argument('--debug', action='store_const', const=9, help='enable debug')
 parser.add_argument('path', help='path to edit')

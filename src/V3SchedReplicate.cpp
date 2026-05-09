@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -151,7 +151,7 @@ public:
         , m_vscp{vscp} {
         // Top level inputs are
         if (varp()->isPrimaryInish() || varp()->isSigUserRWPublic() || varp()->isWrittenByDpi()
-            || varp()->sensIfacep()) {
+            || varp()->sensIfacep() || varp()->isVirtIface()) {
             addDrivingRegions(INPUT);
         }
         // Currently we always execute suspendable processes at the beginning of
@@ -188,7 +188,7 @@ std::unique_ptr<Graph> buildGraph(const LogicRegions& logicRegions) {
     };
 
     const auto addLogic = [&](RegionFlags region, AstScope* scopep, AstActive* activep) {
-        AstSenTree* const senTreep = activep->sensesp();
+        AstSenTree* const senTreep = activep->sentreep();
 
         // Predicate for whether a read of the given variable triggers this block
         std::function<bool(AstVarScope*)> readTriggersThisLogic;
@@ -217,15 +217,15 @@ std::unique_ptr<Graph> buildGraph(const LogicRegions& logicRegions) {
             const VNUser2InUse user2InUse;
             const VNUser3InUse user3InUse;
 
+            V3Sched::util::VarScopeSet forceReadEdgeIgnores;
+            V3Sched::util::collectForceReadEdgeIgnores(nodep, forceReadEdgeIgnores);
+
             nodep->foreach([&](AstVarRef* refp) {
                 AstVarScope* const vscp = refp->varScopep();
                 SchedReplicateVarVertex* const vvtxp = getVarVertex(vscp);
-
-                // If read, add var -> logic edge
-                // Note: Use same heuristic as ordering does to ignore written variables
-                // TODO: Use live variable analysis.
                 if (refp->access().isReadOrRW() && !vscp->user3SetOnce()
-                    && readTriggersThisLogic(vscp) && !vscp->user2()) {  //
+                    && readTriggersThisLogic(vscp) && !vscp->user2()
+                    && !forceReadEdgeIgnores.count(vscp)) {  //
                     addEdge(vvtxp, lvtxp);
                 }
                 // If written, add logic -> var edge

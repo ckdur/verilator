@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -20,7 +20,7 @@
 #  define PSAPI_VERSION 1  // Needed for compatibility with Windows 7
 # endif
 #endif
-#if defined(__MINGW32__)
+#ifndef __MINGW32__
 # define MINGW_HAS_SECURE_API 1  // Needed to expose a "secure" POSIX-like API
 #endif
 // clang-format on
@@ -53,6 +53,13 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 
 #include <sys/stat.h>
 #include <sys/types.h>
+
+#ifdef HAVE_TCMALLOC
+#include <gperftools/malloc_extension.h>
+#endif
+#ifdef HAVE_JEMALLOC
+#include <jemalloc/jemalloc.h>
+#endif
 
 // clang-format off
 #if defined(_WIN32) || defined(__MINGW32__)
@@ -92,9 +99,9 @@ string V3Os::getenvStr(const string& envvar, const string& defaultValue) {
 
 void V3Os::setenvStr(const string& envvar, const string& value, const string& why) {
     if (why != "") {
-        UINFO(1, "export " << envvar << "='" << value << "'  # " << why << endl);
+        UINFO(1, "export " << envvar << "='" << value << "'  # " << why);
     } else {
-        UINFO(1, "export " << envvar << "='" << value << "'" << endl);
+        UINFO(1, "export " << envvar << "='" << value << "'");
     }
 #if defined(_WIN32) || defined(__MINGW32__)
     _putenv_s(envvar.c_str(), value.c_str());
@@ -143,12 +150,9 @@ string V3Os::filenameCleanup(const string& filename) VL_PURE {
 string V3Os::filenameJoin(std::initializer_list<const std::string> paths) VL_PURE {
     string fullpath;
     for (const auto& item : paths) {
-        if (item.empty() || item == ".") {
-            continue;
-        } else {
-            if (!fullpath.empty()) fullpath += V3OS_SLASH;
-            fullpath += item;
-        }
+        if (item.empty() || item == ".") continue;
+        if (!fullpath.empty()) fullpath += V3OS_SLASH;
+        fullpath += item;
     }
     return fullpath;
 }
@@ -159,22 +163,18 @@ string V3Os::filenameDir(const string& filename) VL_PURE {
     for (; it != filename.rend(); ++it) {
         if (isSlash(*it)) break;
     }
-    if (it.base() == filename.begin()) {
-        return ".";
-    } else {
-        return string{filename.begin(), (++it).base()};
-    }
+    if (it.base() == filename.begin()) return ".";
+    return string{filename.begin(), (++it).base()};
 }
 
 string V3Os::filenameExt(const string& filename) VL_PURE {
     string base = filenameNonDir(filename);
-    string::size_type pos;
-    if ((pos = base.find('.')) != string::npos) {
+    const string::size_type pos = base.find('.');
+    if (pos != string::npos) {
         base.erase(0, pos);
         return base;
-    } else {
-        return "";
     }
+    return "";
 }
 
 string V3Os::filenameNonDir(const string& filename) VL_PURE {
@@ -188,8 +188,8 @@ string V3Os::filenameNonDir(const string& filename) VL_PURE {
 
 string V3Os::filenameNonDirExt(const string& filename) VL_PURE {
     string base = filenameNonDir(filename);
-    string::size_type pos;
-    if ((pos = base.find('.')) != string::npos) base.erase(pos);
+    const string::size_type pos = base.find('.');
+    if (pos != string::npos) base.erase(pos);
     return base;
 }
 
@@ -249,9 +249,8 @@ string V3Os::filenameRealPath(const string& filename) VL_PURE {
 #endif
     ) {
         return std::string{retpath};
-    } else {
-        return filename;
     }
+    return filename;
 }
 
 string V3Os::filenameRelativePath(const string& filename, const string& base) VL_PURE {
@@ -263,8 +262,8 @@ string V3Os::filenameRelativePath(const string& filename, const string& base) VL
     auto aIt = a.begin();
     auto bIt = b.begin();
     while (aIt != a.end() && bIt != b.end()) {
-        // UINFO(9, "fnrp scan " << (aIt - a.begin()) << " " << a.substr(aIt - a.begin()) << endl);
-        // UINFO(9, "fnrp scan " << (bIt - b.begin()) << " " << b.substr(bIt - b.begin()) << endl);
+        // UINFO(9, "fnrp scan " << (aIt - a.begin()) << " " << a.substr(aIt - a.begin()));
+        // UINFO(9, "fnrp scan " << (bIt - b.begin()) << " " << b.substr(bIt - b.begin()));
         auto aWordIt = aIt;  // position of next slash
         for (; aWordIt != a.end(); ++aWordIt) {
             if (isSlash(*aWordIt)) break;
@@ -311,13 +310,13 @@ bool V3Os::filenameIsRel(const string& filename) VL_PURE {
 #endif
 }
 
-string V3Os::filenameSlashPath(const string& path) VL_PURE {
+string V3Os::filenameSlashPath(const string& filename) VL_PURE {
 #if defined(_WIN32) || defined(__MINGW32__)
-    string slashedPath = path;
+    string slashedPath = filename;
     std::replace(slashedPath.begin(), slashedPath.end(), '\\', '/');
     return slashedPath;
 #else
-    return path;
+    return filename;
 #endif
 }
 
@@ -326,7 +325,7 @@ string V3Os::filenameSlashPath(const string& path) VL_PURE {
 
 string V3Os::getline(std::istream& is, char delim) {
     string line;
-#if defined(__CYGWIN__)  // Work around buggy implementation of getline
+#ifdef __CYGWIN__  // Work around buggy implementation of getline
     char buf[65536];
     is.getline(buf, 65535, delim);
     line = buf;
@@ -358,7 +357,7 @@ void V3Os::filesystemFlush(const string& dirname) {
     // Faster to just try both rather than check if a file is a dir.
     if (DIR* const dirp = opendir(dirname.c_str())) {  // LCOV_EXCL_BR_LINE
         closedir(dirp);  // LCOV_EXCL_LINE
-    } else if (int fd = ::open(dirname.c_str(), O_RDONLY)) {  // LCOV_EXCL_BR_LINE
+    } else if (const int fd = ::open(dirname.c_str(), O_RDONLY)) {  // LCOV_EXCL_BR_LINE
         if (fd > 0) ::close(fd);
     }
 #endif
@@ -370,7 +369,7 @@ void V3Os::filesystemFlushBuildDir(const string& dirname) {
     // Linux kernel may not reread from NFS unless timestamp modified
     const int err = utimes(dirname.c_str(), nullptr);
     // Not an error
-    if (err != 0) UINFO(1, "-Info: File not utimed: " << dirname << endl);
+    if (err != 0) UINFO(1, "-Info: File not utimed: " << dirname);
 #endif
     filesystemFlush(dirname);
 }
@@ -399,6 +398,27 @@ void V3Os::unlinkRegexp(const string& dir, const string& regexp) {
         }
         closedir(dirp);
     }
+#endif
+}
+
+//######################################################################
+// METHODS (memory)
+
+void V3Os::releaseMemory() {
+#ifdef HAVE_TCMALLOC
+    MallocExtension::instance()->ReleaseFreeMemory();
+#endif
+#ifdef HAVE_JEMALLOC
+    // Purge all unused dirty pages across all arenas
+    unsigned narenas = 0;
+    size_t sz = sizeof(narenas);
+    if (mallctl("arenas.narenas", &narenas, &sz, nullptr, 0)) {
+        return;  // Failed to get number of arenas, give up
+    }
+    char buf[64];
+    // Index equal to narenas represents all arenas
+    (void)VL_SNPRINTF(buf, sizeof(buf), "arena.%u.purge", narenas);
+    mallctl(buf, nullptr, nullptr, nullptr, 0);
 #endif
 }
 
@@ -472,59 +492,58 @@ void V3Os::u_sleep(int64_t usec) {
 // METHODS (sub command)
 
 int V3Os::system(const string& command) {
-    UINFO(1, "Running system: " << command << endl);
+    UINFO(1, "Running system: " << command);
     const int ret = ::system(command.c_str());
     if (VL_UNCOVERABLE(ret == -1)) {
         v3fatal("Failed to execute command:"  // LCOV_EXCL_LINE
-                << command << " " << std::strerror(errno));
+                << command << " " << std::strerror(errno));  // LCOV_EXCL_LINE
         return -1;  // LCOV_EXCL_LINE
-    } else {
-        UASSERT(WIFEXITED(ret), "system(" << command << ") returned unexpected value of " << ret);
-        const int exit_code = WEXITSTATUS(ret);
-        UINFO(1, command << " returned exit code of " << exit_code << std::endl);
-        UASSERT(exit_code >= 0, "exit code must not be negative");
-        return exit_code;
     }
+    UASSERT(WIFEXITED(ret), "system(" << command << ") returned unexpected value of " << ret);
+    const int exit_code = WEXITSTATUS(ret);
+    UINFO(1, command << " returned exit code of " << exit_code);
+    UASSERT(exit_code >= 0, "exit code must not be negative");
+    return exit_code;
 }
 
 void V3Os::selfTest() {
 #ifdef VL_DEBUG
-    UASSERT_SELFTEST(string, filenameCleanup(""), "");
-    UASSERT_SELFTEST(string, filenameCleanup("."), ".");
-    UASSERT_SELFTEST(string, filenameCleanup(".."), "..");
-    UASSERT_SELFTEST(string, filenameCleanup("/"), "/");
-    UASSERT_SELFTEST(string, filenameCleanup("../"), "..");
-    UASSERT_SELFTEST(string, filenameCleanup("//"), "/");
-    UASSERT_SELFTEST(string, filenameCleanup("//."), "/.");
-    UASSERT_SELFTEST(string, filenameCleanup("./"), ".");
-    UASSERT_SELFTEST(string, filenameCleanup("././"), ".");
-    UASSERT_SELFTEST(string, filenameCleanup(".///"), ".");
-    UASSERT_SELFTEST(string, filenameCleanup("a"), "a");
-    UASSERT_SELFTEST(string, filenameCleanup("a/"), "a");
-    UASSERT_SELFTEST(string, filenameCleanup("a/b"), "a/b");
-    UASSERT_SELFTEST(string, filenameCleanup("././//./a/b"), "a/b");
-    UASSERT_SELFTEST(string, filenameCleanup(".//./a///"), "a");
-    UASSERT_SELFTEST(string, filenameCleanup("///a/./b///."), "/a/./b/.");
-    UASSERT_SELFTEST(string, filenameCleanup("aaa/bbb/ccc/"), "aaa/bbb/ccc");
-    UASSERT_SELFTEST(string, filenameCleanup("./aaa/bbb/ccc/"), "aaa/bbb/ccc");
-    UASSERT_SELFTEST(string, filenameCleanup("../aaa/bbb/ccc/"), "../aaa/bbb/ccc");
-    UASSERT_SELFTEST(string, filenameDir("a.a/b.b/f.e"), "a.a/b.b");
-    UASSERT_SELFTEST(string, filenameExt("a.a/b.b/f"), "");
-    UASSERT_SELFTEST(string, filenameExt("a.a/b.b/f.e"), ".e");
-    UASSERT_SELFTEST(string, filenameNonDirExt("a.a/b.b/f.e"), "f");
-    UASSERT_SELFTEST(string, filenameRelativePath("/a/b", "/a/b"), ".");
-    UASSERT_SELFTEST(string, filenameRelativePath("/a/b", "/a/b/c"), "..");
-    UASSERT_SELFTEST(string, filenameRelativePath("/a/b", "/a/b/c/d"), "../..");
-    UASSERT_SELFTEST(string, filenameRelativePath("/a/b/x", "/a/b/c/d"), "../../x");
-    UASSERT_SELFTEST(string, filenameRelativePath("/a/b/x/y", "/"), "a/b/x/y");
-    UASSERT_SELFTEST(string, filenameRelativePath("/a/b/x/y", "/a/b"), "x/y");
-    UASSERT_SELFTEST(string, filenameRelativePath("/a/b/x/y", "/a/q"), "../b/x/y");
-    UASSERT_SELFTEST(string, filenameRelativePath("a/b", "a/b"), ".");
-    UASSERT_SELFTEST(string, filenameRelativePath("a/b", "a/b/c"), "..");
-    UASSERT_SELFTEST(string, filenameRelativePath("a/b", "a/b/c/d"), "../..");
-    UASSERT_SELFTEST(string, filenameRelativePath("a/b/x", "a/b/c/d"), "../../x");
-    UASSERT_SELFTEST(string, filenameRelativePath("a/b/x/y", ""), "a/b/x/y");
-    UASSERT_SELFTEST(string, filenameRelativePath("a/b/x/y", "a/b"), "x/y");
-    UASSERT_SELFTEST(string, filenameRelativePath("a/b/x/y", "a/q"), "../b/x/y");
+    UASSERT_SELFTEST(const string, filenameCleanup(""), "");
+    UASSERT_SELFTEST(const string, filenameCleanup("."), ".");
+    UASSERT_SELFTEST(const string, filenameCleanup(".."), "..");
+    UASSERT_SELFTEST(const string, filenameCleanup("/"), "/");
+    UASSERT_SELFTEST(const string, filenameCleanup("../"), "..");
+    UASSERT_SELFTEST(const string, filenameCleanup("//"), "/");
+    UASSERT_SELFTEST(const string, filenameCleanup("//."), "/.");
+    UASSERT_SELFTEST(const string, filenameCleanup("./"), ".");
+    UASSERT_SELFTEST(const string, filenameCleanup("././"), ".");
+    UASSERT_SELFTEST(const string, filenameCleanup(".///"), ".");
+    UASSERT_SELFTEST(const string, filenameCleanup("a"), "a");
+    UASSERT_SELFTEST(const string, filenameCleanup("a/"), "a");
+    UASSERT_SELFTEST(const string, filenameCleanup("a/b"), "a/b");
+    UASSERT_SELFTEST(const string, filenameCleanup("././//./a/b"), "a/b");
+    UASSERT_SELFTEST(const string, filenameCleanup(".//./a///"), "a");
+    UASSERT_SELFTEST(const string, filenameCleanup("///a/./b///."), "/a/./b/.");
+    UASSERT_SELFTEST(const string, filenameCleanup("aaa/bbb/ccc/"), "aaa/bbb/ccc");
+    UASSERT_SELFTEST(const string, filenameCleanup("./aaa/bbb/ccc/"), "aaa/bbb/ccc");
+    UASSERT_SELFTEST(const string, filenameCleanup("../aaa/bbb/ccc/"), "../aaa/bbb/ccc");
+    UASSERT_SELFTEST(const string, filenameDir("a.a/b.b/f.e"), "a.a/b.b");
+    UASSERT_SELFTEST(const string, filenameExt("a.a/b.b/f"), "");
+    UASSERT_SELFTEST(const string, filenameExt("a.a/b.b/f.e"), ".e");
+    UASSERT_SELFTEST(const string, filenameNonDirExt("a.a/b.b/f.e"), "f");
+    UASSERT_SELFTEST(const string, filenameRelativePath("/a/b", "/a/b"), ".");
+    UASSERT_SELFTEST(const string, filenameRelativePath("/a/b", "/a/b/c"), "..");
+    UASSERT_SELFTEST(const string, filenameRelativePath("/a/b", "/a/b/c/d"), "../..");
+    UASSERT_SELFTEST(const string, filenameRelativePath("/a/b/x", "/a/b/c/d"), "../../x");
+    UASSERT_SELFTEST(const string, filenameRelativePath("/a/b/x/y", "/"), "a/b/x/y");
+    UASSERT_SELFTEST(const string, filenameRelativePath("/a/b/x/y", "/a/b"), "x/y");
+    UASSERT_SELFTEST(const string, filenameRelativePath("/a/b/x/y", "/a/q"), "../b/x/y");
+    UASSERT_SELFTEST(const string, filenameRelativePath("a/b", "a/b"), ".");
+    UASSERT_SELFTEST(const string, filenameRelativePath("a/b", "a/b/c"), "..");
+    UASSERT_SELFTEST(const string, filenameRelativePath("a/b", "a/b/c/d"), "../..");
+    UASSERT_SELFTEST(const string, filenameRelativePath("a/b/x", "a/b/c/d"), "../../x");
+    UASSERT_SELFTEST(const string, filenameRelativePath("a/b/x/y", ""), "a/b/x/y");
+    UASSERT_SELFTEST(const string, filenameRelativePath("a/b/x/y", "a/b"), "x/y");
+    UASSERT_SELFTEST(const string, filenameRelativePath("a/b/x/y", "a/q"), "../b/x/y");
 #endif
 }

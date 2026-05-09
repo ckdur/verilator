@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=========================================================================
@@ -99,10 +99,11 @@ IData VL_DIST_CHI_SQUARE(IData& seedr, IData udf) VL_MT_SAFE {
     double r = _vl_dbase_chi_square(seedr, df);
     int32_t i;
     if (r >= 0) {
-        i = static_cast<int32_t>(r + 0.5);
+        i = static_cast<int32_t>(r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding
     } else {
         r = -r;  // LCOV_EXCL_LINE
-        i = static_cast<int32_t>(r + 0.5);  // LCOV_EXCL_LINE
+        i = static_cast<int32_t>(
+            r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding  // LCOV_EXCL_LINE
         i = -i;  // LCOV_EXCL_LINE
     }
     return static_cast<IData>(i);
@@ -116,16 +117,16 @@ IData VL_DIST_ERLANG(IData& seedr, IData uk, IData umean) VL_MT_SAFE {
         return 0;
     }
     double x = 1.0;
-    for (int32_t i = 1; i <= k; i++) x = x * _vl_dbase_uniform(seedr, 0, 1);
+    for (int32_t i = 1; i <= k; ++i) x = x * _vl_dbase_uniform(seedr, 0, 1);
     const double a = static_cast<double>(mean);
     const double b = static_cast<double>(k);
     double r = -a * log(x) / b;
     int32_t i;
     if (r >= 0) {
-        i = static_cast<int32_t>(r + 0.5);
+        i = static_cast<int32_t>(r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding
     } else {
         r = -r;
-        i = static_cast<int32_t>(r + 0.5);
+        i = static_cast<int32_t>(r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding
         i = -i;
     }
     return static_cast<IData>(i);
@@ -140,10 +141,11 @@ IData VL_DIST_EXPONENTIAL(IData& seedr, IData umean) VL_MT_SAFE {
     int32_t i;
     double r = _vl_dbase_exponential(seedr, mean);
     if (r >= 0) {
-        i = static_cast<int32_t>(r + 0.5);
+        i = static_cast<int32_t>(r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding
     } else {
         r = -r;  // LCOV_EXCL_LINE
-        i = static_cast<int32_t>(r + 0.5);  // LCOV_EXCL_LINE
+        i = static_cast<int32_t>(
+            r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding // LCOV_EXCL_LINE
         i = -i;  // LCOV_EXCL_LINE
     }
     return static_cast<IData>(i);
@@ -155,10 +157,10 @@ IData VL_DIST_NORMAL(IData& seedr, IData umean, IData usd) VL_MT_SAFE {
     double r = _vl_dbase_normal(seedr, mean, sd);
     int32_t i;
     if (r >= 0) {
-        i = static_cast<int32_t>(r + 0.5);
+        i = static_cast<int32_t>(r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding
     } else {
         r = -r;
-        i = static_cast<int32_t>(r + 0.5);
+        i = static_cast<int32_t>(r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding
         i = -i;
     }
     return static_cast<IData>(i);
@@ -172,7 +174,7 @@ IData VL_DIST_POISSON(IData& seedr, IData umean) VL_MT_SAFE {
     }
     int32_t i = 0;
     double q = -static_cast<double>(mean);
-    double p = exp(q);
+    const double p = exp(q);
     q = _vl_dbase_uniform(seedr, 0, 1);
     while (p < q) {
         ++i;
@@ -193,10 +195,10 @@ IData VL_DIST_T(IData& seedr, IData udf) VL_MT_SAFE {
     double r = _vl_dbase_normal(seedr, 0, 1) / root;
     int32_t i;
     if (r >= 0) {
-        i = static_cast<int32_t>(r + 0.5);
+        i = static_cast<int32_t>(r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding
     } else {
         r = -r;
-        i = static_cast<int32_t>(r + 0.5);
+        i = static_cast<int32_t>(r + 0.5);  // cppcheck-suppress bugprone-incorrect-rounding
         i = -i;
     }
     return static_cast<IData>(i);

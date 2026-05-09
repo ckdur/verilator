@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog example module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2017 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2017 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 //======================================================================
 
@@ -37,6 +37,10 @@ int main(int argc, char** argv) {
     // Set debug level, 0 is off, 9 is highest presently used
     // May be overridden by commandArgs argument parsing
     contextp->debug(0);
+
+    // Peak number of threads the model will use
+    // (e.g. match the --threads setting of the Verilation)
+    contextp->threads(1);
 
     // Randomization reset policy
     // May be overridden by commandArgs argument parsing

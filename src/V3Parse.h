@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -26,7 +26,6 @@
 class AstNetlist;
 class VInFilter;
 class V3ParseImp;
-class V3ParseSym;
 
 //============================================================================
 
@@ -38,13 +37,13 @@ class V3Parse final {
 
 public:
     // We must allow reading multiple files into one parser
-    V3Parse(AstNetlist* rootp, VInFilter* filterp, V3ParseSym* symp) VL_MT_DISABLED;
+    V3Parse(AstNetlist* rootp, VInFilter* filterp) VL_MT_DISABLED;
     ~V3Parse() VL_MT_DISABLED;
 
     // METHODS
     // Preprocess and read the Verilog file specified into the netlist database
-    void parseFile(FileLine* fileline, const string& modname, bool inLibrary,
-                   const string& errmsg) VL_MT_DISABLED;
+    void parseFile(FileLine* fileline, const string& modname, bool inLibrary, bool inLibMap,
+                   const string& libname, const string& errmsg) VL_MT_DISABLED;
 
     // Push preprocessed text to the lexer
     static void ppPushText(V3ParseImp* impp, const string& text) VL_MT_DISABLED;

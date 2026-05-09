@@ -1,14 +1,16 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2022 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2022 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
-class Cls #(type PARAMB);
+class Cls #(
+    type PARAMB
+);
 endclass
 
-module t (/*AUTOARG*/);
+module t;
 
-   Cls c;  // Missing type param
+  Cls c;  // Missing type param
 
 endmodule

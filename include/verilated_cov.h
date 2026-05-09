@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2001-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2001-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=============================================================================
@@ -75,6 +75,70 @@ class VerilatedCovImp;
         ccontextp->_insertp("hier", name, __VA_ARGS__); \
     } while (false)
 
+static inline void VL_COV_TOGGLE_CHG_ST_I(const int width, uint32_t* covp, const IData newData,
+                                          const IData oldData) {
+    const IData chgData = newData ^ oldData;
+    for (int i = 0; i < width; ++i) {
+        *(covp + 2 * i + ((newData >> i) & 1)) += (chgData >> i) & 1;
+    }
+}
+
+static inline void VL_COV_TOGGLE_CHG_ST_Q(const int width, uint32_t* covp, const QData newData,
+                                          const QData oldData) {
+    const QData chgData = newData ^ oldData;
+    for (int i = 0; i < width; ++i) {
+        *(covp + 2 * i + ((newData >> i) & 1)) += (chgData >> i) & 1;
+    }
+}
+
+static inline void VL_COV_TOGGLE_CHG_ST_W(const int width, uint32_t* covp, WDataInP newData,
+                                          WDataInP oldData) {
+    for (int i = 0; i < VL_WORDS_I(width); ++i) {
+        const EData chgData = newData[i] ^ oldData[i];
+        if (chgData) {
+            for (int j = 0; j < width - i * VL_EDATASIZE; ++j) {
+                *(covp + (i * VL_EDATASIZE + j) * 2 + ((newData[i] >> j) & 1))
+                    += (chgData >> j) & 1;
+            }
+        }
+    }
+}
+
+static inline void VL_COV_TOGGLE_CHG_MT_I(const int width, std::atomic<uint32_t>* covp,
+                                          const IData newData, const IData oldData) VL_MT_SAFE {
+    const IData chgData = newData ^ oldData;
+    for (int i = 0; i < width; ++i) {
+        if (VL_BITISSET_I(chgData, i)) {
+            (covp + 2 * i + ((newData >> i) & 1))->fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+}
+
+static inline void VL_COV_TOGGLE_CHG_MT_Q(const int width, std::atomic<uint32_t>* covp,
+                                          const QData newData, const QData oldData) VL_MT_SAFE {
+    const QData chgData = newData ^ oldData;
+    for (int i = 0; i < width; ++i) {
+        if (VL_BITISSET_Q(chgData, i)) {
+            (covp + 2 * i + ((newData >> i) & 1))->fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+}
+
+static inline void VL_COV_TOGGLE_CHG_MT_W(const int width, std::atomic<uint32_t>* covp,
+                                          WDataInP newData, WDataInP oldData) VL_MT_SAFE {
+    for (int i = 0; i < VL_WORDS_I(width); ++i) {
+        const EData chgData = newData[i] ^ oldData[i];
+        if (chgData) {
+            for (int j = 0; j < width - i * VL_EDATASIZE; ++j) {
+                if (VL_BITISSET_E(chgData, j)) {
+                    (covp + (i * VL_EDATASIZE + j) * 2 + ((newData[i] >> j) & 1))
+                        ->fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
+    }
+}
+
 //=============================================================================
 //  VerilatedCov
 /// Per-VerilatedContext coverage data class.
@@ -127,6 +191,13 @@ public:
     void _insertp(A(0), A(1), A(2), A(3), A(4), A(5), A(6), A(7), A(8), A(9), A(10), A(11), A(12),
                   A(13), A(14), A(15), A(16), A(17), A(18), A(19), A(20), D(21), D(22), D(23),
                   D(24), D(25), D(26), D(27), D(28), D(29)) VL_MT_SAFE;
+    // Backward compatibility for mixed inserts with integer-valued
+    // lineno/column pairs and C-string-valued metadata pairs.
+    void _insertp(A(0), A(1), K(2), int val2, K(3), int val3, A(4), A(5), A(6), A(7)) VL_MT_SAFE;
+    // Backward compatibility for mixed inserts with integer-valued
+    // lineno/column pairs and additional FSM metadata pairs.
+    void _insertp(A(0), A(1), K(2), int val2, K(3), int val3, A(4), A(5), A(6), A(7), A(8), A(9),
+                  A(10), A(11)) VL_MT_SAFE;
     // Backward compatibility for Verilator
     void _insertp(A(0), A(1), K(2), int val2, K(3), int val3, K(4), const std::string& val4, A(5),
                   A(6), A(7)) VL_MT_SAFE;

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2005-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -50,8 +50,8 @@ class StatsReport final {
         V3Statistic* lastp = nullptr;
         for (const auto& itr : byName) {
             V3Statistic* repp = itr.second;
-            if (lastp && lastp->sumit() && lastp->printit() && lastp->name() == repp->name()
-                && lastp->stage() == repp->stage()) {
+            if (lastp && lastp->sumit() && lastp->printit() && repp->printit()
+                && lastp->name() == repp->name() && lastp->stage() == repp->stage()) {
                 lastp->combineWith(repp);
             } else {
                 lastp = repp;
@@ -137,8 +137,8 @@ class StatsReport final {
                 lastName = repp->name();
                 {
                     string commaName = lastName;
-                    string::size_type pos;
-                    if ((pos = commaName.find(',')) != string::npos) commaName.erase(pos);
+                    string::size_type pos = commaName.find(',');
+                    if (pos != string::npos) commaName.erase(pos);
                     if (lastCommaName != commaName) {
                         lastCommaName = commaName;
                         os << '\n';
@@ -164,7 +164,7 @@ public:
 
     static double getStatSum(const string& name) {
         // O(n^2) if called a lot; present assumption is only a small call count
-        for (auto& itr : s_allStats) {
+        for (const V3Statistic& itr : s_allStats) {
             const V3Statistic* const repp = &itr;
             if (repp->name() == name) return repp->value();
         }
@@ -203,20 +203,23 @@ void V3Stats::addStat(const V3Statistic& stat) { StatsReport::addStat(stat); }
 double V3Stats::getStatSum(const string& name) { return StatsReport::getStatSum(name); }
 
 void V3Stats::statsStage(const string& name) {
-    static double lastWallTime = -1;
-    static int fileNumber = 0;
+    static double s_lastWallTime = -1;
+    static int s_fileNumber = 0;
 
-    const string digitName = V3Global::digitsFilename(++fileNumber) + "_" + name;
+    const string digitName = V3Global::digitsFilename(++s_fileNumber) + "_" + name;
 
     const double wallTime = V3Os::timeUsecs() / 1.0e6;
-    if (lastWallTime < 0) lastWallTime = wallTime;
-    const double wallTimeDelta = wallTime - lastWallTime;
-    lastWallTime = wallTime;
+    if (s_lastWallTime < 0) s_lastWallTime = wallTime;
+    const double wallTimeDelta = wallTime - s_lastWallTime;
+    s_lastWallTime = wallTime;
     V3Stats::addStatPerf("Stage, Elapsed time (sec), " + digitName, wallTimeDelta);
     V3Stats::addStatPerf("Stage, Elapsed time (sec), TOTAL", wallTimeDelta);
 
-    const double memory = VlOs::memUsageBytes() / 1024.0 / 1024.0;
-    V3Stats::addStatPerf("Stage, Memory (MB), " + digitName, memory);
+    uint64_t memPeak;
+    uint64_t memCurrent;
+    VlOs::memUsageBytes(memPeak /*ref*/, memCurrent /*ref*/);
+    V3Stats::addStatPerf("Stage, Memory current (MB), " + digitName, memCurrent / 1024.0 / 1024.0);
+    V3Stats::addStatPerf("Stage, Memory peak (MB), " + digitName, memPeak / 1024.0 / 1024.0);
 }
 
 void V3Stats::infoHeader(std::ofstream& os, const string& prefix) {
@@ -228,7 +231,13 @@ void V3Stats::infoHeader(std::ofstream& os, const string& prefix) {
 }
 
 void V3Stats::statsReport() {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
+
+    uint64_t memPeak;
+    uint64_t memCurrent;
+    VlOs::memUsageBytes(memPeak /*ref*/, memCurrent /*ref*/);
+    const double memory = memPeak / 1024.0 / 1024.0;
+    V3Stats::addStat("Peak Memory Usage (MB)", memory);
 
     // Open stats file
     const string filename
@@ -266,7 +275,10 @@ void V3Stats::summaryReport() {
               << ", cvt=" << walltimeCvt << ", bld=" << walltimeBuild << "); cpu " << cputime
               << " s on " << std::max(v3Global.opt.verilateJobs(), v3Global.opt.buildJobs())
               << " threads";
-    const double memory = VlOs::memUsageBytes() / 1024.0 / 1024.0;
-    if (VL_UNCOVERABLE(memory != 0.0)) std::cout << "; alloced " << memory << " MB";
+    uint64_t memPeak;
+    uint64_t memCurrent;
+    VlOs::memUsageBytes(memPeak /*ref*/, memCurrent /*ref*/);
+    const double memory = memPeak / 1024.0 / 1024.0;
+    if (VL_UNCOVERABLE(memory != 0.0)) std::cout << "; allocated " << memory << " MB";
     std::cout << "\n";
 }

@@ -4,9 +4,9 @@
 
 import argparse
 import collections
+import ctypes
 import glob
 import hashlib
-import json
 import logging
 import multiprocessing
 import os
@@ -14,6 +14,7 @@ import pickle
 import platform
 import pty
 import re
+import resource
 import runpy
 import shutil
 import signal
@@ -23,6 +24,7 @@ import time
 
 from functools import lru_cache  # Eventually use python 3.9's cache
 from pprint import pformat, pprint
+from typing import Optional
 
 import distro
 
@@ -48,7 +50,7 @@ All_Scenarios = {
 
 # Globals
 test = None
-Arg_Tests = []
+Arg_Tests: list[str] = []
 Quitting = False
 Vltmt_Threads = 3
 forker = None
@@ -89,6 +91,19 @@ class VtOs:
             return os.environ[var]
         return default
 
+    @staticproperty
+    @lru_cache(maxsize=1)
+    def max_procs() -> int:  # pylint: disable=no-method-argument
+        """Return maximum processor count can use (system CPUs or numactl setting)"""
+        try:
+            procs = len(os.sched_getaffinity(0))
+        except AttributeError:
+            procs = multiprocessing.cpu_count()
+        if procs < 2:
+            print("driver.py: Python didn't find at least two CPUs")
+            procs = 2
+        return procs
+
     @staticmethod
     def mkdir_ok(path: str) -> None:
         """Make directory, no error if exists"""
@@ -125,6 +140,8 @@ class Capabilities:
     _cached_cmake_version = None
     _cached_cxx_version = None
     _cached_have_coroutines = None
+    _cached_have_dev_asan = None
+    _cached_have_dev_gcov = None
     _cached_have_gdb = None
     _cached_have_sc = None
     _cached_have_solver = None
@@ -138,7 +155,7 @@ class Capabilities:
             if match:
                 Capabilities._cached_cmake_version = match.group(1) + "." + match.group(2)
             else:
-                Capabilities._cached_cmake_version = 0
+                Capabilities._cached_cmake_version = "none"
         return Capabilities._cached_cmake_version
 
     @staticproperty
@@ -157,6 +174,20 @@ class Capabilities:
             Capabilities._cached_have_coroutines = bool(
                 Capabilities._verilator_get_supported('COROUTINES'))
         return Capabilities._cached_have_coroutines
+
+    @staticproperty
+    def have_dev_asan() -> bool:  # pylint: disable=no-method-argument
+        if Capabilities._cached_have_dev_asan is None:
+            Capabilities._cached_have_dev_asan = bool(
+                Capabilities._verilator_get_supported('DEV_ASAN'))
+        return Capabilities._cached_have_dev_asan
+
+    @staticproperty
+    def have_dev_gcov() -> bool:  # pylint: disable=no-method-argument
+        if Capabilities._cached_have_dev_gcov is None:
+            Capabilities._cached_have_dev_gcov = bool(
+                Capabilities._verilator_get_supported('DEV_GCOV'))
+        return Capabilities._cached_have_dev_gcov
 
     @staticproperty
     def have_gdb() -> bool:  # pylint: disable=no-method-argument
@@ -196,13 +227,15 @@ class Capabilities:
             if match:
                 Capabilities._cached_make_version = match.group(1)
             else:
-                Capabilities._cached_make_version = -1
+                Capabilities._cached_make_version = "none"
         return Capabilities._cached_make_version
 
     # Fetch
     @staticmethod
     def warmup_cache() -> None:
         _ignore = Capabilities.have_coroutines
+        _ignore = Capabilities.have_dev_asan
+        _ignore = Capabilities.have_dev_gcov
         _ignore = Capabilities.have_gdb
         _ignore = Capabilities.have_sc
         _ignore = Capabilities.have_solver
@@ -210,7 +243,7 @@ class Capabilities:
     # Internals
 
     @staticmethod
-    def _verilator_get_supported(feature) -> str:
+    def _verilator_get_supported(feature) -> bool:
         # Returns if given feature is supported
         cmd = "perl " + os.environ['VERILATOR_ROOT'] + "/bin/verilator -get-supported " + feature
         out = VtOs.run_capture(cmd, check=False).strip()
@@ -349,7 +382,13 @@ class Forker:
 
 class Runner:
 
-    def __init__(self, driver_log_filename, quiet, ok_cnt=0, fail1_cnt=0, skip_cnt=0):
+    def __init__(self,
+                 driver_log_filename,
+                 quiet,
+                 ok_cnt=0,
+                 pass_tests=None,
+                 fail1_cnt=0,
+                 skip_cnt=0):
         self.driver_log_filename = driver_log_filename
         self.quiet = quiet
         # Counts
@@ -362,6 +401,10 @@ class Runner:
         self.skip_msgs = []
         self.fail_msgs = []
         self.fail_tests = []
+        if pass_tests:
+            self.pass_tests = pass_tests
+        else:
+            self.pass_tests = []
         self._last_proc_finish_time = 0
         self._last_summary_time = 0
         self._last_summary_left = 0
@@ -414,6 +457,7 @@ class Runner:
         test = VlTest(py_filename=process.name,
                       scenario=process.scenario,
                       running_id=process.running_id)
+
         test.oprint("=" * 50)
         test._prep()
         if process.rerun_skipping:
@@ -441,8 +485,10 @@ class Runner:
                       running_id=process.running_id)
         test._quit = Quitting
         test._read_status()
+
         if test.ok:
             self.ok_cnt += 1
+            self.pass_tests.append(test)
             if Args.driver_clean:
                 test.clean()
         elif test._quit:
@@ -491,17 +537,22 @@ class Runner:
     def report(self, filename: str) -> None:
         if filename:
             with open(filename, "w", encoding="utf8") as fh:
-                self._report_fh(fh)
+                # Time report is only in logfile to reduce user confusion
+                self._report_fh(fh, True)
         else:
-            self._report_fh(sys.stdout)
+            self._report_fh(sys.stdout, False)
 
-    def _report_fh(self, fh) -> None:
+    def _report_fh(self, fh, show_times: bool) -> None:
         fh.write("\n")
         fh.write('=' * 70 + "\n")
         for f in sorted(self.fail_msgs):
             fh.write(f.strip() + "\n")
         for f in sorted(self.skip_msgs):
             fh.write(f.strip() + "\n")
+
+        if show_times:
+            self._report_times(fh)
+
         if self.fail_cnt:
             sumtxt = 'FAILED'
         elif self.skip_cnt:
@@ -509,6 +560,30 @@ class Runner:
         else:
             sumtxt = 'PASSED'
         fh.write("==TESTS DONE, " + sumtxt + ": " + self.sprint_summary() + "\n")
+
+    def _report_times(self, fh) -> None:
+        if forker.is_any_left():
+            return
+        if len(self.pass_tests) < 10:
+            return
+        # PY file may be used for both vlt and vltmt, so take max
+        py_times = {}
+        for ftest in self.pass_tests:
+            if (ftest.py_filename not in py_times) or (py_times[ftest.py_filename]._wall_time
+                                                       < ftest._wall_time):
+                py_times[ftest.py_filename] = ftest
+        n = 0
+        top_n = 6
+        for py_filename in sorted(py_times, key=lambda key: py_times[key]._wall_time,
+                                  reverse=True):
+            if n > top_n:
+                break
+            n += 1
+            ftest = py_times[py_filename]
+            if ftest._priority == 1:
+                fh.write(py_filename +
+                         ": walltime=%0.3f is in top %d, add a test.priority() for it?\n" %
+                         (ftest._wall_time, top_n))
 
     def print_summary(self, force=False):
         change = self._last_summary_left != self.left_cnt
@@ -528,7 +603,7 @@ class Runner:
 
     @staticmethod
     def _py_filename_adjust(py_filename: str,
-                            tdir_def: str) -> list:  # Return (py_filename, t_dir)
+                            tdir_def: str) -> tuple[str, str]:  # Return (py_filename, t_dir)
         for tdir in Args.test_dirs:  # pylint: disable=redefined-outer-name
             # t_dir used both absolutely and under obj_dir
             try_py_filename = tdir + "/" + os.path.basename(py_filename)
@@ -563,7 +638,7 @@ class Runner:
         out += "  Time %d:%02d" % (int(delta / 60), delta % 60)
         return out
 
-    def _manual_args(self) -> str:
+    def _manual_args(self) -> list[str]:
         # Return command line with scenarios stripped
         out = []
         for oarg in Args.orig_argv_sw:
@@ -608,20 +683,25 @@ class VlTest:
         self.py_filename = py_filename  # Name of .py file to get setup from
         self.running_id = running_id
         self.scenario = scenario
+        self.root = '..'  # Relative path to git root (above test_regress)
 
         self._force_pass = False
         self._have_solver_called = False
         self._inputs = {}
         self._ok = False
+        self._priority = 1
         self._quit = False
+        self._scenario_parsed = False
         self._scenario_off = False  # scenarios() didn't match running scenario
         self._skips = None
+        self._start_time = time.time()
+        self._uses_asan = False
+        self._wall_time = 0
 
         match = re.match(r'^(.*/)?([^/]*)\.py', self.py_filename)
         self.name = match.group(2)  # Name of this test
 
         self.benchmark = Args.benchmark
-        self.benchmarksim = False
         self.clean_command = None
         self.context_threads = 0  # Number of threads to allocate in the context
         self.errors = None
@@ -631,6 +711,7 @@ class VlTest:
         self.make_pli = 0  # need to compile pli
         self.make_top_shell = 1  # Make a default __top.v file
         self.rerunnable = True  # Rerun if fails
+        self.sc_time_resolution_multiplier = 1  # Time resolution multiplier
         self.sc_time_resolution = "SC_PS"  # Keep - PS is SystemC default
         self.sim_time = 1100  # simulation time units for main wrapper
         self.threads = -1  # --threads (negative means auto based on scenario)
@@ -735,10 +816,19 @@ class VlTest:
         self.nc_define = 'NC'
         self.nc_flags = [
             "+licqueue", "+nowarn+LIBNOU", "+define+NC=1", "-q", "+assert", "+sv", "-c",
-            ("+access+r" if Args.trace else "")
+            "-xmlibdirname", (self.obj_dir + "/xcelium.d"), ("+access+r" if Args.trace else "")
         ]
         self.nc_flags2 = []  # Overridden in some sim files
-        self.nc_run_flags = ["+licqueue", "-q", "+assert", "+sv", "-R"]
+        self.nc_run_flags = [
+            "+licqueue",
+            "-q",
+            "+assert",
+            "+sv",
+            "-R",
+            "-covoverwrite",
+            "-xmlibdirname",
+            (self.obj_dir + "/xcelium.d"),
+        ]
         # ModelSim
         self.ms_define = 'MS'
         self.ms_flags = [
@@ -759,17 +849,16 @@ class VlTest:
         ]
         self.xsim_run_flags2 = []  # Overridden in some sim files
         # Xcelium (xrun)
-        self.xrun = 0
         self.xrun_define = 'XRUN'
         self.xrun_flags = []  # Doesn't really have a compile step
         self.xrun_flags2 = []  # Overridden in some sim files
         self.xrun_run_flags = [
-            "-64", "-access", "+rwc", "-newsv", "-sv", "-xmlibdirname", self.obj_dir + "/work",
-            "-l", self.obj_dir + "/history", "-quiet", "-plinowarn"
+            "+define+XRUN", "-64", "-access", "+rwc", "-newsv", "-sv", "-xmlibdirname",
+            self.obj_dir + "/work", "-l", self.obj_dir + "/history", "-quiet", "-plinowarn"
         ]
         # Verilator
         self.verilator_define = 'VERILATOR'
-        self.verilator_flags = [
+        self.verilator_flags = [  # See also override (search for -lint-only)
             "-cc",
             "-Mdir",
             self.obj_dir,
@@ -779,7 +868,7 @@ class VlTest:
             "10"
         ]
         self.verilator_flags2 = []
-        self.verilator_flags3 = ["--clk clk"]
+        self.verilator_flags3 = []
         self.verilator_make_gmake = True
         self.verilator_make_cmake = False
         self.verilated_debug = Args.verilated_debug
@@ -791,22 +880,15 @@ class VlTest:
         self.compile_log_filename = self.obj_dir + "/vlt_compile.log"
         self.run_log_filename = self.obj_dir + "/vlt_sim.log"
         self.stats = self.obj_dir + "/V" + self.name + "__stats.txt"
-        self.top_filename = re.sub(r'\.py$', '', self.py_filename) + '.' + self.v_suffix
+        if Args.top_filename:
+            self.top_filename = Args.top_filename
+        else:
+            self.top_filename = re.sub(r'\.py$', '', self.py_filename) + '.' + self.v_suffix
         self.pli_filename = re.sub(r'\.py$', '', self.py_filename) + '.cpp'
         self.top_shell_filename = self.obj_dir + "/" + self.vm_prefix + "__top.v"
 
     def _define_opt_calc(self) -> str:
         return "--define " if self.xsim else "+define+"
-
-    def init_benchmarksim(self) -> None:
-        # Simulations with benchmarksim enabled append to the same file between runs.
-        # Test files must ensure a clean benchmark data file before executing tests.
-        filename = self.benchmarksim_filename
-        with open(filename, 'w', encoding="utf8") as fh:
-            fh.write("# Verilator simulation benchmark data\n")
-            fh.write("# Test name: " + self.name + "\n")
-            fh.write("# Top file: " + self.top_filename + "\n")
-            fh.write("evals, time[s]\n")
 
     def soprint(self, message: str) -> str:
         message = message.rstrip() + "\n"
@@ -858,11 +940,23 @@ class VlTest:
             self._skips = message
             raise VtSkipException
 
+    def priority(self, level: int) -> None:
+        """Called from tests as: priority(<constant_number>) to
+        specify what priority order the test should run at.
+        Higher numbers run first; in numeric tiers very roughly
+        corresponding to the wall time runtimes in seconds.
+        One is default. Tests with same priories run in name-sorted order.
+        priority() must be on one line; line is parsed outside Python."""
+        self._priority = level
+        if self._scenario_parsed:
+            self.error("priority() must be called before scenarios()")
+
     def scenarios(self, *scenario_list) -> None:
         """Called from tests as: scenarios(<list_of_scenarios>) to
         specify which scenarios this test runs under.  Where ... is
         one cases listed in  All_Scenarios.
-        All scenarios must be on one line; this is parsed outside Python."""
+        All scenarios must be on one line; line is parsed outside Python."""
+        self._scenario_parsed = True
         enabled_scenarios = {}
         for param in scenario_list:
             hit = False
@@ -880,19 +974,24 @@ class VlTest:
             # self._exit() implied by skip's exception
 
     @staticmethod
-    def _prefilter_scenario(py_filename: str, scenario: str) -> bool:
+    def _prefilter_scenario(py_filename: str) -> dict:
         """Read a python file to see if scenarios require it to be run.
-        Much faster than parsing the file for a runtime check."""
+        Much faster than parsing the file for a runtime check.
+        Return dict information on scenarios and priority."""
         (py_filename, _) = Runner._py_filename_adjust(py_filename, ".")
+        result = {'priority': 1}  # Also all secenarios enabled
         with open(py_filename, 'r', encoding="utf-8") as fh:
             for line in fh:
+                # Required that test.priority be earlier in file,
+                # the priority() function checks for this
+                m = re.search(r'^\s*test.priority\((.*?)\)', line)
+                if m:
+                    result['priority'] = int(m.group(1))
                 m = re.search(r'^\s*test.scenarios\((.*?)\)', line)
                 if m:
                     for param in re.findall(r"""["']([^,]*)["']""", m.group(1)):
-                        for allscarg in All_Scenarios[scenario]:
-                            if param == allscarg:
-                                return True
-        return False
+                        result[param] = True
+        return result
 
     def _prep(self) -> None:
         VtOs.mkdir_ok(self.obj_dir)  # Ok if already exists
@@ -931,10 +1030,13 @@ class VlTest:
 
     def _write_status(self) -> None:
         with open(self._status_filename, "wb") as fh:
+            # Vtest/self values to propagate up to driver's Vtest object
             pass_to_driver = {
                 '_ok': self._ok,
+                '_priority': self._priority,
                 '_scenario_off': self._scenario_off,
                 '_skips': self._skips,
+                '_wall_time': time.time() - self._start_time,
                 'errors': self.errors,
             }
             pickle.dump(pass_to_driver, fh)
@@ -1003,7 +1105,6 @@ class VlTest:
             bool(re.search(r'-savable\b', checkflags)))
         self.coverage = (  # pylint: disable=attribute-defined-outside-init
             bool(re.search(r'-coverage\b', checkflags)))
-        self.sanitize = param.get('sanitize', None)  # pylint: disable=attribute-defined-outside-init
         self.sc = (  # pylint: disable=attribute-defined-outside-init
             bool(re.search(r'-sc\b', checkflags)))
         self.timing = (  # pylint: disable=attribute-defined-outside-init
@@ -1026,8 +1127,8 @@ class VlTest:
         else:
             self.trace_format = 'vcd-c'  # pylint: disable=attribute-defined-outside-init
 
-        if param.get('benchmarksim', None):
-            self.benchmarksim = True  # pylint: disable=attribute-defined-outside-init
+        if re.search(r'-runtime-debug', checkflags):
+            self._uses_asan = True
 
         verilator_flags = [*param.get('verilator_flags', "")]
         if Args.gdb:
@@ -1046,16 +1147,6 @@ class VlTest:
             verilator_flags += ["--debug-partition"]
         if param['threads'] >= 0:
             verilator_flags += ["--threads", str(param['threads'])]
-        if param['vltmt'] and re.search(r'-trace-fst ', checkflags):
-            verilator_flags += ["--trace-threads 2"]
-        if self.sanitize:
-            verilator_flags += [
-                "-CFLAGS -fsanitize=address,undefined -LDFLAGS -fsanitize=address,undefined"
-            ]
-        if param['verilator_make_cmake']:
-            verilator_flags += ["--make cmake"]
-        if param['verilator_make_gmake']:
-            verilator_flags += ["--make gmake"]
         if param['make_main'] and param['verilator_make_gmake']:
             verilator_flags += ["--exe"]
         if param['make_main'] and param['verilator_make_gmake']:
@@ -1079,10 +1170,15 @@ class VlTest:
         """Run a linter. Arguments similar to run(); default arguments are from self"""
         param = {}
         param.update(vars(self))
-        param.update({  # Lint-specific default overrides
+        param.update({  # Lint-specific default overrides (search also for -cc)
             'make_main': False,
             'make_top_shell': False,
-            'verilator_flags2': ["--lint-only"],
+            'verilator_flags': [
+                "--lint-only",
+                "-Mdir",
+                self.obj_dir,
+                "--debug-check",
+            ],
             'verilator_make_gmake': False
         })
         param.update(kwargs)
@@ -1096,6 +1192,7 @@ class VlTest:
             'make_flags': [],
             'tee': True,
             'timing_loop': False,
+            'main_top_name': "top",
         }
         param.update(vars(self))
         param.update(kwargs)
@@ -1265,7 +1362,7 @@ class VlTest:
                 return
 
             if not param['fails'] and param['make_main']:
-                self._make_main(param['timing_loop'])
+                self._make_main(param['timing_loop'], param['main_top_name'])
 
             if (param['verilator_make_gmake']
                     or (not param['verilator_make_gmake'] and not param['verilator_make_cmake'])):
@@ -1321,6 +1418,8 @@ class VlTest:
                     entering=self.obj_dir,
                     cmd=[
                         os.environ['MAKE'],
+                        (("-j " +
+                          str(Args.driver_build_jobs_n)) if Args.driver_build_jobs_n else ""),
                         "-C " + self.obj_dir,
                         "-f " + os.path.abspath(os.path.dirname(__file__)) + "/Makefile_obj",
                         ("" if self.verbose else "--no-print-directory"),
@@ -1345,16 +1444,36 @@ class VlTest:
                              ("--verbose" if self.verbose else ""),
                          ])
         else:
-            self.error("No compile step defined for '%s' scenario" % self.scenario())
+            self.error("No compile step defined for '%s' scenario" % self.scenario)
 
         if param['make_pli']:
             if self.verbose:
                 self.oprint("Compile vpi")
             cmd = [
                 os.environ['CXX'], *param['pli_flags'], "-D" + tool_define, "-DIS_VPI",
+                ("-ggdb" if Args.gdbsim else ""),
                 VtOs.getenv_def('CFLAGS', ''), self.pli_filename
             ]
             self.run(logfile=self.obj_dir + "/pli_compile.log", fails=param['fails'], cmd=cmd)
+
+    def timeout(self, seconds):
+        """Limit the CPU time of the test - this limit is inherited
+        by all of the spawned child processess"""
+        #  An  unprivileged  process may set only its soft limit
+        #  to a value in the range from 0 up to the hard limit
+        _, hardlimit = resource.getrlimit(resource.RLIMIT_CPU)
+        softlimit = ctypes.c_long(min(seconds, ctypes.c_ulong(hardlimit).value)).value
+        # Casting is required due to a quirk in Python,
+        # rlimit values are interpreted as LONG, instead of ULONG
+        # https://github.com/python/cpython/issues/137044
+        rlimit = (softlimit, hardlimit)
+        resource.setrlimit(resource.RLIMIT_CPU, rlimit)
+
+    def leak_check_disable(self):
+        """Disable memory leak detection when leaks are expected,
+        e.g.: on early abnormal termination"""
+        asan_options = os.environ.get("ASAN_OPTIONS", "")
+        self.setenv("ASAN_OPTIONS", asan_options + ":detect_leaks=0")
 
     def execute(self, **kwargs) -> None:
         """Run simulation executable.
@@ -1418,13 +1537,23 @@ class VlTest:
                      logfile=param.get('logfile', self.obj_dir + "/ghdl_sim.log"),
                      tee=param['tee'])
         elif param['iv']:
+            debugger = ""
+            debugger_exec_cmd_start = ""
+            debugger_exec_cmd_end = ""
+            if Args.gdbsim:
+                debugger = VtOs.getenv_def('VERILATOR_GDB', "gdb") + " "
+                debugger_exec_cmd_start = " -ex 'run "
+                debugger_exec_cmd_end = "'"
             cmd = [
-                run_env + self.obj_dir + "/simiv", ' '.join(param['iv_run_flags']),
-                ' '.join(param['all_run_flags'])
+                run_env + debugger + 'vvp', debugger_exec_cmd_start,
+                ' '.join(param['iv_run_flags']), ' '.join(param['all_run_flags'])
             ]
             if param['use_libvpi']:
-                # Don't enter command line on $stop, include vpi
-                cmd += ["vvp -n -m " + self.obj_dir + "/libvpi.so"]
+                # Don't enter command line on $stop
+                cmd += ["-n"]
+                # include vpi
+                cmd += ["-m", self.obj_dir + "/libvpi.so"]
+            cmd += [self.obj_dir + "/simiv", debugger_exec_cmd_end]
             self.run(cmd=cmd,
                      check_finished=param['check_finished'],
                      entering=param['entering'],
@@ -1477,13 +1606,22 @@ class VlTest:
             pli_opt = ""
             if param['use_libvpi']:
                 pli_opt = "-loadvpi " + self.obj_dir + "/libvpi.so:vpi_compat_bootstrap"
+            done = "XRUN_DONE"
             cmd = [
-                "echo q | " + run_env + VtOs.getenv_def('VERILATOR_XRUN', "xrun"),
+                run_env + VtOs.getenv_def('VERILATOR_XRUN', "xrun"),
                 ' '.join(param['xrun_run_flags']),
                 ' '.join(param['xrun_flags2']),
+                ' '.join(param['v_flags']),
                 ' '.join(param['all_run_flags']),
                 pli_opt,
+                '-input',
+                '@run',
+                '-input',
+                f'"@puts {done}"',
+                '-input',
+                '@exit',
                 param['top_filename'],
+                param['top_shell_filename'],
             ]
             self.run(cmd=cmd,
                      check_finished=param['check_finished'],
@@ -1491,6 +1629,8 @@ class VlTest:
                      expect_filename=param.get('xrun_run_expect_filename', None),
                      fails=param['fails'],
                      logfile=param.get('logfile', self.obj_dir + "/xrun_sim.log"),
+                     stop_re=r'Simulation stopped via',
+                     done_re=done,
                      tee=param['tee'])
         elif param['xsim']:
             cmd = [
@@ -1518,6 +1658,7 @@ class VlTest:
                 *param['all_run_flags'],
                 ("'" if Args.gdbsim else ""),
             ]
+            cmd += self.driver_verilated_flags
             self.run(
                 cmd=cmd,
                 aslr_off=param['aslr_off'],  # Disable address space layour randomization
@@ -1546,12 +1687,16 @@ class VlTest:
         return VlTest._cached_aslr_off
 
     @property
-    def benchmarksim_filename(self) -> str:
-        return self.obj_dir + "/" + self.name + "_benchmarksim.csv"
+    def build_jobs(self) -> str:
+        return "--build-jobs " + str(Args.driver_build_jobs_n)
 
     @property
     def driver_verilator_flags(self) -> list:
         return Args.passdown_verilator_flags
+
+    @property
+    def driver_verilated_flags(self) -> list:
+        return Args.passdown_verilated_flags
 
     @property
     def get_default_vltmt_threads(self) -> int:
@@ -1562,6 +1707,13 @@ class VlTest:
         if self.errors or self.errors_keep_going or self._skips:
             self._ok = False
         return self._ok
+
+    def parse_name(self, regex: str):
+        basename = os.path.basename(test.py_filename)
+        match = re.match(regex, basename.partition(".")[0])
+        if match is None:
+            test.error(f"Invalid test file name '{basename}")
+        return match.groups()
 
     def passes(self, is_ok=True):
         if not self.errors:
@@ -1620,6 +1772,14 @@ class VlTest:
         return Capabilities.have_coroutines
 
     @property
+    def have_dev_asan(self) -> bool:
+        return Capabilities.have_dev_asan
+
+    @property
+    def have_dev_gcov(self) -> bool:
+        return Capabilities.have_dev_gcov
+
+    @property
     def have_gdb(self) -> bool:
         return Capabilities.have_gdb
 
@@ -1642,6 +1802,11 @@ class VlTest:
     def getenv_def(self, var: str, default=None) -> str:
         """Return environment variable, returning default if does not exist"""
         return VtOs.getenv_def(var, default)
+
+    @staticproperty
+    def max_procs() -> int:  # pylint: disable=no-method-argument
+        """Return maximum processor count can use (system CPUs or numactl setting)"""
+        return VtOs.max_procs
 
     def mkdir_ok(self, filename) -> None:
         """Make directory, no error if exists"""
@@ -1675,10 +1840,12 @@ class VlTest:
             check_finished=False,  # Check for All Finished
             entering=None,  # Print entering directory information
             expect_filename=None,  # Filename that should match logfile
-            fails=False,  # Command should fail
+            fails=False,  # True: normal 1 exit code, 'any': any exit code
             logfile=None,  # Filename to write putput to
+            stop_re=None,  # Regex for $stop
+            done_re=None,  # Regex for sim completion
             tee=True,
-            verilator_run=False) -> str:  # Move gcov data to parallel area
+            verilator_run=False) -> bool:  # Move gcov data to parallel area
 
         try:
             command = ' '.join(cmd)
@@ -1694,23 +1861,14 @@ class VlTest:
         if Args.benchmark and re.match(r'^cd ', command):
             command = "time " + command
 
-        if verilator_run:
-            # Gcov fails when parallel jobs write same data file,
-            # so we make sure .gcda output dir is unique across all running jobs.
-            # We can't just put each one in an unique obj_dir as it uses too much disk.
-            # Must use absolute path as some execute()s have different PWD
-            self.setenv('GCOV_PREFIX_STRIP', '99')
-            self.setenv('GCOV_PREFIX',
-                        os.path.abspath(__file__ + "/../obj_dist/gcov_" + str(self.running_id)))
-            os.makedirs(os.environ['GCOV_PREFIX'], exist_ok=True)
-        else:
-            VtOs.delenv('GCOV_PREFIX_STRIP')
-            VtOs.delenv('GCOV_PREFIX')
-
         print("\t" + command + (("   > " + logfile) if logfile else ""))
 
         if entering:
             print("driver: Entering directory '" + os.path.abspath(entering) + "'")
+
+        if self._uses_asan and platform.system() == "Darwin":
+            # Otherwise asan prints warning that causes mismatch with expected output
+            os.environ['MallocNanoZone'] = '0'
 
         # Execute command redirecting output, keeping order between stderr and stdout.
         # Must do low-level IO so GCC interaction works (can't be line-based)
@@ -1722,40 +1880,37 @@ class VlTest:
             logfh = open(logfile, 'wb')  # pylint: disable=consider-using-with
 
         if not Args.interactive_debugger:
-            # Become TTY controlling termal so GDB will not capture main driver.py's terminal
+            # Some parallel job's run() may attempt to capture driver.py's
+            # terminal, e.g. gdb does this. So, unless known we want to run GDB
+            # (where we want it to control the terminal), become a controlling
+            # terminal for this job so such a capture won't break driver.py's
+            # signaling, which would e.g. break control-C.
             pid, fd = pty.fork()
             if pid == 0:
+                os.environ['TERM'] = "dumb"
                 subprocess.run(["stty", "nl"], check=True)  # No carriage returns
                 os.execlp("bash", "/bin/bash", "-c", command)
             else:
-                # Parent process: Interact with GDB
                 while True:
                     try:
-                        data = os.read(fd, 1)
+                        data = os.read(fd, 2048)
                         self._run_output(data, logfh, tee)
+                        # Parent detects child termination by checking for b''
+                        if not data:
+                            break
                     except OSError:
                         break
 
                 (pid, rc) = os.waitpid(pid, 0)
 
         else:
-            with subprocess.Popen(command,
-                                  shell=True,
-                                  bufsize=0,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT) as proc:
-                rawbuf = bytearray(2048)
-
-                while True:
-                    finished = proc.poll()
-                    # Need to check readinto once, even after poll "completes"
-                    got = proc.stdout.readinto(rawbuf)
-                    if got:
-                        data = rawbuf[0:got]
-                        self._run_output(data, logfh, tee)
-                    elif finished is not None:
-                        break
-
+            # Do not redirect output when using an interactive debugger, so it
+            # can have direct access to the user terminal (so terminal control
+            # characters and the like work). That means the log file will be
+            # empty but hopefully that's ok, just re-run the test without the
+            # interactive debugger to confirm a fix.
+            with subprocess.Popen(command, shell=True, bufsize=0) as proc:
+                proc.wait()
                 rc = proc.returncode  # Negative if killed by signal
 
         if logfh:
@@ -1766,9 +1921,12 @@ class VlTest:
                 -8,  # SIGFPA
                 -11)):  # SIGSEGV
             self.error("Exec failed with core dump")
-            status = 10
+            status = 128 + (-rc)  # So is "normal" shell 0-255 status
+        elif rc >= 256:
+            # waitpid returns status << 8; subprocess otherwise; handle both
+            status = int(rc / 256)  # So is shell $?-like
         elif rc:
-            status = 10
+            status = rc
         else:
             status = 0
 
@@ -1780,23 +1938,41 @@ class VlTest:
 
         if not fails and status:
             firstline = self._error_log_summary(logfile)
+            # Strip ANSI escape sequences
+            firstline = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', firstline)
             self.error("Exec of " + self._error_cmd_simplify(cmd) + " failed: " + firstline)
+
         if fails and status:
-            print("(Exec expected to fail, and did.)")
+            if not verilator_run:
+                print("(Exec failed, matching expected fail)")
+            elif fails == 'any':
+                print("(Exec failed, matching expected 'any' exit code fail)")
+            elif fails is True:
+                if status == 1:
+                    print("(Exec failed, matching expected 'True' exit code 1 fail)")
+                else:
+                    self.error("Exec of " + self._error_cmd_simplify(cmd) +
+                               " failed with exit code " + str(status) +
+                               ", but expected 'True' exit code 1 fail")
+            else:  # Future: support numeric exit code?
+                self.error("fails=" + str(fails) + " is not legal value")
         if fails and not status:
             self.error("Exec of " + self._error_cmd_simplify(cmd) + " ok, but expected to fail")
         if self.errors or self._skips:
             return False
 
         # Read the log file a couple of times to allow for NFS delays
-        if check_finished:
+        if stop_re and not done_re:
+            self.error("Must provide done_re when using stop_re")
+
+        if check_finished or stop_re or done_re:
             delay = 0.25
             for tryn in range(Args.log_retries - 1, -1, -1):
                 if tryn != Args.log_retries - 1:
                     time.sleep(delay)
                     delay = min(1, delay * 2)
                 moretry = tryn != 0
-                if not self._run_log_try(logfile, check_finished, moretry):
+                if not self._run_log_try(logfile, check_finished, moretry, stop_re, done_re):
                     break
         if expect_filename:
             self.files_identical(logfile, expect_filename, is_logfile=True)
@@ -1805,7 +1981,7 @@ class VlTest:
         return True
 
     def _run_output(self, data, logfh, tee):
-        if re.search(r'--debug-exit-uvm23: Exiting', str(data)):
+        if re.search(r'--debug-exit-.*: Exiting', str(data)):
             self._force_pass = True
             print("EXIT: " + str(data))
         if tee:
@@ -1815,7 +1991,8 @@ class VlTest:
         if logfh:
             logfh.write(data)
 
-    def _run_log_try(self, logfile: str, check_finished: bool, moretry: bool) -> bool:
+    def _run_log_try(self, logfile: str, check_finished: bool, moretry: bool,
+                     stop_re: Optional[str], done_re: Optional[str]) -> bool:
         # If moretry, then return true to try again
         with open(logfile, 'r', encoding='latin-1', newline='\n') as fh:
             if not fh and moretry:
@@ -1827,6 +2004,14 @@ class VlTest:
             if moretry:
                 return True
             self.error("Missing '*-* All Finished *-*'")
+
+        if done_re and not re.search(done_re, wholefile):
+            if moretry:
+                return True
+            self.error(f"Missing '{done_re}'")
+
+        if stop_re and re.search(stop_re, wholefile):
+            self.error("Found $stop")
 
         return False
 
@@ -1863,7 +2048,7 @@ class VlTest:
                     return size + line
         return size + firstline
 
-    def _make_main(self, timing_loop: bool) -> None:
+    def _make_main(self, timing_loop: bool, main_top_name: str) -> None:
         if timing_loop and self.sc:
             self.error("Cannot use timing loop and SystemC together!")
 
@@ -1877,10 +2062,6 @@ class VlTest:
                      str(int(round(self.main_time_multiplier, 0))) + "\n")
 
             fh.write("#include <memory>\n")
-            if self.benchmarksim:
-                fh.write("#include <fstream>\n")
-                fh.write("#include <chrono>\n")
-                fh.write("#include <iomanip>\n")
 
             fh.write("// OS header\n")
             fh.write('#include "verilatedos.h"' + "\n")
@@ -1941,7 +2122,8 @@ class VlTest:
                         fh.write("    sc_signal<sc_dt::sc_uint<1>> clk;\n")
                     else:
                         fh.write("    sc_signal<bool> clk;\n")
-                fh.write("    sc_set_time_resolution(1, " + self.sc_time_resolution + ");\n")
+                fh.write("    sc_set_time_resolution(" + str(self.sc_time_resolution_multiplier) +
+                         ", " + self.sc_time_resolution + ");\n")
                 fh.write("    sc_time sim_time(" + str(self.sim_time) + ", " +
                          self.sc_time_resolution + ");\n")
             else:
@@ -1950,13 +2132,20 @@ class VlTest:
 
             fh.write(
                 "    const std::unique_ptr<VerilatedContext> contextp{new VerilatedContext};\n")
+
+            if self.trace:
+                fh.write("\n")
+                fh.write("#if VM_TRACE\n")
+                fh.write("    contextp->traceEverOn(true);\n")
+                fh.write("#endif\n")
+
             fh.write("    contextp->threads(" + str(self.context_threads) + ");\n")
             fh.write("    contextp->commandArgs(argc, argv);\n")
             fh.write("    contextp->debug(" + ('1' if self.verilated_debug else '0') + ");\n")
             fh.write("    srand48(5);\n")  # Ensure determinism
             if self.verilated_randReset is not None and self.verilated_randReset != "":
                 fh.write("    contextp->randReset(" + str(self.verilated_randReset) + ");\n")
-            fh.write("    topp.reset(new " + self.vm_prefix + "{\"top\"});\n")
+            fh.write("    topp.reset(new " + self.vm_prefix + '{"' + main_top_name + '"});\n')
             if self.verilated_debug:
                 fh.write("    contextp->internalsDump()\n;")
 
@@ -1970,15 +2159,9 @@ class VlTest:
                 fh.write("    topp->eval();\n")
                 setp = "topp->"
 
-            if self.benchmarksim:
-                fh.write("    std::chrono::time_point<std::chrono::steady_clock> starttime;\n")
-                fh.write("    bool warm = false;\n")
-                fh.write("    uint64_t n_evals = 0;\n")
-
             if self.trace:
                 fh.write("\n")
                 fh.write("#if VM_TRACE\n")
-                fh.write("    contextp->traceEverOn(true);\n")
                 if self.trace_format == 'fst-c':
                     fh.write("    std::unique_ptr<VerilatedFstC> tfp{new VerilatedFstC};\n")
                 if self.trace_format == 'fst-sc':
@@ -2022,7 +2205,8 @@ class VlTest:
             if 'clk' in self._inputs:
                 fh.write("        " + setp + "clk = false;\n")
             if not timing_loop:
-                self._print_advance_time(fh, 10, None)
+                start_time = 10
+                self._print_advance_time(fh, start_time * self.sc_time_resolution_multiplier, None)
             fh.write("    }\n")
 
             timestamp = "sc_time_stamp()" if self.sc else "contextp->time()"
@@ -2079,27 +2263,9 @@ class VlTest:
                         fh.write("            topp.reset(nullptr);\n")
                         fh.write("            return 0;\n")
                         fh.write("        }\n")
-                    self._print_advance_time(fh, 1, action)
-            if self.benchmarksim:
-                fh.write("        if (VL_UNLIKELY(!warm)) {\n")
-                fh.write("            starttime = std::chrono::steady_clock::now();\n")
-                fh.write("            warm = true;\n")
-                fh.write("        } else {\n")
-                fh.write("            ++n_evals;\n")
-                fh.write("        }\n")
+                    self._print_advance_time(fh, self.sc_time_resolution_multiplier, action)
 
             fh.write("    }\n")
-
-            if self.benchmarksim:
-                fh.write("    {\n")
-                fh.write("        const std::chrono::duration<double> exec_s"
-                         " = std::chrono::steady_clock::now() - starttime;\n")
-                fh.write("        std::ofstream benchfile(\"" + self.benchmarksim_filename +
-                         "\", std::ofstream::out | std::ofstream::app);\n")
-                fh.write("        benchfile << std::fixed << std::setprecision(9)"
-                         " << n_evals << \",\" << exec_s.count() << std::endl;\n")
-                fh.write("        benchfile.close();\n")
-                fh.write("    }\n")
 
             fh.write("    if (!contextp->gotFinish()) {\n")
             fh.write('        vl_fatal(__FILE__, __LINE__, "main",' +
@@ -2205,9 +2371,10 @@ class VlTest:
             inputs = {}
             for line in fh:
                 if get_sigs:
-                    m = re.match(r'^\s*input\s*(\S+)\s*(\/[^\/]+\/|)\s*;', line)
+                    # Does not support escaped signals, we only need "clk" and a few others
+                    m = re.match(r'^\s*input\s*(logic|bit|reg|wire)?\s*([A-Za-z0-9_]+)', line)
                     if m:
-                        inputs[m.group(1)] = m.group(1)
+                        inputs[m.group(2)] = m.group(2)
                     if re.match(r'^\s*(function|task|endmodule)', line):
                         get_sigs = False
                 # Ignore any earlier inputs; Module 't' has precedence
@@ -2220,7 +2387,7 @@ class VlTest:
     #######################################################################
     # File utilities
 
-    def files_identical(self, fn1: str, fn2: str, is_logfile=False) -> None:
+    def files_identical(self, fn1: str, fn2: str, is_logfile=False, strip_hex=False) -> None:
         """Test if two files have identical contents"""
         delay = 0.25
         for tryn in range(Args.log_retries, -1, -1):
@@ -2229,10 +2396,11 @@ class VlTest:
                 delay = min(1, delay * 2)
             moretry = tryn != 0
             if not self._files_identical_try(
-                    fn1=fn1, fn2=fn2, is_logfile=is_logfile, moretry=moretry):
+                    fn1=fn1, fn2=fn2, is_logfile=is_logfile, strip_hex=strip_hex, moretry=moretry):
                 break
 
-    def _files_identical_try(self, fn1: str, fn2: str, is_logfile: bool, moretry: bool) -> bool:
+    def _files_identical_try(self, fn1: str, fn2: str, is_logfile: bool, strip_hex: bool,
+                             moretry: bool) -> bool:
         # If moretry, then return true to try again
         try:
             f1 = open(  # pylint: disable=consider-using-with
@@ -2256,6 +2424,7 @@ class VlTest:
                                              fn1=fn1,
                                              fn2=fn2,
                                              is_logfile=is_logfile,
+                                             strip_hex=strip_hex,
                                              moretry=moretry)
         if f1:
             f1.close()
@@ -2264,7 +2433,7 @@ class VlTest:
         return again
 
     def _files_identical_reader(self, f1, f2, fn1: str, fn2: str, is_logfile: bool,
-                                moretry: bool) -> None:
+                                strip_hex: bool, moretry: bool) -> bool:
         # If moretry, then return true to try again
         l1s = f1.readlines()
         l2s = f2.readlines() if f2 else []
@@ -2294,19 +2463,32 @@ class VlTest:
                 line = re.sub(r'\r', '<#013>', line)
                 line = re.sub(r'Command Failed[^\n]+', 'Command Failed', line)
                 line = re.sub(r'Version: Verilator[^\n]+', 'Version: Verilator ###', line)
+                line = re.sub(r'"version": "[^"]+"', '"version": "###"', line)
                 line = re.sub(r'CPU Time: +[0-9.]+ seconds[^\n]+', 'CPU Time: ###', line)
                 line = re.sub(r'\?v=[0-9.]+', '?v=latest', line)  # warning URL
                 line = re.sub(r'_h[0-9a-f]{8}_', '_h########_', line)
-                line = re.sub(r'%Error: /[^: ]+/([^/:])', r'%Error: .../\1',
-                              line)  # Avoid absolute paths
+                # Avoid absolute paths
+                line = re.sub(r'%Error: /[^: ]+/([^/:])', r'%Error: .../\1', line)
+                line = re.sub(r'("file://)/[^: ]+/([^/:])', r'\1/.../\2', line)
                 line = re.sub(r' \/[^ ]+\/verilated_std.sv', ' verilated_std.sv', line)
+                line = re.sub(r'(With current working directory \')[^\']+\'', r"\1...'", line)
                 #
                 (line, n) = re.subn(r'Exiting due to.*', r"Exiting due to", line)
                 if n:
                     l1o.append(line)
                     break  # Trunc rest
+                if re.search(r'This fatal error may be caused', line):
+                    l1o.append(line)
+                    break  # Trunc after "This fatal error" line
                 l1o.append(line)
             #
+            l1s = l1o
+
+        if strip_hex:
+            l1o = []
+            for line in l1s:
+                line = re.sub(r'\b0x[0-9a-f]+', '0x#', line)
+                l1o.append(line)
             l1s = l1o
 
         for lineno_m1 in range(0, max(len(l1s), len(l2s))):
@@ -2353,48 +2535,18 @@ class VlTest:
             shutil.copy(fn1, fn2)
 
     def vcd_identical(self, fn1: str, fn2: str) -> None:
-        """Test if two VCD files have logically-identical contents"""
-        # vcddiff to check transitions, if installed
-        cmd = "vcddiff --help"
-        out = test.run_capture(cmd, check=True)
-        cmd = 'vcddiff ' + fn1 + ' ' + fn2
-        out = test.run_capture(cmd, check=True)
-        if out != "":
-            cmd = 'vcddiff ' + fn2 + " " + fn1  # Reversed arguments
-            out = VtOs.run_capture(cmd, check=False)
-            if out != "":
-                print(out)
-                self.copy_if_golden(fn1, fn2)
-                self.error("VCD miscompares " + fn2 + " " + fn1)
-
-        # vcddiff doesn't check module and variable scope, so check that
-        # Also provides backup if vcddiff not installed
-        h1 = self._vcd_read(fn1)
-        h2 = self._vcd_read(fn2)
-        a = json.dumps(h1, sort_keys=True, indent=1)
-        b = json.dumps(h2, sort_keys=True, indent=1)
-        if a != b:
+        """Test if two VCD/FST files have logically-identical contents"""
+        cmd = VtOs.getenv_def('WAVEDIFF', 'wavediff') + ' --epsilon 0.0000001 ' + fn1 + ' ' + fn2
+        proc = subprocess.run([cmd], capture_output=True, text=True, shell=True, check=False)
+        if proc.returncode:
+            print(proc.stderr)
+            print(proc.stdout)
             self.copy_if_golden(fn1, fn2)
-            self.error("VCD hier miscompares " + fn1 + " " + fn2 + "\nGOT=" + a + "\nEXP=" + b +
-                       "\n")
-
-    def fst2vcd(self, fn1: str, fn2: str) -> None:
-        cmd = "fst2vcd -h"
-        out = VtOs.run_capture(cmd, check=False)
-        if out == "" or not re.search(r'Usage:', out):
-            self.skip("No fst2vcd installed")
-            return
-
-        cmd = 'fst2vcd -e -f "' + fn1 + '" -o "' + fn2 + '"'
-        print("\t " + cmd + "\n")  # Always print to help debug race cases
-        out = VtOs.run_capture(cmd, check=False)
-        print(out)
+            self.error("VCD miscompares " + fn1 + " " + fn2)
 
     def fst_identical(self, fn1: str, fn2: str) -> None:
         """Test if two FST files have logically-identical contents"""
-        tmp = fn1 + ".vcd"
-        self.fst2vcd(fn1, tmp)
-        self.vcd_identical(tmp, fn2)
+        self.vcd_identical(fn1, fn2)
 
     def saif_identical(self, fn1: str, fn2: str) -> None:
         """Test if two SAIF files have logically-identical contents"""
@@ -2405,43 +2557,18 @@ class VlTest:
         if out != '':
             print(out)
             self.copy_if_golden(fn1, fn2)
-            self.error("SAIF files don't match!")
+            self.error("SAIF files miscompare")
 
-    def _vcd_read(self, filename: str) -> str:
-        data = {}
-        with open(filename, 'r', encoding='latin-1') as fh:
-            hier_stack = ["TOP"]
-            var = []
-            for line in fh:
-                match1 = re.search(r'\$scope (module|struct|interface)\s+(\S+)', line)
-                match2 = re.search(r'(\$var (\S+)\s+\d+\s+)\S+\s+(\S+)', line)
-                match3 = re.search(r'(\$attrbegin .* \$end)', line)
-                line = line.rstrip()
-                # print("VR"+ ' '*len(hier_stack) +" L " + line)
-                if match1:  # $scope
-                    name = match1.group(2)
-                    # print("VR"+ ' '*len(hier_stack) +" scope " + line)
-                    hier_stack += [name]
-                    scope = '.'.join(hier_stack)
-                    data[scope] = match1.group(1) + " " + name
-                elif match2:  # $var
-                    # print("VR"+ ' '*len(hier_stack) +" var " + line)
-                    scope = '.'.join(hier_stack)
-                    var = match2.group(2)
-                    data[scope + "." + var] = match2.group(1) + match2.group(3)
-                elif match3:  # $attrbegin
-                    # print("VR"+ ' '*len(hier_stack) +" attr " + line)
-                    if var:
-                        scope = '.'.join(hier_stack)
-                        data[scope + "." + var + "#"] = match3.group(1)
-                elif re.search(r'\$enddefinitions', line):
-                    break
-                n = len(re.findall(r'\$upscope', line))
-                if n:
-                    for i in range(0, n):  # pylint: disable=unused-variable
-                        # print("VR"+ ' '*len(hier_stack) +" upscope " + line)
-                        hier_stack.pop()
-        return data
+    def trace_identical(self, traceFn: str, goldenFn: str) -> None:
+        match traceFn.rpartition(".")[-1]:
+            case "vcd":
+                self.vcd_identical(traceFn, goldenFn)
+            case "fst":
+                self.fst_identical(traceFn, goldenFn)
+            case "saif":
+                self.saif_identical(traceFn, goldenFn)
+            case _:
+                self.error("Unknown trace file format " + traceFn)
 
     def inline_checks(self) -> None:
         covfn = self.coverage_filename
@@ -2519,7 +2646,7 @@ class VlTest:
         if re.search(regexp, contents, re.MULTILINE):
             self.error("File_grep_not: " + filename + ": Regexp found: '" + regexp + "'")
 
-    def file_grep(self, filename: str, regexp, expvalue=None) -> list:
+    def file_grep(self, filename: str, regexp, expvalue=None) -> Optional[list]:
         contents = self.file_contents(filename)
         if contents == "_Already_Errored_":
             return None
@@ -2531,13 +2658,13 @@ class VlTest:
             self.error("File_grep: " + filename + ": Got='" + match.group(1) + "' Expected='" +
                        str(expvalue) + "' in regexp: '" + regexp + "'")
             return None
-        return [match.groups()]
+        return match.groups()
 
     def file_grep_count(self, filename: str, regexp, expcount: int) -> None:
         contents = self.file_contents(filename)
         if contents == "_Already_Errored_":
             return
-        count = len(re.findall(regexp, contents))
+        count = len(re.findall(regexp, contents, re.MULTILINE))
         if expcount != count:
             self.error("File_grep_count: " + filename + ": Got='" + str(count) + "' Expected='" +
                        str(expcount) + "' in regexp: '" + regexp + "'")
@@ -2547,7 +2674,7 @@ class VlTest:
             contents = self.file_contents(filename)
             if contents == "_Already_Errored_":
                 return
-            match = re.search(regexp, contents)
+            match = re.search(regexp, contents, re.MULTILINE)
             if match:
                 if expvalue is not None and str(expvalue) != match.group(1):
                     self.error("file_grep: " + filename + ": Got='" + match.group(1) +
@@ -2597,6 +2724,11 @@ class VlTest:
             regexp=r'.*',
             lineno_adjust=-9999,  #
             lines=None) -> None:  #'#, #-#'
+
+        if not os.path.exists(test.root + "/.git"):
+            self.skip("Not in a git repository")
+            return
+
         temp_fn = out_filename
         temp_fn = re.sub(r'.*/', '', temp_fn)
         temp_fn = self.obj_dir + "/" + temp_fn
@@ -2633,6 +2765,7 @@ class VlTest:
                 fhw.write("   :emphasize-lines: " + emph + "\n")
             fhw.write("\n")
             for line in out:
+                line = re.sub(r' +$', '', line)
                 fhw.write(line)
 
         self.files_identical(temp_fn, out_filename)
@@ -2657,17 +2790,17 @@ class VlTest:
 
 
 def calc_jobs() -> int:
-    ok_threads = max_procs()
+    ok_threads = VtOs.max_procs
     print("driver.py: Found %d cores, using -j %d" % (ok_threads, ok_threads))
     return ok_threads
 
 
 def calc_threads(default_threads) -> int:
-    ok_threads = max_procs()
+    ok_threads = int(VtOs.max_procs)  # int() to appease pylint
     return ok_threads if (ok_threads < default_threads) else default_threads
 
 
-def _calc_hashset() -> list:
+def _calc_hashset() -> None:
     match = re.match(r'^(\d+)/(\d+)$', Args.hashset)
     if not match:
         sys.exit("%Error: Need number/number format for --hashset: " + Args.hashset)
@@ -2687,14 +2820,6 @@ def _calc_hashset() -> list:
 # Verilator utilities
 
 
-@lru_cache(maxsize=1)
-def max_procs() -> int:
-    procs = multiprocessing.cpu_count()
-    if procs < 2:
-        print("driver.py: Python didn't find at least two CPUs")
-    return procs
-
-
 def _parameter(param: str) -> None:
     global _Parameter_Next_Level
     if _Parameter_Next_Level:
@@ -2702,6 +2827,8 @@ def _parameter(param: str) -> None:
             sys.exit("%Error: Expected number following " + _Parameter_Next_Level + ": " + param)
         Args.passdown_verilator_flags.append(param)
         _Parameter_Next_Level = None
+    elif re.match(r'^(\+verilator\+.*)', param):
+        Args.passdown_verilated_flags.append(param)
     elif re.search(r'\.py', param):
         Arg_Tests.append(param)
     elif re.match(r'^-?(-debugi|-dumpi)', param):
@@ -2718,10 +2845,19 @@ def run_them() -> None:
     timestart = time.strftime("%Y%m%d_%H%M%S")
 
     runner = Runner(driver_log_filename="obj_dist/driver_" + timestart + ".log", quiet=Args.quiet)
+
+    test_data = {}
     for test_py in Arg_Tests:
+        test_data[test_py] = VlTest._prefilter_scenario(test_py)
+    for test_py in sorted(Arg_Tests, key=lambda key: test_data[key]['priority'], reverse=True):
         for scenario in sorted(set(Args.scenarios)):
-            if VlTest._prefilter_scenario(test_py, scenario):
+            run_it = False
+            for allscarg in All_Scenarios[scenario]:
+                if allscarg in test_data[test_py]:
+                    run_it = True
+            if run_it:
                 runner.one_test(py_filename=test_py, scenario=scenario)
+
     runner.wait_and_report()
 
     if Args.rerun and runner.fail_cnt and not Quitting:
@@ -2737,6 +2873,7 @@ def run_them() -> None:
         orig_runner = runner
         runner = Runner(driver_log_filename="obj_dist/driver_" + timestart + "_rerun.log",
                         quiet=False,
+                        pass_tests=orig_runner.pass_tests,
                         fail1_cnt=orig_runner.fail_cnt,
                         ok_cnt=orig_runner.ok_cnt,
                         skip_cnt=orig_runner.skip_cnt)
@@ -2760,6 +2897,10 @@ def run_them() -> None:
 
 if __name__ == '__main__':
     os.environ['PYTHONUNBUFFERED'] = "1"
+
+    # GDB is broken on macOS
+    if platform.system() == "Darwin":
+        os.environ['VERILATOR_TEST_NO_GDB'] = "1"
 
     if ('VERILATOR_ROOT' not in os.environ) and os.path.isfile('../bin/verilator'):
         os.environ['VERILATOR_ROOT'] = os.getcwd() + "/.."
@@ -2794,12 +2935,13 @@ if __name__ == '__main__':
         epilog="""driver.py invokes Verilator or another simulator on each test file.
     See docs/internals.rst in the distribution for more information.
 
-    Copyright 2024-2025 by Wilson Snyder. This program is free software; you
-    can redistribute it and/or modify it under the terms of either the GNU
-    Lesser General Public License Version 3 or the Perl Artistic License
-    Version 2.0.
+    This program is free software; you can redistribute it and/or modify it
+    under the terms of either the GNU Lesser General Public License Version
+    3 or the Perl Artistic License Version 2.0.
 
-    SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0""")
+    SPDX-FileCopyrightText: 2024-2026 Wilson Snyder
+    SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
+""")
 
     parser.add_argument('--benchmark', action='store', help='enable benchmarking')
     parser.add_argument('--debug', action='store_const', const=9, help='enable debug')
@@ -2832,11 +2974,11 @@ if __name__ == '__main__':
     parser.add_argument('--rerun', action='store_true', help='rerun all tests that fail')
     parser.add_argument('--rr', action='store_true', help='run Verilator executable with rr')
     parser.add_argument('--rrsim', action='store_true', help='run Verilated executable with rr')
-    parser.add_argument('--sanitize', action='store_true', help='run address sanitizer')
     parser.add_argument('--site',
                         action='store_true',
                         help='include VERILATOR_TEST_SITE test list')
     parser.add_argument('--stop', action='store_true', help='stop on the first error')
+    parser.add_argument("--top-filename", help="override the default Verilog file name")
     parser.add_argument('--trace', action='store_true', help='enable simulator waveform tracing')
     parser.add_argument('--verbose',
                         action='store_true',
@@ -2859,6 +3001,7 @@ if __name__ == '__main__':
 
     (Args, rest) = parser.parse_known_intermixed_args()
     Args.passdown_verilator_flags = []
+    Args.passdown_verilated_flags = []
 
     for arg in rest:
         _parameter(arg)
@@ -2911,6 +3054,7 @@ if __name__ == '__main__':
     forker = Forker(Args.jobs)
 
     if len(Arg_Tests) >= 2 and Args.jobs >= 2:
+        Args.driver_build_jobs_n = 2
         # Read supported into master process, so don't call every subprocess
         Capabilities.warmup_cache()
         # Without this tests such as t_debug_sigsegv_bt_bad.py will occasionally
@@ -2918,5 +3062,12 @@ if __name__ == '__main__':
         print("== Many jobs; redirecting STDIN", file=sys.stderr)
         #
         sys.stdin = open("/dev/null", 'r', encoding="utf8")  # pylint: disable=consider-using-with
+    else:
+        # Speed up single-test makes
+        Args.driver_build_jobs_n = calc_jobs()
+
+    if Capabilities.have_dev_asan and platform.system() == "Darwin":
+        # Otherwise asan prints warning that causes mismatch with expected output
+        os.environ['MallocNanoZone'] = '0'
 
     run_them()

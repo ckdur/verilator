@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LicenseRef-Altera-No-Warranty
+// SPDX-FileCopyrightText: 2016 Altera Corporation
 //-------------------------------------------------------------------------
 // This Verilog file was developed by Altera Corporation.  It may be
 // freely copied and/or distributed at no cost.  Any persons using this
@@ -46,13 +48,7 @@
 //END_MODULE_NAME--------------------------------------------------------------
 
 //See also: https://github.com/twosigma/verilator_support
-// verilator lint_off BLKANDNBLK
-// verilator lint_off COMBDLY
-// verilator lint_off INITIALDLY
-// verilator lint_off MULTIDRIVEN
-// verilator lint_off UNSIGNED
-// verilator lint_off WIDTH
-// verilator lint_off LATCH
+// verilator lint_off COMBDLY,INITIALDLY,LATCH,MULTIDRIVEN,UNSIGNED,WIDTH
 
 // BEGINNING OF MODULE
 `timescale 1 ps / 1 ps

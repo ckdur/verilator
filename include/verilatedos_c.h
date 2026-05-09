@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -25,6 +25,9 @@
 
 #include "verilatedos.h"
 
+#include <fstream>
+#include <sstream>
+
 // clang-format off
 #if defined(_WIN32) || defined(__MINGW32__)
 # include <windows.h>   // LONG for bcrypt.h on MINGW
@@ -32,11 +35,18 @@
 # include <psapi.h>   // GetProcessMemoryInfo
 #endif
 
-#if defined(__linux)
+#ifdef __linux
 # include <sched.h>  // For sched_getcpu()
 #endif
-#if defined(__APPLE__) && !defined(__arm64__)
+#if defined(__APPLE__) && !defined(__arm64__) && !defined(__POWERPC__)
 # include <cpuid.h>  // For __cpuid_count()
+#endif
+#ifdef __FreeBSD__
+# include <pthread_np.h>  // For pthread_getaffinity_np()
+#endif
+
+#if defined(__APPLE__) && defined(__MACH__)
+# include <mach/mach.h>  // For task_info()
 #endif
 // clang-format on
 
@@ -83,9 +93,9 @@ double DeltaWallTime::gettime() VL_MT_SAFE {
 // Vlos::getcpu implementation
 
 uint16_t getcpu() VL_MT_SAFE {
-#if defined(__linux)
+#ifdef __linux
     return sched_getcpu();  // TODO: this is a system call. Not exactly cheap.
-#elif defined(__APPLE__) && !defined(__arm64__)
+#elif defined(__APPLE__) && !defined(__arm64__) && !defined(__POWERPC__)
     uint32_t info[4];
     __cpuid_count(1, 0, info[0], info[1], info[2], info[3]);
     // info[1] is EBX, bits 24-31 are APIC ID
@@ -101,30 +111,81 @@ uint16_t getcpu() VL_MT_SAFE {
 #endif
 }
 
-//=========================================================================
-// VlOs::memUsageBytes implementation
+//=============================================================================
+// Vlos::getProcessAvailableParallelism implementation
 
-uint64_t memUsageBytes() VL_MT_SAFE {
+unsigned getProcessAvailableParallelism() VL_MT_SAFE {
+#if defined(__linux) || defined(CPU_ZERO)  // Linux-like; assume we have pthreads etc
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    const int rc = pthread_getaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    if (rc == 0) {
+        unsigned nCpus = 0;
+        for (int i = 0; i < CPU_SETSIZE; ++i) {
+            if (CPU_ISSET(i, &cpuset)) ++nCpus;
+        }
+        return nCpus;
+    }
+#endif
+    // Cannot determine
+    return 0;
+}
+
+//=============================================================================
+// Vlos::getProcessDefaultParallelism implementation
+
+unsigned getProcessDefaultParallelism() VL_MT_SAFE {
+    const unsigned n = getProcessAvailableParallelism();
+    // cppcheck-suppress knownConditionTrueFalse
+    return n ? n : std::thread::hardware_concurrency();
+}
+
+//=========================================================================
+// VlOs::memPeakUsageBytes implementation
+
+void memUsageBytes(uint64_t& peakr, uint64_t& currentr) VL_MT_SAFE {
+    peakr = 0;
+    currentr = 0;
 #if defined(_WIN32) || defined(__MINGW32__)
     const HANDLE process = GetCurrentProcess();
     PROCESS_MEMORY_COUNTERS pmc;
     if (GetProcessMemoryInfo(process, &pmc, sizeof(pmc))) {
         // The best we can do using simple Windows APIs is to get the size of the working set.
-        return pmc.WorkingSetSize;
+        peakr = pmc.PeakWorkingSetSize;
+        currentr = pmc.WorkingSetSize;
     }
-    return 0;
+#elif defined(__APPLE__) && defined(__MACH__)
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    const kern_return_t ret
+        = task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count);
+    if (ret == KERN_SUCCESS && count == MACH_TASK_BASIC_INFO_COUNT) {
+        peakr = info.resident_size_max;
+        currentr = info.resident_size;
+    }
 #else
     // Highly unportable. Sorry
-    const char* const statmFilename = "/proc/self/statm";
-    FILE* const fp = fopen(statmFilename, "r");
-    if (!fp) return 0;
-    uint64_t size, resident, share, text, lib, data, dt;  // All in pages
-    const int items = fscanf(
-        fp, "%" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64 " %" SCNu64,
-        &size, &resident, &share, &text, &lib, &data, &dt);
-    fclose(fp);
-    if (VL_UNCOVERABLE(7 != items)) return 0;
-    return (text + data) * getpagesize();
+    std::ifstream is{"/proc/self/status"};
+    if (!is) return;
+    std::string line;
+    uint64_t vmPeak = 0;
+    uint64_t vmRss = 0;
+    uint64_t vmSwap = 0;
+    std::string field;
+    while (std::getline(is, line)) {
+        if (line.rfind("VmPeak:", 0) == 0) {
+            std::stringstream ss{line};
+            ss >> field >> vmPeak;
+        } else if (line.rfind("VmRSS:", 0) == 0) {
+            std::stringstream ss{line};
+            ss >> field >> vmRss;
+        } else if (line.rfind("VmSwap:", 0) == 0) {
+            std::stringstream ss{line};
+            ss >> field >> vmSwap;
+        }
+    }
+    peakr = vmPeak * 1024;
+    currentr = (vmRss + vmSwap) * 1024;
 #endif
 }
 
@@ -133,7 +194,7 @@ uint64_t memUsageBytes() VL_MT_SAFE {
 
 std::string getenvStr(const std::string& envvar, const std::string& defaultValue) VL_MT_SAFE {
     std::string ret;
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
     // Note: MinGW does not offer _dupenv_s
     const char* envvalue = nullptr;
     _dupenv_s((char**)&envvalue, nullptr, envvar.c_str());

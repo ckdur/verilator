@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
@@ -14,8 +14,9 @@ test.top_filename = "t/t_constraint.v"
 
 test.compile()
 
-test.execute(run_env='VERILATOR_SOLVER=someimaginarysolver',
-             fails=True,
-             expect_filename=test.golden_filename)
+test.execute(run_env='VERILATOR_SOLVER=someimaginarysolver', fails=True)
+
+# Not using golden file, as may get spurious pipe messages, see issue #6273
+test.file_grep(test.run_log_filename, r'Unable to communicate with SAT solver')
 
 test.passes()

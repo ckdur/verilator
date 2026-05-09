@@ -17,6 +17,7 @@
 *.pdf
 /Makefile
 /.ccache
+/.venv/
 /artifact/
 README
 TAGS
@@ -44,6 +45,7 @@ verilator_coverage_bin*
 /.vscode/
 /.idea/
 /cmake-build-*/
+/obj_coverage/
 /test_regress/snapshot/
 xmverilog.*
 xrun.history

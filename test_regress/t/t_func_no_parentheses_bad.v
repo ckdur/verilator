@@ -1,20 +1,20 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
 function static int func();
-   int cnt = 0;
-   return ++cnt;
+  int cnt = 0;
+  return ++cnt;
 endfunction
 
-module t (/*AUTOARG*/);
+module t;
 
-   int   a;
-   initial begin
-      a = func;
-      $stop;
-   end
+  int a;
+  initial begin
+    a = func;
+    $stop;
+  end
 
 endmodule

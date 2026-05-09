@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2012-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2012-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=============================================================================
@@ -33,6 +33,15 @@
 #include <stack>
 #include <thread>
 #include <vector>
+
+// Use pthreads directly on macOS (could do this on Linux too if needing APIs unavailable via C++)
+#if defined(_POSIX_THREADS) && defined(__APPLE__)
+#define VL_USE_PTHREADS
+#endif
+
+#ifdef VL_USE_PTHREADS
+#include <pthread.h>
+#endif
 
 class VlExecutionProfiler;
 class VlThreadPool;
@@ -92,12 +101,11 @@ public:
                 = 1 + m_upstreamDepsDone.fetch_add(1, std::memory_order_release);
             assert(upstreamDepsDone <= m_upstreamDepCount);
             return (upstreamDepsDone == m_upstreamDepCount);
-        } else {
-            const uint32_t upstreamDepsDone_prev
-                = m_upstreamDepsDone.fetch_sub(1, std::memory_order_release);
-            assert(upstreamDepsDone_prev > 0);
-            return (upstreamDepsDone_prev == 1);
         }
+        const uint32_t upstreamDepsDone_prev
+            = m_upstreamDepsDone.fetch_sub(1, std::memory_order_release);
+        assert(upstreamDepsDone_prev > 0);
+        return (upstreamDepsDone_prev == 1);
     }
     bool areUpstreamDepsDone(bool evenCycle) const {
         const uint32_t target = evenCycle ? m_upstreamDepCount : 0;
@@ -117,7 +125,8 @@ public:
 };
 
 class VlWorkerThread final {
-private:
+    friend class VlThreadPool;
+
     // TYPES
     struct ExecRec final {
         VlExecFnp m_fnp = nullptr;  // Function to execute
@@ -142,14 +151,20 @@ private:
     std::vector<ExecRec> m_ready VL_GUARDED_BY(m_mutex);
     // Store the size atomically, so we can spin wait
     std::atomic<size_t> m_ready_size;
+    // Thread context
+    VerilatedContext* const m_contextp;
+    // Underlying thread record
+#ifdef VL_USE_PTHREADS
+    pthread_t m_pthread{};
+#else
+    std::thread m_cthread;
+#endif
 
-    std::thread m_cthread;  // Underlying C++ thread record
+    // METHDOS
+    static void* start(void*);  // Static entry point, invokes 'main'
+    void main();  // 'main' loop of thread
 
     VL_UNCOPYABLE(VlWorkerThread);
-
-protected:
-    friend class VlThreadPool;
-    const std::thread& cthread() const { return m_cthread; }
 
 public:
     // CONSTRUCTORS
@@ -166,7 +181,7 @@ public:
                 VL_CPU_RELAX();
             }
         }
-        VerilatedLockGuard lock{m_mutex};
+        const VerilatedLockGuard lock{m_mutex};
         while (m_ready.empty()) {
             m_waiting = true;
             m_cv.wait(m_mutex);
@@ -192,9 +207,6 @@ public:
 
     void shutdown();  // Finish current tasks, then terminate thread
     void wait();  // Blocks calling thread until all tasks complete in this thread
-
-    void workerLoop();
-    static void startWorker(VlWorkerThread* workerp, VerilatedContext* contextp);
 };
 
 class VlThreadPool final : public VerilatedVirtualBase {
@@ -226,7 +238,7 @@ public:
     }
     void freeWorkerIndexes(std::vector<size_t>& indexes) {
         const VerilatedLockGuard lock{m_mutex};
-        for (size_t index : indexes) m_unassignedWorkers.push(index);
+        for (const size_t index : indexes) m_unassignedWorkers.push(index);
         indexes.clear();
     }
     unsigned assignTaskIndex() { return m_assignedTasks++; }
@@ -241,8 +253,7 @@ public:
 private:
     VL_UNCOPYABLE(VlThreadPool);
 
-    static bool isNumactlRunning();
-    std::string numaAssign();
+    std::string numaAssign(VerilatedContext* contextp);
 };
 
 #endif

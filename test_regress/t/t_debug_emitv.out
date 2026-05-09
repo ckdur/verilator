@@ -33,6 +33,7 @@ module Vt_debug_emitv_t;
     function ident;
         input int signed value;
         begin : label0
+            ident = /*CRESET*/;
             ident = value;
             disable label0;
         end
@@ -40,7 +41,7 @@ module Vt_debug_emitv_t;
     Iface the_ifaces[3:0] ();
     initial begin
         begin
-            if ($test$plusargs(40'h48454c4c4f)) begin
+            if ($test$plusargs("HELLO")) begin
                 $display("Hello argument found.");
             end
             if ((Pkg::FOO == 'sh0)) begin
@@ -49,8 +50,8 @@ module Vt_debug_emitv_t;
             if ((ZERO == 'sh0)) begin
                 $write("");
             end
-            if ($value$plusargs(56'h544553543d2564i1)) begin
-                $display("value was %~", i1);
+            if ($value$plusargs("TEST=%d", i1)) begin
+                $display("value was %d", i1);
             end
             else begin
                 $display("+TEST= not found");
@@ -59,7 +60,7 @@ module Vt_debug_emitv_t;
                 $write("");
             end
             if (downto_32[(ident('sh21) - 'h20)[5:0] + 32
-                +:'h1]]) begin
+                +:1]) begin
                 $write("");
             end
             if ((| downto_32[48:40])) begin
@@ -74,6 +75,8 @@ module Vt_debug_emitv_t;
             if (the_ifaces[2].ifsig) begin
                 $write("");
             end
+            #1;
+            $write("After #1 delay");
         end
     end
     bit [6:5] [4:3] [2:1]  arraymanyd[10:11][12:13][14:15];
@@ -114,15 +117,16 @@ module Vt_debug_emitv_t;
     endtask
     function f;
         input int signed v;
-        begin : label0
+        begin : label1
             $display("stmt");
             f = ((v == 'sh0) ? 'sh63 : ((~ v) + 'sh1));
-            disable label0;
+            disable label1;
         end
     endfunction
     initial begin
         begin : unnamedblk1
             int signed other;
+            other = /*CRESET*/;
             begin
                 begin : unnamedblk2
                     int signed i;
@@ -130,7 +134,7 @@ module Vt_debug_emitv_t;
                     while ((i < 'sh3)) begin
                         begin
                             other = f(i);
-                            $display("stmt %~ %~", 
+                            $display("stmt %d %d", 
                                      i, other);
                             t();
                         end
@@ -178,35 +182,35 @@ module Vt_debug_emitv_t;
             fo = cyc;
             sub.inc(fosum);
             sum = sub.f(sum);
-            $display("[%0t] sum = %~", $time, sum);
+            $display("[%0t] sum = %d", $time, sum);
             $display("a?= %d", ($c('sh1) ? $c('sh14)
                                  : $c('sh1e)));
             $c(;);
             $display("%d", $c(0));
-            fd = $fopen(72'h2f6465762f6e756c6c);
+            fd = $fopen("/dev/null");
             ;
             $fclose(fd);
-            fd = $fopen(72'h2f6465762f6e756c6c, 8'h72);
+            fd = $fopen("/dev/null", "r");
             ;
             $fgetc(fd);
             $fflush(fd);
             $fscanf(fd, "%d", sum);
             ;
-            $fdisplay(32'h69203d20, "%~", sum);
+            $fdisplay(32'h69203d20, "%d", sum);
             $fwrite(fd, "hello");
-            $readmemh(fd, array);
-            $readmemh(fd, array, 'sh0);
-            $readmemh(fd, array, 'sh0, 'sh0);
+            $readmemh(string'(fd), array);
+            $readmemh(string'(fd), array, 'sh0);
+            $readmemh(string'(fd), array, 'sh0, 'sh0);
             sum = 'sh0;
             begin : unnamedblk3
                 int signed i;
                 i = 'sh0;
-                begin : label0
+                begin : label2
                     while ((i < cyc)) begin
                         begin
                             sum = (sum + i);
                             if ((sum > 'sha)) begin
-                                disable label0;
+                                disable label2;
                             end
                             else begin
                                 sum = (sum + 'sh1);
@@ -223,7 +227,7 @@ module Vt_debug_emitv_t;
                 $stop;
             end
             case (in)
-                'sh1: begin $display("1");
+                 // synopsys full_case parallel_case'sh1: begin $display("1");
                 end
                 default: begin $display("default");
                 end
@@ -270,12 +274,13 @@ module Vt_debug_emitv_t;
             else begin
                 $display("0");
             end
-            $display("%~%~", $past(cyc), $past(cyc, 
+            $display("%d%d", $past(cyc), $past(cyc, 
                                                'sh1));
-            str = $sformatf("cyc=%~", cyc);
+            str = $sformatf("cyc=%d", cyc);
             ;
-            $display("str = %@", str);
-            $display("%% [%t] [%^] to=%o td=%d", $time, 
+            $display("str = %s", str);
+            $display("struct = %p", ps);
+            $display("%% [%t] [%t] to=%o td=%d", $time, 
                      $realtime, $time, $time);
             $sscanf(40'h666f6f3d35, "foo=%d", i);
             ;
@@ -287,6 +292,7 @@ module Vt_debug_emitv_t;
             sum = $random('sha);
             sum = $urandom();
             sum = $urandom('sha);
+            sum = array.r_sum() with ((item * 'sh2)) ;
             if ((PKG_PARAM != 'sh1)) begin
                 $stop;
             end
@@ -345,7 +351,7 @@ module Vt_debug_emitv_t;
             end
             force sum = 'sha;
             begin : unnamedblk1_1
-                integer signed __Vrepeat0;
+                int signed __Vrepeat0;
                 __Vrepeat0 = 'sh2;
                 while ((__Vrepeat0 > 32'h0)) begin
                     if ((sum != 'sha)) begin
@@ -357,12 +363,579 @@ module Vt_debug_emitv_t;
             release sum;
         end
     end
-    /*verilator public_flat_rw @(posedge clk) pubflat*/
+    property p;
+    @(posedge clk) ##1 sum[0]
+    endproperty
+    property p1;
+    @( clk) sum[0]
+    endproperty
+    assert property (@( clk) (! ##1 in)
+    ) begin
+    end
+    else begin
+    end
+    initial begin
+        begin
+            begin : assert_simple_immediate_else
+                assert ('sh0) begin
+                end
+                else begin
+                    $display("fail");
+                end
+            end
+            begin : assert_simple_immediate_stmt
+                assert ('sh0) begin
+                    $display("pass");
+                end
+                else begin
+                end
+            end
+            begin : assert_simple_immediate_stmt_else
+                assert ('sh0) begin
+                    $display("pass");
+                end
+                else begin
+                    $display("fail");
+                end
+            end
+            begin : assume_simple_immediate
+                assume ('sh0) begin
+                end
+                else begin
+                end
+            end
+            begin : assume_simple_immediate_else
+                assume ('sh0) begin
+                end
+                else begin
+                    $display("fail");
+                end
+            end
+            begin : assume_simple_immediate_stmt
+                assume ('sh0) begin
+                    $display("pass");
+                end
+                else begin
+                end
+            end
+            begin : assume_simple_immediate_stmt_else
+                assume ('sh0) begin
+                    $display("pass");
+                end
+                else begin
+                    $display("fail");
+                end
+            end
+        end
+    end
+    always  begin
+        begin : assert_observed_deferred_immediate
+            assert #0 ('sh0) begin
+            end
+            else begin
+            end
+        end
+    end
+    always  begin
+        begin : assert_observed_deferred_immediate_else
+            assert #0 ('sh0) begin
+            end
+            else begin
+                $display("fail");
+            end
+        end
+    end
+    always  begin
+        begin : assert_observed_deferred_immediate_stmt
+            assert #0 ('sh0) begin
+                $display("pass");
+            end
+            else begin
+            end
+        end
+    end
+    always  begin
+        begin : assert_observed_deferred_immediate_stmt_else
+            assert #0 ('sh0) begin
+                $display("pass");
+            end
+            else begin
+                $display("fail");
+            end
+        end
+    end
+    always  begin
+        begin : assume_observed_deferred_immediate
+            assume #0 ('sh0) begin
+            end
+            else begin
+            end
+        end
+    end
+    always  begin
+        begin : assume_observed_deferred_immediate_else
+            assume #0 ('sh0) begin
+            end
+            else begin
+                $display("fail");
+            end
+        end
+    end
+    always  begin
+        begin : assume_observed_deferred_immediate_stmt
+            assume #0 ('sh0) begin
+                $display("pass");
+            end
+            else begin
+            end
+        end
+    end
+    always  begin
+        begin : assume_observed_deferred_immediate_stmt_else
+            assume #0 ('sh0) begin
+                $display("pass");
+            end
+            else begin
+                $display("fail");
+            end
+        end
+    end
+    always  begin
+        begin : assert_final_deferred_immediate
+            assert final ('sh0) begin
+            end
+            else begin
+            end
+        end
+    end
+    always  begin
+        begin : assert_final_deferred_immediate_else
+            assert final ('sh0) begin
+            end
+            else begin
+                $display("fail");
+            end
+        end
+    end
+    always  begin
+        begin : assert_final_deferred_immediate_stmt
+            assert final ('sh0) begin
+                $display("pass");
+            end
+            else begin
+            end
+        end
+    end
+    always  begin
+        begin : assert_final_deferred_immediate_stmt_else
+            assert final ('sh0) begin
+                $display("pass");
+            end
+            else begin
+                $display("fail");
+            end
+        end
+    end
+    always  begin
+        begin : assume_final_deferred_immediate
+            assume final ('sh0) begin
+            end
+            else begin
+            end
+        end
+    end
+    always  begin
+        begin : assume_final_deferred_immediate_else
+            assume final ('sh0) begin
+            end
+            else begin
+                $display("fail");
+            end
+        end
+    end
+    always  begin
+        begin : assume_final_deferred_immediate_stmt
+            assume final ('sh0) begin
+                $display("pass");
+            end
+            else begin
+            end
+        end
+    end
+    always  begin
+        begin : assume_final_deferred_immediate_stmt_else
+            assume final ('sh0) begin
+                $display("pass");
+            end
+            else begin
+                $display("fail");
+            end
+        end
+    end
+    property prop;
+    @(posedge clk) 'sh0
+    endproperty
+    begin : assert_concurrent
+        assert property ( prop
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assert_concurrent_else
+        assert property ( prop
+        ) begin
+        end
+        else begin
+            $display("fail");
+        end
+    end
+    begin : assert_concurrent_stmt
+        assert property ( prop
+        ) begin
+            $display("pass");
+        end
+        else begin
+        end
+    end
+    begin : assert_concurrent_stmt_else
+        assert property ( prop
+        ) begin
+            $display("pass");
+        end
+        else begin
+            $display("fail");
+        end
+    end
+    begin : assume_concurrent
+        assume property ( prop
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assume_concurrent_else
+        assume property ( prop
+        ) begin
+        end
+        else begin
+            $display("fail");
+        end
+    end
+    begin : assume_concurrent_stmt
+        assume property ( prop
+        ) begin
+            $display("pass");
+        end
+        else begin
+        end
+    end
+    begin : assume_concurrent_stmt_else
+        assume property ( prop
+        ) begin
+            $display("pass");
+        end
+        else begin
+            $display("fail");
+        end
+    end
+    begin : cover_concurrent
+        cover property ( prop
+        ) begin
+        end
+    end
+    begin : cover_concurrent_stmt
+        cover property ( prop
+        ) begin
+            $display("pass");
+        end
+    end
+    begin : assert_prop_always
+        assert property (@(posedge clk) always ['sh0:
+                         'sh3] in
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assert_prop_s_always
+        assert property (@(posedge clk) s_always ['sh1:
+                         'sh2] in
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assert_prop_overlap_impl
+        assert property (@(posedge clk) 
+            ???? // IMPLICATION
+            inin
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assert_prop_nonoverlap_impl
+        assert property (@(posedge clk) 
+            ???? // IMPLICATION
+            inin
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assert_prop_overlap_fb
+        assert property (@(posedge clk) 
+            ???? // IMPLICATION
+            inin
+        ) begin
+        end
+        else begin
+        end
+    end
+    begin : assert_prop_nonoverlap_fb
+        assert property (@(posedge clk) 
+            ???? // IMPLICATION
+            inin
+        ) begin
+        end
+        else begin
+        end
+    end
+    int signed a;
+    int signed ao;
+    initial begin
+        begin : assert_intrinsic
+            assert ((| $_EXPRSTMT(
+                        ao = (a);
+                        , 32'h1);
+                )) begin
+            end
+            else begin
+            end
+        end
+    end
+    restrict (@(posedge clk) ##1 a[0]
+    );
 endmodule
+package Vt_debug_emitv_std;
+    class Vt_debug_emitv_semaphore;
+        int signed m_keyCount;
+        function new;
+            input int signed keyCount;
+            m_keyCount = keyCount;
+        endfunction
+        task put;
+            input int signed keyCount;
+            m_keyCount = (m_keyCount + keyCount);
+        endtask
+        task get;
+            input int signed keyCount;
+            while ((m_keyCount < keyCount)) begin
+                begin
+
+                    ???? // WAIT
+                    (m_keyCount >= keyCount)end
+            end
+            m_keyCount = (m_keyCount - keyCount);
+        endtask
+        function try_get;
+            input int signed keyCount;
+            begin : label3
+                try_get = /*CRESET*/;
+                if ((m_keyCount >= keyCount)) begin
+                    begin
+                        m_keyCount = (m_keyCount - 
+                                      keyCount);
+                        try_get = 'sh1;
+                        disable label3;
+                    end
+                end
+                try_get = 'sh0;
+                disable label3;
+            end
+        endfunction
+    endclass
+    class Vt_debug_emitv_process;
+        typedef enum int signed{
+            FINISHED = 32'h0,
+            RUNNING = 32'h1,
+            WAITING = 32'h2,
+            SUSPENDED = 32'h3,
+            KILLED = 32'h4
+        } state;
+        VlProcessRef m_process;
+        function self;
+
+            ???? // CLASSREFDTYPE 'process'
+             p
+            ???? // CLASSREFDTYPE 'process'
+            ;
+            begin : label4
+                self = /*CRESET*/;
+                p = new();
+                $c(p.m_process = vlProcess;);
+                self = p;
+                disable label4;
+            end
+        endfunction
+        task set_status;
+            input int signed s;
+            $c(m_process->state(s););
+        endtask
+        function status;
+            begin : label5
+                status = /*CRESET*/;
+                status = ($c(m_process->state()));
+                disable label5;
+            end
+        endfunction
+        task kill;
+            set_status(process::KILLED);
+        endtask
+        task suspend;
+            $error("std::process::suspend() not supported");
+            $stop;
+        endtask
+        task resume;
+            set_status(process::RUNNING);
+        endtask
+        task await;
+
+            ???? // WAIT
+            ((status() == process::FINISHED) || (status() 
+                                                 == 
+                                                 process::
+                                                 KILLED))endtask
+        task killQueue;
+            ref 
+            ???? // CLASSREFDTYPE 'process'
+             processQueue[$]
+            ???? // CLASSREFDTYPE 'process'
+            ;
+            begin : unnamedblk1_1
+                int signed __Vrepeat0;
+                __Vrepeat0 = processQueue.size();
+                while ((__Vrepeat0 > 32'h0)) begin
+                    begin
+                        kill();
+                    end
+                    __Vrepeat0 = (__Vrepeat0 - 32'h1);
+                end
+            end
+        endtask
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+
+        ???? // SYSTEMCSECTION
+        function get_randstate;
+            string s;
+            begin : label6
+                get_randstate = /*CRESET*/;
+                s = string'($c(0));
+                $c(s = m_process->randstate(););
+                get_randstate = s;
+                disable label6;
+            end
+        endfunction
+        task set_randstate;
+            input string s;
+            $c(m_process->randstate(s););
+        endtask
+        function new;
+        endfunction
+        process::FINISHEDprocess::KILLEDprocess::RUNNINGprocess::SUSPENDEDprocess::WAITINGendclass
+    function randomize;
+        randomize = 'sh0;
+    endfunction
+    typedef struct {
+        string name;
+        int signed weight;
+        int signed goal;
+        string comment;
+        int signed at_least;
+        int signed auto_bin_max;
+        int signed cross_num_print_missing;
+        bit cross_retain_auto_bins;
+        bit detect_overlap;
+        bit per_instance;
+        bit get_inst_coverage;
+    } vl_covergroup_options_t;
+    typedef struct {
+        int signed weight;
+        int signed goal;
+        string comment;
+        int signed at_least;
+        int signed auto_bin_max;
+        bit detect_overlap;
+    } vl_coverpoint_options_t;
+    typedef struct {
+        int signed weight;
+        int signed goal;
+        string comment;
+        int signed at_least;
+        int signed cross_num_print_missing;
+        bit cross_retain_auto_bins;
+    } vl_cross_options_t;
+    typedef struct {
+        int signed weight;
+        int signed goal;
+        string comment;
+        bit strobe;
+        bit merge_instances;
+        bit distribute_first;
+        real real_interval;
+    } vl_covergroup_type_options_t;
+    typedef struct {
+        int signed weight;
+        int signed goal;
+        string comment;
+        real real_interval;
+    } vl_coverpoint_type_options_t;
+    typedef struct {
+        int signed weight;
+        int signed goal;
+        string comment;
+    } vl_cross_type_options_t;
+endpackage
 package Vt_debug_emitv___024unit;
     class Vt_debug_emitv_Cls;
         int signed member;
         member = 'sh1;
+        int signed rmember1;
+        int signed rmember2;
         task method;
             if ((this != this)) begin
                 $stop;
@@ -370,7 +943,23 @@ package Vt_debug_emitv___024unit;
         endtask
         function new;
         endfunction
+        function randomize;
+        endfunction
     endclass
+    function rand_restricted;
+        input 
+        ???? // CLASSREFDTYPE 'Cls'
+         obj
+        ???? // CLASSREFDTYPE 'Cls'
+        ;
+        input int signed member;
+        begin : label7
+            rand_restricted = randomize() with (
+                ???? // CONSTRAINTEXPR
+                (item.rmember1 < member)) ;
+            disable label7;
+        end
+    endfunction
 endpackage
 interface Vt_debug_emitv_Iface;
     input logic clk;
@@ -384,17 +973,18 @@ module Vt_debug_emitv_sub;
     task inc;
         input int signed i;
         output int signed o;
+        o = /*CRESET*/;
         o = ({32'h1{{1'h0, i[31:1]}}} + 32'h1);
     endtask
     function f;
         input int signed v;
-        begin : label0
+        begin : label8
             if ((v == 'sh0)) begin
                 f = 'sh21;
-                disable label0;
+                disable label8;
             end
             f = ({32'h1{{31'h0, v[2]}}} + 32'h1);
-            disable label0;
+            disable label8;
         end
     endfunction
     real r;

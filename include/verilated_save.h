@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2000-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2000-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=============================================================================
@@ -47,8 +47,10 @@ protected:
     std::string m_filename;  // Filename, for error messages
     VerilatedAssertOneThread m_assertOne;  // Assert only called from single thread
 
-    static constexpr size_t bufferSize() { return 256 * 1024; }  // See below for slack calculation
-    static constexpr size_t bufferInsertSize() { return 16 * 1024; }
+    static constexpr size_t bufferSize() {
+        return 256 * 1024L;
+    }  // See below for slack calculation
+    static constexpr size_t bufferInsertSize() { return 16 * 1024L; }
 
     void header() VL_MT_UNSAFE_ONE;
     void trailer() VL_MT_UNSAFE_ONE;
@@ -119,8 +121,10 @@ protected:
     std::string m_filename;  // Filename, for error messages
     VerilatedAssertOneThread m_assertOne;  // Assert only called from single thread
 
-    static constexpr size_t bufferSize() { return 256 * 1024; }  // See below for slack calculation
-    static constexpr size_t bufferInsertSize() { return 16 * 1024; }
+    static constexpr size_t bufferSize() {
+        return 256 * 1024L;
+    }  // See below for slack calculation
+    static constexpr size_t bufferInsertSize() { return 16 * 1024L; }
 
     virtual void fill() = 0;
     void header() VL_MT_UNSAFE_ONE;
@@ -294,7 +298,7 @@ inline VerilatedDeserialize& operator>>(VerilatedDeserialize& os, std::string& r
     uint32_t len = 0;
     os >> len;
     rhs.resize(len);
-    // C cast is required below
+    // cppcheck-suppress cstyleCast  // NOLINTNEXTLINE(google-readability-casting)
     return os.read((void*)(rhs.data()), len);
 }
 VerilatedSerialize& operator<<(VerilatedSerialize& os, VerilatedContext* rhsp);

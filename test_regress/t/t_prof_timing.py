@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
@@ -15,6 +15,8 @@ test.top_filename = "t/t_prof.v"
 
 if re.search(r'clang', test.cxx_version) and 'aarch64' in platform.processor():
     test.skip("Known compiler profile issues on clang aarch64")
+if platform.libc_ver()[0] != "glibc":
+    test.skip("The test depends on GMON_OUT_PREFIX which is glibc-specific")
 
 # TODO below might no longer be required as configure checks for -pg
 if 'VERILATOR_TEST_NO_GPROF' in os.environ:

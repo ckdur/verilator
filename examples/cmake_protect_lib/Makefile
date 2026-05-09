@@ -6,8 +6,8 @@
 # This makefile is here for testing the examples and should
 # generally not be added to a CMake project.
 #
-# This file ONLY is placed under the Creative Commons Public Domain, for
-# any use, without warranty, 2020 by Wilson Snyder.
+# This file ONLY is placed under the Creative Commons Public Domain
+# SPDX-FileCopyrightText: 2020 Wilson Snyder
 # SPDX-License-Identifier: CC0-1.0
 #
 ######################################################################
@@ -20,28 +20,28 @@
 # binary relative to $VERILATOR_ROOT (such as when inside the git sources).
 
 ifeq ($(VERILATOR_ROOT),)
-VERILATOR = verilator
-VERILATOR_COVERAGE = verilator_coverage
+  VERILATOR = verilator
+  VERILATOR_COVERAGE = verilator_coverage
 else
-export VERILATOR_ROOT
-VERILATOR = $(VERILATOR_ROOT)/bin/verilator
-VERILATOR_COVERAGE = $(VERILATOR_ROOT)/bin/verilator_coverage
+  export VERILATOR_ROOT
+  VERILATOR = $(VERILATOR_ROOT)/bin/verilator
+  VERILATOR_COVERAGE = $(VERILATOR_ROOT)/bin/verilator_coverage
 endif
 ######################################################################
 
 # Check if CMake is installed and of correct version
 ifeq ($(shell which cmake),)
-TARGET := nocmake
+  TARGET := nocmake
 else
-CMAKE_VERSION := $(shell cmake --version | grep -o '[0-9][.0-9]\+')
-CMAKE_MAJOR := $(shell echo $(CMAKE_VERSION) | cut -f1 -d.)
-CMAKE_MINOR := $(shell echo $(CMAKE_VERSION) | cut -f2 -d.)
-CMAKE_GT_3_8 := $(shell [ $(CMAKE_MAJOR) -gt 3 -o \( $(CMAKE_MAJOR) -eq 3 -a $(CMAKE_MINOR) -ge 8 \) ] && echo true)
-ifeq ($(CMAKE_GT_3_8),true)
-TARGET := run
-else
-TARGET := oldcmake
-endif
+  CMAKE_VERSION := $(shell cmake --version | grep -o '[0-9][.0-9]\+')
+  CMAKE_MAJOR := $(shell echo $(CMAKE_VERSION) | cut -f1 -d.)
+  CMAKE_MINOR := $(shell echo $(CMAKE_VERSION) | cut -f2 -d.)
+  CMAKE_GT_3_8 := $(shell [ $(CMAKE_MAJOR) -gt 3 -o \( $(CMAKE_MAJOR) -eq 3 -a $(CMAKE_MINOR) -ge 8 \) ] && echo true)
+  ifeq ($(CMAKE_GT_3_8),true)
+    TARGET := run
+  else
+    TARGET := oldcmake
+  endif
 endif
 
 default: $(TARGET)

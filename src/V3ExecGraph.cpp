@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -18,7 +18,7 @@
 
 #include "V3ExecGraph.h"
 
-#include "V3Config.h"
+#include "V3Control.h"
 #include "V3EmitCBase.h"
 #include "V3File.h"
 #include "V3GraphStream.h"
@@ -33,15 +33,23 @@
 
 VL_DEFINE_DEBUG_FUNCTIONS;
 
-ExecMTask::ExecMTask(V3Graph* graphp, AstMTaskBody* bodyp) VL_MT_DISABLED  //
-    : V3GraphVertex{graphp},
-      m_bodyp{bodyp},
-      m_id{s_nextId++},
-      m_hashName{V3Hasher::uncachedHash(bodyp).toString()} {
-    UASSERT_OBJ(bodyp->stmtsp(), bodyp, "AstMTaskBody should already be populated for hashing");
-    UASSERT_OBJ(!bodyp->execMTaskp(), bodyp, "AstMTaskBody already linked to an ExecMTask");
-    bodyp->execMTaskp(this);
+AstCFunc* ExecMTask::createCFunc(AstExecGraph* execGraphp, AstScope* scopep, AstNodeStmt* stmtsp,
+                                 uint32_t id) {
+    const std::string newName = execGraphp->name() + "_mtask" + std::to_string(id);
+    AstCFunc* const newp = new AstCFunc{execGraphp->fileline(), newName, scopep};
+    newp->isLoose(true);
+    newp->dontCombine(true);
+    newp->addStmtsp(stmtsp);
+    if (scopep) scopep->addBlocksp(newp);
+    return newp;
 }
+
+ExecMTask::ExecMTask(AstExecGraph* execGraphp, AstScope* scopep,
+                     AstNodeStmt* stmtsp) VL_MT_DISABLED  //
+    : V3GraphVertex{execGraphp->depGraphp()},
+      m_id{s_nextId++},
+      m_funcp{createCFunc(execGraphp, scopep, stmtsp, m_id)},
+      m_hashName{V3Hasher::uncachedHash(m_funcp).toString()} {}
 
 void ExecMTask::dump(std::ostream& str) const {
     str << name() << "." << cvtToHex(this);
@@ -66,6 +74,7 @@ class ThreadSchedule final {
     uint32_t m_id;  // Unique ID of a schedule
     static uint32_t s_nextId;  // Next ID number to use
     std::unordered_set<const ExecMTask*> mtasks;  // Mtasks in this schedule
+    uint32_t m_endTime = 0;  // Latest task end time in this schedule
 
 public:
     // CONSTANTS
@@ -81,22 +90,32 @@ public:
     // MEMBERS
     // Allocation of sequence of MTasks to threads. Can be considered a map from thread ID to
     // the sequence of MTasks to be executed by that thread.
-    std::vector<std::vector<const ExecMTask*>> threads;
+    std::vector<std::vector<const ExecMTask*>> m_threads;
 
     // Global state for each mtask.
-    static std::unordered_map<const ExecMTask*, MTaskState> mtaskState;
+    static std::unordered_map<const ExecMTask*, MTaskState> s_mtaskState;
 
     explicit ThreadSchedule(uint32_t nThreads)
-        : m_id(s_nextId++)
-        , threads{nThreads} {}
+        : m_id{s_nextId++}
+        , m_threads{nThreads} {}
     ThreadSchedule(ThreadSchedule&&) = default;
     ThreadSchedule& operator=(ThreadSchedule&&) = default;
 
 private:
     VL_UNCOPYABLE(ThreadSchedule);
 
+    static constexpr double s_threadBoxWidth = 2.5;
+    static constexpr double s_threadBoxHeight = 1.5;
+    static constexpr double s_horizontalGap = s_threadBoxWidth / 2;
+
     // Debugging
-    void dumpDotFile(const V3Graph& graph, const string& filename) const {
+    // Variant of dumpDotFilePrefixed without --dump option check
+    static void dumpDotFilePrefixedAlways(const std::vector<ThreadSchedule>& schedules,
+                                          const string& nameComment, uint32_t nThreads) {
+        dumpDotFile(schedules, v3Global.debugFilename(nameComment) + ".dot", nThreads);
+    }
+    static void dumpDotFile(const std::vector<ThreadSchedule>& schedules, const string& filename,
+                            uint32_t nThreads) {
         // This generates a file used by graphviz, https://www.graphviz.org
         const std::unique_ptr<std::ofstream> logp{V3File::new_ofstream(filename)};
         if (logp->fail()) v3fatal("Can't write file: " << filename);
@@ -108,52 +127,102 @@ private:
 
         // Thread labels
         *logp << "\n  // Threads\n";
-        const int threadBoxWidth = 2;
-        for (int i = 0; i < v3Global.opt.threads(); i++) {
-            *logp << "  t" << i << " [label=\"Thread " << i << "\" width=" << threadBoxWidth
-                  << " pos=\"" << (-threadBoxWidth / 2) << "," << -i
-                  << "!\" style=\"filled\" fillcolor=\"grey\"] \n";
+
+        for (uint32_t i = 0; i < nThreads; ++i) {
+            const string name = "t" + std::to_string(i);
+            const string label = "Thread " + std::to_string(i);
+            constexpr double posX = -s_horizontalGap;
+            const double posY = -static_cast<double>(i) * s_threadBoxHeight;
+            dumpDotFileEmitBlock(logp, name, label, s_threadBoxWidth, s_threadBoxHeight, posX,
+                                 posY, "grey");
         }
 
         // MTask nodes
         *logp << "\n  // MTasks\n";
 
-        // Find minimum cost MTask for scaling MTask node widths
-        uint32_t minCost = UINT32_MAX;
-        for (const V3GraphVertex& vtx : graph.vertices()) {
-            if (const ExecMTask* const mtaskp = vtx.cast<const ExecMTask>()) {
-                minCost = minCost > mtaskp->cost() ? mtaskp->cost() : minCost;
+        uint32_t maxCost = 0;
+        for (const auto& state : ThreadSchedule::s_mtaskState) {
+            const ExecMTask* const mtaskp = state.first;
+            maxCost = std::max(maxCost, mtaskp->cost());
+        }
+        // To avoid segments getting too large, limit maximal mtask length.
+        // Based on the mtask cost, normalize it using segment cost
+        constexpr uint32_t segmentsPerLongestMtask = 4;
+        const uint32_t segmentCost = maxCost / segmentsPerLongestMtask;
+
+        // Create columns of tasks whose execution intervals overlaps.
+        // Keep offset for each column for correctly aligned tasks.
+        std::vector<double> offsets(nThreads, 0.0);
+        for (const ThreadSchedule& schedule : schedules) {
+            if (schedule.mtasks.empty()) continue;
+            using Column = std::vector<const ExecMTask*>;
+            std::vector<Column> columns = {{}};
+
+            // Order tasks based on their start time
+            struct Cmp final {
+                bool operator()(const ExecMTask* const a, const ExecMTask* const b) const {
+                    if (startTime(a) == startTime(b)) return threadId(a) < threadId(b);
+                    return startTime(a) < startTime(b);
+                }
+            };
+            const std::multiset<const ExecMTask*, Cmp> tasks(schedule.mtasks.begin(),
+                                                             schedule.mtasks.end());
+
+            for (const ExecMTask* const mtaskp : tasks) {
+                Column& column = columns.back();
+                UASSERT(column.size() <= nThreads, "Invalid partitioning");
+
+                bool intersects = true;
+                for (const ExecMTask* const earlierMtask : column) {
+                    if (endTime(mtaskp) <= startTime(earlierMtask)
+                        || startTime(mtaskp) >= endTime(earlierMtask)) {
+                        intersects = false;
+                        break;
+                    }
+                }
+                if (intersects) {
+                    column.emplace_back(mtaskp);
+                } else {
+                    columns.emplace_back(Column{mtaskp});
+                }
             }
-        }
-        const double minWidth = 2.0;
-        const auto mtaskXPos = [&](const ExecMTask* mtaskp, const double nodeWidth) {
-            const double startPosX = (minWidth * startTime(mtaskp)) / minCost;
-            return nodeWidth / minWidth + startPosX;
-        };
 
-        const auto emitMTask = [&](const ExecMTask* mtaskp) {
-            const int thread = threadId(mtaskp);
-            const double nodeWidth = minWidth * (static_cast<double>(mtaskp->cost()) / minCost);
-            const double x = mtaskXPos(mtaskp, nodeWidth);
-            const int y = -thread;
-            const string label = "label=\"" + mtaskp->name() + " (" + cvtToStr(startTime(mtaskp))
-                                 + ":" + std::to_string(endTime(mtaskp)) + ")" + "\"";
-            *logp << "  " << mtaskp->name() << " [" << label << " width=" << nodeWidth << " pos=\""
-                  << x << "," << y << "!\"]\n";
-        };
+            UASSERT(!columns.front().empty(), "Should be populated by mtasks");
 
-        // Emit MTasks
-        for (const V3GraphVertex& vtx : graph.vertices()) {
-            if (const ExecMTask* const mtaskp = vtx.cast<const ExecMTask>()) emitMTask(mtaskp);
-        }
+            for (const Column& column : columns) {
+                double lastColumnOffset = 0;
+                for (const ExecMTask* const mtaskp : column) {
+                    dumpDotFileEmitMTask(logp, mtaskp, schedule, segmentCost, offsets);
+                    lastColumnOffset = std::max(lastColumnOffset, offsets[threadId(mtaskp)]);
+                }
+                // Even out column offset
+                std::fill(offsets.begin(), offsets.end(), lastColumnOffset);
+            }
 
-        // Emit MTask dependency edges
-        *logp << "\n  // MTask dependencies\n";
-        for (const V3GraphVertex& vtx : graph.vertices()) {
-            if (const ExecMTask* const mtaskp = vtx.cast<const ExecMTask>()) {
-                for (const V3GraphEdge& edge : mtaskp->outEdges()) {
-                    const V3GraphVertex* const top = edge.top();
-                    *logp << "  " << vtx.name() << " -> " << top->name() << "\n";
+            dumpDotFileEmitFork(logp, offsets.front(), nThreads);
+
+            // Emit MTask dependency edges
+            *logp << "\n  // MTask dependencies\n";
+
+            for (const std::vector<const ExecMTask*>& thread : schedule.m_threads) {
+                if (thread.empty()) break;  // No more threads
+
+                // Show that schedule ends when all tasks are finished
+                *logp << "  " << thread.back()->name() << " -> fork_"
+                      << static_cast<int>(offsets.front()) << "\n";
+
+                // Show that tasks from the same thread are executed in a sequence
+                for (size_t i = 1; i < thread.size(); ++i)
+                    *logp << "  " << thread[i - 1]->name() << " -> " << thread[i]->name() << "\n";
+
+                // Emit cross-task dependencies
+                for (const ExecMTask* const mtaskp : thread) {
+                    for (const V3GraphEdge& edge : mtaskp->outEdges()) {
+                        const ExecMTask* const topMTaskp = edge.top()->cast<const ExecMTask>();
+                        if (topMTaskp && schedule.contains(topMTaskp)
+                            && threadId(topMTaskp) != threadId(mtaskp))
+                            *logp << "  " << mtaskp->name() << " -> " << topMTaskp->name() << "\n";
+                    }
                 }
             }
         }
@@ -162,22 +231,59 @@ private:
         *logp << "}\n";
         logp->close();
     }
+    static void dumpDotFileEmitBlock(const std::unique_ptr<std::ofstream>& logp,
+                                     const string& name, const string& label, double width,
+                                     double height, double xPos, double yPos,
+                                     const string& fillColor) {
+        *logp << "  " << name << " [label=\"" << label << "\" width=" << width
+              << " height=" << height << " pos=\"" << xPos << "," << yPos
+              << "!\" style=\"filled\" fillcolor=\"" << fillColor << "\"]\n";
+    }
+    static void dumpDotFileEmitMTask(const std::unique_ptr<std::ofstream>& logp,
+                                     const ExecMTask* const mtaskp, const ThreadSchedule& schedule,
+                                     uint32_t segmentCost, std::vector<double>& offsets) {
+        for (int i = 0; i < mtaskp->threads(); ++i) {
+            // Keep original name for the original thread of hierarchical task to keep
+            // dependency tracking, add '_' for the rest to differentiate them.
+            const string name = i == 0 ? mtaskp->name() : mtaskp->name() + '_' + std::to_string(i);
+            const string label = mtaskp->name() + " (" + std::to_string(startTime(mtaskp)) + ':'
+                                 + std::to_string(endTime(mtaskp)) + ')'
+                                 + "\\ncost=" + std::to_string(mtaskp->cost())
+                                 + "\\npriority=" + std::to_string(mtaskp->priority());
+            const double width
+                = std::max(s_threadBoxWidth,
+                           s_threadBoxWidth * static_cast<double>(mtaskp->cost()) / segmentCost);
+            const uint32_t mtaskThreadId = threadId(mtaskp) + i * schedule.m_threads.size();
+            const double xPos = width / 2 + offsets[mtaskThreadId];
+            offsets[mtaskThreadId] += width + s_horizontalGap;
+            const double yPos = -s_threadBoxHeight * static_cast<double>(mtaskThreadId);
+            const string fillColor = i == 0 ? "white" : "lightgreen";
+            dumpDotFileEmitBlock(logp, name, label, width, s_threadBoxHeight, xPos, yPos,
+                                 fillColor);
+        }
+    }
 
-    // Variant of dumpDotFilePrefixed without --dump option check
-    void dumpDotFilePrefixedAlways(const V3Graph& graph, const string& nameComment) const {
-        dumpDotFile(graph, v3Global.debugFilename(nameComment) + ".dot");
+    static void dumpDotFileEmitFork(const std::unique_ptr<std::ofstream>& logp, double offset,
+                                    uint32_t nThreads) {
+        const string& name = "fork_" + std::to_string(static_cast<int>(offset));
+        constexpr double width = s_threadBoxWidth / 8;
+        const double height = s_threadBoxHeight * nThreads;
+        const double xPos = offset - s_horizontalGap / 2;
+        const double yPos
+            = -static_cast<double>(nThreads) / 2 * s_threadBoxHeight + s_threadBoxHeight / 2;
+        dumpDotFileEmitBlock(logp, name, "", width, height, xPos, yPos, "black");
     }
 
 public:
     static uint32_t threadId(const ExecMTask* mtaskp) {
-        const auto& it = mtaskState.find(mtaskp);
-        return it != mtaskState.end() ? it->second.threadId : UNASSIGNED;
+        const auto& it = s_mtaskState.find(mtaskp);
+        return it != s_mtaskState.end() ? it->second.threadId : UNASSIGNED;
     }
     static uint32_t startTime(const ExecMTask* mtaskp) {
-        return mtaskState.at(mtaskp).completionTime - mtaskp->cost();
+        return s_mtaskState.at(mtaskp).completionTime - mtaskp->cost();
     }
     static uint32_t endTime(const ExecMTask* mtaskp) {
-        return mtaskState.at(mtaskp).completionTime;
+        return s_mtaskState.at(mtaskp).completionTime;
     }
 
     // Returns the number of cross-thread dependencies of the given MTask. If > 0, the MTask must
@@ -196,22 +302,25 @@ public:
     uint32_t scheduleOn(const ExecMTask* mtaskp, uint32_t bestThreadId) {
         mtasks.emplace(mtaskp);
         const uint32_t bestEndTime = mtaskp->predictStart() + mtaskp->cost();
-        mtaskState[mtaskp].completionTime = bestEndTime;
-        mtaskState[mtaskp].threadId = bestThreadId;
+        m_endTime = std::max(m_endTime, bestEndTime);
+        s_mtaskState[mtaskp].completionTime = bestEndTime;
+        s_mtaskState[mtaskp].threadId = bestThreadId;
 
         // Reference to thread in schedule we are assigning this MTask to.
-        std::vector<const ExecMTask*>& bestThread = threads[bestThreadId];
-        if (!bestThread.empty()) mtaskState[bestThread.back()].nextp = mtaskp;
+        std::vector<const ExecMTask*>& bestThread = m_threads[bestThreadId];
+        if (!bestThread.empty()) s_mtaskState[bestThread.back()].nextp = mtaskp;
 
         // Add the MTask to the schedule
         bestThread.push_back(mtaskp);
         return bestEndTime;
     }
     bool contains(const ExecMTask* mtaskp) const { return mtasks.count(mtaskp); }
+    uint32_t endTime() const { return m_endTime; }
 };
 
 uint32_t ThreadSchedule::s_nextId = 0;
-std::unordered_map<const ExecMTask*, ThreadSchedule::MTaskState> ThreadSchedule::mtaskState{};
+std::unordered_map<const ExecMTask*, ThreadSchedule::MTaskState> ThreadSchedule::s_mtaskState{};
+constexpr double V3ExecGraph::ThreadSchedule::s_threadBoxWidth;
 
 //######################################################################
 // PackThreads
@@ -241,13 +350,16 @@ class PackThreads final {
 
     // MEMBERS
     const uint32_t m_nThreads;  // Number of threads
+    const uint32_t m_nHierThreads;  // Number of threads used for hierarchical tasks
     const uint32_t m_sandbagNumerator;  // Numerator padding for est runtime
     const uint32_t m_sandbagDenom;  // Denominator padding for est runtime
 
     // CONSTRUCTORS
     explicit PackThreads(uint32_t nThreads = v3Global.opt.threads(),
+                         uint32_t nHierThreads = v3Global.opt.hierThreads(),
                          unsigned sandbagNumerator = 30, unsigned sandbagDenom = 100)
         : m_nThreads{nThreads}
+        , m_nHierThreads{nHierThreads}
         , m_sandbagNumerator{sandbagNumerator}
         , m_sandbagDenom{sandbagDenom} {}
     ~PackThreads() = default;
@@ -256,7 +368,9 @@ class PackThreads final {
     // METHODS
     uint32_t completionTime(const ThreadSchedule& schedule, const ExecMTask* mtaskp,
                             uint32_t threadId) {
-        const ThreadSchedule::MTaskState& state = schedule.mtaskState.at(mtaskp);
+        // Ignore tasks that were scheduled on a different schedule
+        if (!schedule.contains(mtaskp)) return 0;
+        const ThreadSchedule::MTaskState& state = schedule.s_mtaskState.at(mtaskp);
         UASSERT(state.threadId != ThreadSchedule::UNASSIGNED, "Mtask should have assigned thread");
         if (threadId == state.threadId) {
             // No overhead on same thread
@@ -281,7 +395,7 @@ class PackThreads final {
         }
 
         UINFO(6, "Sandbagged end time for " << mtaskp->name() << " on th " << threadId << " = "
-                                            << sandbaggedEndTime << endl);
+                                            << sandbaggedEndTime);
         return sandbaggedEndTime;
     }
 
@@ -317,7 +431,7 @@ class PackThreads final {
         SchedulingMode mode = SchedulingMode::SCHEDULING;
 
         // Time each thread is occupied until
-        std::vector<uint32_t> busyUntil(m_nThreads, 0);
+        std::vector<uint32_t> busyUntil(std::max(m_nThreads, m_nHierThreads), 0);
 
         // MTasks ready to be assigned next. All their dependencies are already assigned.
         std::set<ExecMTask*, MTaskCmp> readyMTasks;
@@ -339,7 +453,7 @@ class PackThreads final {
             uint32_t bestThreadId = 0;
             ExecMTask* bestMtaskp = nullptr;  // Todo: const ExecMTask*
             ThreadSchedule& schedule = result.back();
-            for (uint32_t threadId = 0; threadId < schedule.threads.size(); ++threadId) {
+            for (uint32_t threadId = 0; threadId < schedule.m_threads.size(); ++threadId) {
                 for (ExecMTask* const mtaskp : readyMTasks) {
                     if (mode != SchedulingMode::WIDE_TASK_SCHEDULING && mtaskp->threads() > 1) {
                         mode = SchedulingMode::WIDE_TASK_DISCOVERED;
@@ -352,7 +466,7 @@ class PackThreads final {
                     if (timeBegin > bestTime) {
                         UINFO(6, "th " << threadId << " busy until " << timeBegin
                                        << ", later than bestTime " << bestTime
-                                       << ", skipping thread.\n");
+                                       << ", skipping thread.");
                         break;
                     }
                     for (const V3GraphEdge& edge : mtaskp->inEdges()) {
@@ -361,7 +475,7 @@ class PackThreads final {
                         if (priorEndTime > timeBegin) timeBegin = priorEndTime;
                     }
                     UINFO(6, "Task " << mtaskp->name() << " start at " << timeBegin
-                                     << " on thread " << threadId << endl);
+                                     << " on thread " << threadId);
                     if ((timeBegin < bestTime)
                         || ((timeBegin == bestTime)
                             && bestMtaskp  // Redundant, but appeases static analysis tools
@@ -373,19 +487,24 @@ class PackThreads final {
                 }
             }
 
+            const uint32_t endTime = schedule.endTime();
+
             if (!bestMtaskp && mode == SchedulingMode::WIDE_TASK_DISCOVERED) {
                 mode = SchedulingMode::WIDE_TASK_SCHEDULING;
-                const uint32_t size = m_nThreads / maxThreadWorkers;
+                const uint32_t size = m_nHierThreads / maxThreadWorkers;
                 UASSERT(size, "Thread pool size should be bigger than 0");
-                // If no tasks were added to the normal thread schedule, remove it.
-                if (schedule.mtaskState.empty()) result.erase(result.begin());
+                // If no tasks were added to the normal thread schedule, clear it.
+                if (schedule.s_mtaskState.empty()) result.clear();
                 result.emplace_back(ThreadSchedule{size});
+                std::fill(busyUntil.begin(), busyUntil.end(), endTime);
                 continue;
             }
 
             if (!bestMtaskp && mode == SchedulingMode::WIDE_TASK_SCHEDULING) {
                 mode = SchedulingMode::SCHEDULING;
-                if (!schedule.mtaskState.empty()) result.emplace_back(ThreadSchedule{m_nThreads});
+                UASSERT(!schedule.s_mtaskState.empty(), "Mtask should be added");
+                result.emplace_back(ThreadSchedule{m_nThreads});
+                std::fill(busyUntil.begin(), busyUntil.end(), endTime);
                 continue;
             }
 
@@ -393,29 +512,12 @@ class PackThreads final {
 
             bestMtaskp->predictStart(bestTime);
             const uint32_t bestEndTime = schedule.scheduleOn(bestMtaskp, bestThreadId);
-
-            // Populate busyUntil timestamps. For multi-worker tasks, set timestamps for
-            // offsetted threads.
-            if (mode != SchedulingMode::WIDE_TASK_SCHEDULING) {
-                busyUntil[bestThreadId] = bestEndTime;
-            } else {
-                for (int i = 0; i < maxThreadWorkers; ++i) {
-                    const size_t threadId = bestThreadId + (i * schedule.threads.size());
-                    UASSERT(threadId < busyUntil.size(),
-                            "Incorrect busyUntil offset: threadId=" + cvtToStr(threadId)
-                                + " bestThreadId=" + cvtToStr(bestThreadId) + " i=" + cvtToStr(i)
-                                + " schedule-size=" + cvtToStr(schedule.threads.size())
-                                + " maxThreadWorkers=" + cvtToStr(maxThreadWorkers));
-                    busyUntil[threadId] = bestEndTime;
-                    UINFO(6, "Will schedule " << bestMtaskp->name() << " onto thread " << threadId
-                                              << endl);
-                }
-            }
+            busyUntil[bestThreadId] = bestEndTime;
 
             // Update the ready list
             const size_t erased = readyMTasks.erase(bestMtaskp);
             UASSERT_OBJ(erased > 0, bestMtaskp, "Should have erased something?");
-            for (V3GraphEdge& edgeOut : bestMtaskp->outEdges()) {
+            for (const V3GraphEdge& edgeOut : bestMtaskp->outEdges()) {
                 ExecMTask* const nextp = edgeOut.top()->as<ExecMTask>();
                 // Dependent MTask should not yet be assigned to a thread
                 UASSERT(schedule.threadId(nextp) == ThreadSchedule::UNASSIGNED,
@@ -425,13 +527,14 @@ class PackThreads final {
                             "Tasks after one being assigned should not be ready");
                 if (isReady(schedule, nextp)) {
                     readyMTasks.insert(nextp);
-                    UINFO(6, "Inserted " << nextp->name() << " into ready\n");
+                    UINFO(6, "Inserted " << nextp->name() << " into ready");
                 }
             }
         }
 
         // All schedules are combined on a single graph
-        if (dumpGraphLevel() >= 4) result.back().dumpDotFilePrefixedAlways(mtaskGraph, "schedule");
+        if (dumpGraphLevel() >= 4)
+            ThreadSchedule::dumpDotFilePrefixedAlways(result, "schedule", m_nThreads);
 
         return result;
     }
@@ -439,93 +542,191 @@ class PackThreads final {
 public:
     // SELF TEST
     static void selfTest() {
-        V3Graph graph;
+        selfTestHierFirst();
+        selfTestNormalFirst();
+    }
+    static void selfTestNormalFirst() {
         FileLine* const flp = v3Global.rootp()->fileline();
-        std::vector<AstMTaskBody*> mTaskBodyps;
-        const auto makeBody = [&]() {
-            AstMTaskBody* const bodyp = new AstMTaskBody{flp};
-            mTaskBodyps.push_back(bodyp);
-            bodyp->addStmtsp(new AstComment{flp, ""});
-            return bodyp;
-        };
-        ExecMTask* const t0 = new ExecMTask{&graph, makeBody()};
+        AstExecGraph* const execGraphp = new AstExecGraph{flp, "test"};
+        V3Graph& graph = *execGraphp->depGraphp();
+        const auto makeBody = [&]() -> AstNodeStmt* { return new AstComment{flp, ""}; };
+        ExecMTask* const t0 = new ExecMTask{execGraphp, nullptr, makeBody()};
         t0->cost(1000);
         t0->priority(1100);
-        ExecMTask* const t1 = new ExecMTask{&graph, makeBody()};
+        ExecMTask* const t1 = new ExecMTask{execGraphp, nullptr, makeBody()};
         t1->cost(100);
         t1->priority(100);
-        ExecMTask* const t2 = new ExecMTask{&graph, makeBody()};
+        ExecMTask* const t2 = new ExecMTask{execGraphp, nullptr, makeBody()};
         t2->cost(100);
         t2->priority(100);
         t2->threads(2);
-        ExecMTask* const t3 = new ExecMTask{&graph, makeBody()};
+        ExecMTask* const t3 = new ExecMTask{execGraphp, nullptr, makeBody()};
         t3->cost(100);
         t3->priority(100);
         t3->threads(3);
-        ExecMTask* const t4 = new ExecMTask{&graph, makeBody()};
+        ExecMTask* const t4 = new ExecMTask{execGraphp, nullptr, makeBody()};
         t4->cost(100);
         t4->priority(100);
         t4->threads(3);
+        ExecMTask* const t5 = new ExecMTask{execGraphp, nullptr, makeBody()};
+        t5->cost(100);
+        t5->priority(100);
+        ExecMTask* const t6 = new ExecMTask{execGraphp, nullptr, makeBody()};
+        t6->cost(100);
+        t6->priority(100);
 
         /*
                           0
                          / \
                         1   2
                            / \
-                          3  4
+                          3   4
+                         /    \
+                        5      6
         */
         new V3GraphEdge{&graph, t0, t1, 1};
         new V3GraphEdge{&graph, t0, t2, 1};
         new V3GraphEdge{&graph, t2, t3, 1};
         new V3GraphEdge{&graph, t2, t4, 1};
+        new V3GraphEdge{&graph, t3, t5, 1};
+        new V3GraphEdge{&graph, t4, t6, 1};
 
-        constexpr uint32_t threads = 6;
-        PackThreads packer{threads,
+        constexpr uint32_t threads = 2;
+        constexpr uint32_t hierThreads = 6;
+        PackThreads packer{threads, hierThreads,
                            3,  // Sandbag numerator
                            10};  // Sandbag denom
 
         const std::vector<ThreadSchedule> scheduled = packer.pack(graph);
-        UASSERT_SELFTEST(size_t, scheduled[0].threads.size(), threads);
-        UASSERT_SELFTEST(size_t, scheduled[0].threads[0].size(), 2);
-        for (size_t i = 1; i < scheduled[0].threads.size(); ++i)
-            UASSERT_SELFTEST(size_t, scheduled[0].threads[i].size(), 0);
+        UASSERT_SELFTEST(const size_t, scheduled.size(), 3);
+        UASSERT_SELFTEST(const size_t, scheduled[0].m_threads.size(), threads);
+        UASSERT_SELFTEST(const size_t, scheduled[0].m_threads[0].size(), 2);
+        for (size_t i = 1; i < scheduled[0].m_threads.size(); ++i)
+            UASSERT_SELFTEST(const size_t, scheduled[0].m_threads[i].size(), 0);
 
-        UASSERT_SELFTEST(const ExecMTask*, scheduled[0].threads[0][0], t0);
-        UASSERT_SELFTEST(const ExecMTask*, scheduled[0].threads[0][1], t1);
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[0].m_threads[0][0], t0);
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[0].m_threads[0][1], t1);
 
-        UASSERT_SELFTEST(size_t, scheduled[1].threads.size(), threads / 3);
-        UASSERT_SELFTEST(const ExecMTask*, scheduled[1].threads[1][0], t2);
-        UASSERT_SELFTEST(const ExecMTask*, scheduled[1].threads[1][1], t3);
-        UASSERT_SELFTEST(const ExecMTask*, scheduled[1].threads[0][0], t4);
+        UASSERT_SELFTEST(const size_t, scheduled[1].m_threads.size(), hierThreads / 3);
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[1].m_threads[0][0], t2);
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[1].m_threads[0][1], t3);
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[1].m_threads[1][0], t4);
 
-        UASSERT_SELFTEST(size_t, ThreadSchedule::mtaskState.size(), 5);
+        UASSERT_SELFTEST(const size_t, scheduled[2].m_threads.size(), threads);
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[2].m_threads[0][0], t5);
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[2].m_threads[1][0], t6);
 
-        UASSERT_SELFTEST(uint32_t, ThreadSchedule::threadId(t0), 0);
-        UASSERT_SELFTEST(uint32_t, ThreadSchedule::threadId(t1), 0);
-        UASSERT_SELFTEST(uint32_t, ThreadSchedule::threadId(t2), 1);
-        UASSERT_SELFTEST(uint32_t, ThreadSchedule::threadId(t3), 1);
-        UASSERT_SELFTEST(uint32_t, ThreadSchedule::threadId(t4), 0);
+        UASSERT_SELFTEST(const size_t, ThreadSchedule::s_mtaskState.size(), 7);
+
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t0), 0);
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t1), 0);
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t2), 0);
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t3), 0);
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t4), 1);
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t5), 0);
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t6), 1);
 
         // On its native thread, we see the actual end time for t0:
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[0], t0, 0), 1000);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[0], t0, 0), 1000);
         // On the other thread, we see a sandbagged end time which does not
         // exceed the t1 end time:
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[0], t0, 1), 1099);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[0], t0, 1), 1099);
 
         // Actual end time on native thread:
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[0], t1, 0), 1100);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[0], t1, 0), 1100);
         // Sandbagged end time seen on thread 1.  Note it does not compound
         // with t0's sandbagged time; compounding caused trouble in
         // practice.
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[0], t1, 1), 1130);
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[1], t2, 0), 1229);
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[1], t2, 1), 1199);
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[1], t3, 0), 1329);
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[1], t3, 1), 1299);
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[1], t4, 0), 1329);
-        UASSERT_SELFTEST(uint32_t, packer.completionTime(scheduled[1], t4, 1), 1359);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[0], t1, 1), 1130);
 
-        for (AstNode* const nodep : mTaskBodyps) nodep->deleteTree();
+        // Wide task scheduling
+
+        // Task does not depend on previous or future schedules
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[0], t2, 0), 0);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[2], t2, 0), 0);
+
+        // We allow sandbagging for hierarchical children tasks, this does not affect
+        // wide task scheduling. When the next schedule is created it doesn't matter
+        // anyway.
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t2, 0), 1200);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t2, 1), 1230);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t2, 2), 1230);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t2, 3), 1230);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t2, 4), 1230);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t2, 5), 1230);
+
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t3, 0), 1300);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t3, 1), 1330);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t3, 2), 1330);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t3, 3), 1330);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t3, 4), 1330);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t3, 5), 1330);
+
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t4, 0), 1360);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t4, 1), 1330);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t4, 2), 1360);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t4, 3), 1360);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t4, 4), 1360);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t4, 5), 1360);
+
+        for (V3GraphVertex& vtx : graph.vertices()) vtx.as<ExecMTask>()->funcp()->deleteTree();
+        VL_DO_DANGLING(execGraphp->deleteTree(), execGraphp);
+        ThreadSchedule::s_mtaskState.clear();
+    }
+    static void selfTestHierFirst() {
+        FileLine* const flp = v3Global.rootp()->fileline();
+        AstExecGraph* const execGraphp = new AstExecGraph{flp, "test"};
+        V3Graph& graph = *execGraphp->depGraphp();
+        const auto makeBody = [&]() -> AstNodeStmt* { return new AstComment{flp, ""}; };
+        ExecMTask* const t0 = new ExecMTask{execGraphp, nullptr, makeBody()};
+        t0->cost(1000);
+        t0->priority(1100);
+        t0->threads(2);
+        ExecMTask* const t1 = new ExecMTask{execGraphp, nullptr, makeBody()};
+        t1->cost(100);
+        t1->priority(100);
+
+        /*
+                          0
+                          |
+                          1
+        */
+        new V3GraphEdge{&graph, t0, t1, 1};
+
+        constexpr uint32_t threads = 1;
+        constexpr uint32_t hierThreads = 2;
+        PackThreads packer{threads, hierThreads,
+                           3,  // Sandbag numerator
+                           10};  // Sandbag denom
+
+        const std::vector<ThreadSchedule> scheduled = packer.pack(graph);
+        UASSERT_SELFTEST(const size_t, scheduled.size(), 2);
+        UASSERT_SELFTEST(const size_t, scheduled[0].m_threads.size(), hierThreads / 2);
+        UASSERT_SELFTEST(const size_t, scheduled[0].m_threads[0].size(), 1);
+        for (size_t i = 1; i < scheduled[0].m_threads.size(); ++i)
+            UASSERT_SELFTEST(const size_t, scheduled[0].m_threads[i].size(), 0);
+
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[0].m_threads[0][0], t0);
+
+        UASSERT_SELFTEST(const size_t, scheduled[1].m_threads.size(), threads);
+        UASSERT_SELFTEST(const size_t, scheduled[1].m_threads[0].size(), 1);
+        for (size_t i = 1; i < scheduled[1].m_threads.size(); ++i)
+            UASSERT_SELFTEST(const size_t, scheduled[1].m_threads[i].size(), 0);
+        UASSERT_SELFTEST(const ExecMTask*, scheduled[1].m_threads[0][0], t1);
+
+        UASSERT_SELFTEST(const size_t, ThreadSchedule::s_mtaskState.size(), 2);
+
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t0), 0);
+        UASSERT_SELFTEST(const uint32_t, ThreadSchedule::threadId(t1), 0);
+
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[0], t0, 0), 1000);
+
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t1, 0), 1100);
+        UASSERT_SELFTEST(const uint32_t, packer.completionTime(scheduled[1], t1, 1), 1130);
+
+        for (V3GraphVertex& vtx : graph.vertices()) vtx.as<ExecMTask>()->funcp()->deleteTree();
+        VL_DO_DANGLING(execGraphp->deleteTree(), execGraphp);
+        ThreadSchedule::s_mtaskState.clear();
     }
 
     static std::vector<ThreadSchedule> apply(V3Graph& mtaskGraph) {
@@ -559,9 +760,9 @@ void normalizeCosts(Costs& costs) {
         // profiled data.  (Improves results if only a few profiles missing.)
         const double estToProfile
             = static_cast<double>(sumCostProfiled) / static_cast<double>(sumCostEstimate);
-        UINFO(5, "Estimated data needs scaling by "
-                     << estToProfile << ", sumCostProfiled=" << sumCostProfiled
-                     << " sumCostEstimate=" << sumCostEstimate << endl);
+        UINFO(5, "Estimated data needs scaling by " << estToProfile
+                                                    << ", sumCostProfiled=" << sumCostProfiled
+                                                    << " sumCostEstimate=" << sumCostEstimate);
         for (auto& est : costs) {
             uint64_t& costEstimate = est.second.first;
             costEstimate = scaleCost(costEstimate, estToProfile);
@@ -575,19 +776,36 @@ void normalizeCosts(Costs& costs) {
         const uint64_t& costProfiled = est.second.second;
         if (maxCost < costEstimate) maxCost = costEstimate;
         if (maxCost < costProfiled) maxCost = costProfiled;
-        UINFO(9,
-              "Post uint scale: ce = " << est.second.first << " cp=" << est.second.second << endl);
+        UINFO(9, "Post uint scale: ce = " << est.second.first << " cp=" << est.second.second);
     }
     const uint64_t scaleDownTo = 10000000;  // Extra room for future algorithms to add costs
     if (maxCost > scaleDownTo) {
         const double scaleup = static_cast<double>(scaleDownTo) / static_cast<double>(maxCost);
-        UINFO(5, "Scaling data to within 32-bits by multiply by=" << scaleup << ", maxCost="
-                                                                  << maxCost << endl);
+        UINFO(5, "Scaling data to within 32-bits by multiply by=" << scaleup
+                                                                  << ", maxCost=" << maxCost);
         for (auto& est : costs) {
             est.second.first = scaleCost(est.second.first, scaleup);
             est.second.second = scaleCost(est.second.second, scaleup);
         }
     }
+}
+
+void removeEmptyMTasks(V3Graph* execMTaskGraphp) {
+    for (V3GraphVertex* const vtxp : execMTaskGraphp->vertices().unlinkable()) {
+        ExecMTask* const mtaskp = vtxp->as<ExecMTask>();
+        AstCFunc* const funcp = mtaskp->funcp();
+        if (funcp->stmtsp()) continue;
+
+        UINFO(6, "Removing empty MTask " << mtaskp->name());
+        // Redirect edges
+        mtaskp->rerouteEdges(execMTaskGraphp);
+        // Delete the MTask function
+        VL_DO_DANGLING(funcp->unlinkFrBack()->deleteTree(), funcp);
+        // Delete the MTask vertex
+        VL_DO_DANGLING(mtaskp->unlinkDelete(execMTaskGraphp), mtaskp);
+    }
+    // Remove redundant dependencies
+    execMTaskGraphp->removeRedundantEdgesMax(&V3GraphEdge::followAlwaysTrue);
 }
 
 void fillinCosts(V3Graph* execMTaskGraphp) {
@@ -597,12 +815,12 @@ void fillinCosts(V3Graph* execMTaskGraphp) {
     for (V3GraphVertex& vtx : execMTaskGraphp->vertices()) {
         ExecMTask* const mtp = vtx.as<ExecMTask>();
         // This estimate is 64 bits, but the final mtask graph algorithm needs 32 bits
-        const uint64_t costEstimate = V3InstrCount::count(mtp->bodyp(), false);
+        const uint64_t costEstimate = V3InstrCount::count(mtp->funcp(), false);
         const uint64_t costProfiled
-            = V3Config::getProfileData(v3Global.opt.prefix(), mtp->hashName());
+            = V3Control::getProfileData(v3Global.opt.prefix(), mtp->hashName());
         if (costProfiled) {
             UINFO(5, "Profile data for mtask " << mtp->id() << " " << mtp->hashName()
-                                               << " cost override " << costProfiled << endl);
+                                               << " cost override " << costProfiled);
         }
         costs[mtp->id()] = std::make_pair(costEstimate, costProfiled);
     }
@@ -615,7 +833,7 @@ void fillinCosts(V3Graph* execMTaskGraphp) {
         ExecMTask* const mtp = vtx.as<ExecMTask>();
         const uint32_t costEstimate = costs[mtp->id()].first;
         const uint64_t costProfiled = costs[mtp->id()].second;
-        UINFO(9, "ce = " << costEstimate << " cp=" << costProfiled << endl);
+        UINFO(9, "ce = " << costEstimate << " cp=" << costProfiled);
         UASSERT(costEstimate <= (1UL << 31), "cost scaling math would overflow uint32");
         UASSERT(costProfiled <= (1UL << 31), "cost scaling math would overflow uint32");
         const uint64_t costProfiled32 = static_cast<uint32_t>(costProfiled);
@@ -630,8 +848,8 @@ void fillinCosts(V3Graph* execMTaskGraphp) {
     }
 
     if (missingProfiles) {
-        if (FileLine* const fl = V3Config::getProfileDataFileLine()) {
-            if (V3Config::containsMTaskProfileData()) {
+        if (FileLine* const fl = V3Control::getProfileDataFileLine()) {
+            if (V3Control::containsMTaskProfileData()) {
                 fl->v3warn(PROFOUTOFDATE, "Profile data for mtasks may be out of date. "
                                               << missingProfiles << " of " << totalEstimates
                                               << " mtasks had no data");
@@ -657,30 +875,6 @@ void finalizeCosts(V3Graph* execMTaskGraphp) {
         }
     }
 
-    // Some MTasks may now have zero cost, eliminate those.
-    // (It's common for tasks to shrink to nothing when V3LifePost
-    // removes dly assignments.)
-    for (V3GraphVertex* const vtxp : execMTaskGraphp->vertices().unlinkable()) {
-        ExecMTask* const mtp = vtxp->as<ExecMTask>();
-
-        // Don't rely on checking mtp->cost() == 0 to detect an empty task.
-        // Our cost-estimating logic is just an estimate. Instead, check
-        // the MTaskBody to see if it's empty. That's the source of truth.
-        AstMTaskBody* const bodyp = mtp->bodyp();
-        if (!bodyp->stmtsp()) {  // Kill this empty mtask
-            UINFO(6, "Removing zero-cost " << mtp->name() << endl);
-            for (V3GraphEdge& in : mtp->inEdges()) {
-                for (V3GraphEdge& out : mtp->outEdges()) {
-                    new V3GraphEdge{execMTaskGraphp, in.fromp(), out.top(), 1};
-                }
-            }
-            VL_DO_DANGLING(mtp->unlinkDelete(execMTaskGraphp), mtp);
-            // Also remove and delete the AstMTaskBody, otherwise it would
-            // keep a dangling pointer to the ExecMTask.
-            VL_DO_DANGLING(bodyp->unlinkFrBack()->deleteTree(), bodyp);
-        }
-    }
-
     // Removing tasks may cause edges that were formerly non-transitive to
     // become transitive. Also we just created new edges around the removed
     // tasks, which could be transitive. Prune out all transitive edges.
@@ -696,22 +890,23 @@ void finalizeCosts(V3Graph* execMTaskGraphp) {
     V3Stats::addStat("MTask graph, final, parallelism factor", report.parallelismFactor());
     if (debug() >= 3) {
         UINFO(0, "\n");
-        UINFO(0, "    Final mtask parallelism report:\n");
-        UINFO(0, "    Critical path cost = " << report.criticalPathCost() << "\n");
-        UINFO(0, "    Total graph cost = " << report.totalGraphCost() << "\n");
-        UINFO(0, "    MTask vertex count = " << report.vertexCount() << "\n");
-        UINFO(0, "    Edge count = " << report.edgeCount() << "\n");
-        UINFO(0, "    Parallelism factor = " << report.parallelismFactor() << "\n");
+        UINFO(0, "    Final mtask parallelism report:");
+        UINFO(0, "    Critical path cost = " << report.criticalPathCost());
+        UINFO(0, "    Total graph cost = " << report.totalGraphCost());
+        UINFO(0, "    MTask vertex count = " << report.vertexCount());
+        UINFO(0, "    Edge count = " << report.edgeCount());
+        UINFO(0, "    Parallelism factor = " << report.parallelismFactor());
     }
 }
 
 void addMTaskToFunction(const ThreadSchedule& schedule, const uint32_t threadId, AstCFunc* funcp,
                         const ExecMTask* mtaskp) {
+    AstScope* const scopep = v3Global.rootp()->topScopep()->scopep();
     AstNodeModule* const modp = v3Global.rootp()->topModulep();
     FileLine* const fl = modp->fileline();
 
     // Helper function to make the code a bit more legible
-    const auto addStrStmt = [=](const string& stmt) -> void {  //
+    const auto addCStmt = [=](const string& stmt) -> void {  //
         funcp->addStmtsp(new AstCStmt{fl, stmt});
     };
 
@@ -719,43 +914,45 @@ void addMTaskToFunction(const ThreadSchedule& schedule, const uint32_t threadId,
         // This mtask has dependencies executed on another thread, so it may block. Create the task
         // state variable and wait to be notified.
         const string name = "__Vm_mtaskstate_" + cvtToStr(mtaskp->id());
-        AstBasicDType* const mtaskStateDtypep
+        AstBasicDType* const s_mtaskStateDtypep
             = v3Global.rootp()->typeTablep()->findBasicDType(fl, VBasicDTypeKwd::MTASKSTATE);
-        AstVar* const varp = new AstVar{fl, VVarType::MODULETEMP, name, mtaskStateDtypep};
+        AstVar* const varp = new AstVar{fl, VVarType::MODULETEMP, name, s_mtaskStateDtypep};
+        varp->isConst(true);
         varp->valuep(new AstConst{fl, nDependencies});
-        varp->protect(false);  // Do not protect as we still have references in AstText
+        varp->protect(false);  // Do not protect as we have references in text
         modp->addStmtsp(varp);
         // For now, reference is still via text bashing
         if (v3Global.opt.profExec()) {
-            addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).threadScheduleWaitBegin();\n");
+            addCStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).threadScheduleWaitBegin();");
         }
-        addStrStmt("vlSelf->" + name + +".waitUntilUpstreamDone(even_cycle);\n");
+        addCStmt("vlSelf->" + name + +".waitUntilUpstreamDone(even_cycle);");
         if (v3Global.opt.profExec()) {
-            addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).threadScheduleWaitEnd();\n");
+            addCStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).threadScheduleWaitEnd();");
         }
     }
 
     if (v3Global.opt.profPgo()) {
         // No lock around startCounter, as counter numbers are unique per thread
-        addStrStmt("vlSymsp->_vm_pgoProfiler.startCounter(" + std::to_string(mtaskp->id())
-                   + ");\n");
+        addCStmt("vlSymsp->_vm_pgoProfiler.startCounter(" + std::to_string(mtaskp->id()) + ");");
     }
 
-    // Move the actual body into this function
-    funcp->addStmtsp(mtaskp->bodyp()->unlinkFrBack());
+    // Call the MTask function
+    AstCCall* const callp = new AstCCall{fl, mtaskp->funcp()};
+    callp->selfPointer(VSelfPointerText{VSelfPointerText::VlSyms{}, scopep->nameDotless()});
+    callp->dtypeSetVoid();
+    funcp->addStmtsp(callp->makeStmt());
 
     if (v3Global.opt.profPgo()) {
         // No lock around stopCounter, as counter numbers are unique per thread
-        addStrStmt("vlSymsp->_vm_pgoProfiler.stopCounter(" + std::to_string(mtaskp->id())
-                   + ");\n");
+        addCStmt("vlSymsp->_vm_pgoProfiler.stopCounter(" + std::to_string(mtaskp->id()) + ");");
     }
 
     // For any dependent mtask that's on another thread, signal one dependency completion.
     for (const V3GraphEdge& edge : mtaskp->outEdges()) {
         const ExecMTask* const nextp = edge.top()->as<ExecMTask>();
         if (schedule.threadId(nextp) != threadId && schedule.contains(nextp)) {
-            addStrStmt("vlSelf->__Vm_mtaskstate_" + cvtToStr(nextp->id())
-                       + ".signalUpstreamDone(even_cycle);\n");
+            addCStmt("vlSelf->__Vm_mtaskstate_" + cvtToStr(nextp->id())
+                     + ".signalUpstreamDone(even_cycle);");
         }
     }
 }
@@ -768,11 +965,11 @@ const std::vector<AstCFunc*> createThreadFunctions(const ThreadSchedule& schedul
     std::vector<AstCFunc*> funcps;
 
     // For each thread, create a function representing its entry point
-    for (const std::vector<const ExecMTask*>& thread : schedule.threads) {
+    for (const std::vector<const ExecMTask*>& thread : schedule.m_threads) {
         if (thread.empty()) continue;
         const uint32_t threadId = schedule.threadId(thread.front());
-        const string name{"__Vthread__" + tag + "__t" + cvtToStr(threadId) + "__s"
-                          + cvtToStr(schedule.id())};
+        const string name{"__Vthread__" + tag + "__s" + cvtToStr(schedule.id()) + "__t"
+                          + cvtToStr(threadId)};
         AstCFunc* const funcp = new AstCFunc{fl, name, nullptr, "void"};
         modp->addStmtsp(funcp);
         funcps.push_back(funcp);
@@ -782,8 +979,8 @@ const std::vector<AstCFunc*> createThreadFunctions(const ThreadSchedule& schedul
         funcp->argTypes("void* voidSelf, bool even_cycle");
 
         // Setup vlSelf and vlSyms
-        funcp->addStmtsp(new AstCStmt{fl, EmitCBase::voidSelfAssign(modp)});
-        funcp->addStmtsp(new AstCStmt{fl, EmitCBase::symClassAssign()});
+        funcp->addStmtsp(new AstCStmt{fl, EmitCUtil::voidSelfAssign(modp)});
+        funcp->addStmtsp(new AstCStmt{fl, EmitCUtil::symClassAssign()});
 
         // Invoke each mtask scheduled to this thread from the thread function
         for (const ExecMTask* const mtaskp : thread) {
@@ -793,17 +990,18 @@ const std::vector<AstCFunc*> createThreadFunctions(const ThreadSchedule& schedul
         // Unblock the fake "final" mtask when this thread is finished
         funcp->addStmtsp(new AstCStmt{fl, "vlSelf->__Vm_mtaskstate_final__"
                                               + cvtToStr(schedule.id()) + tag
-                                              + ".signalUpstreamDone(even_cycle);\n"});
+                                              + ".signalUpstreamDone(even_cycle);"});
     }
 
     // Create the fake "final" mtask state variable
-    AstBasicDType* const mtaskStateDtypep
+    AstBasicDType* const s_mtaskStateDtypep
         = v3Global.rootp()->typeTablep()->findBasicDType(fl, VBasicDTypeKwd::MTASKSTATE);
-    AstVar* const varp
-        = new AstVar{fl, VVarType::MODULETEMP,
-                     "__Vm_mtaskstate_final__" + cvtToStr(schedule.id()) + tag, mtaskStateDtypep};
+    AstVar* const varp = new AstVar{fl, VVarType::MODULETEMP,
+                                    "__Vm_mtaskstate_final__" + cvtToStr(schedule.id()) + tag,
+                                    s_mtaskStateDtypep};
+    varp->isConst(true);
     varp->valuep(new AstConst(fl, funcps.size()));
-    varp->protect(false);  // Do not protect as we still have references in AstText
+    varp->protect(false);  // Do not protect as we have references in text
     modp->addStmtsp(varp);
 
     return funcps;
@@ -815,31 +1013,28 @@ void addThreadStartWrapper(AstExecGraph* const execGraphp) {
     const string& tag = execGraphp->name();
 
     // Add thread function invocations to execGraph
-    const auto addStrStmt = [=](const string& stmt) -> void {  //
+    const auto addCStmt = [=](const string& stmt) -> void {  //
         execGraphp->addStmtsp(new AstCStmt{fl, stmt});
     };
 
     if (v3Global.opt.profExec()) {
-        addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).execGraphBegin();\n");
+        addCStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).execGraphBegin();");
     }
 
-    addStrStmt("vlSymsp->__Vm_even_cycle__" + tag + " = !vlSymsp->__Vm_even_cycle__" + tag
-               + ";\n");
+    addCStmt("vlSymsp->__Vm_even_cycle__" + tag + " = !vlSymsp->__Vm_even_cycle__" + tag + ";");
 
-    if (!v3Global.opt.hierBlocks().empty()) addStrStmt("std::vector<size_t> indexes;\n");
+    if (!v3Global.opt.hierBlocks().empty()) addCStmt("std::vector<size_t> indexes;");
 }
 
 void addThreadEndWrapper(AstExecGraph* const execGraphp) {
     // Add thread function invocations to execGraph
-    const auto addStrStmt = [=](const string& stmt) -> void {  //
+    const auto addCStmt = [=](const string& stmt) -> void {  //
         FileLine* const flp = v3Global.rootp()->fileline();
         execGraphp->addStmtsp(new AstCStmt{flp, stmt});
     };
 
-    addStrStmt("Verilated::mtaskId(0);\n");
-    if (v3Global.opt.profExec()) {
-        addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).execGraphEnd();\n");
-    }
+    addCStmt("Verilated::mtaskId(0);");
+    if (v3Global.opt.profExec()) { addCStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).execGraphEnd();"); }
 }
 void addThreadStartToExecGraph(AstExecGraph* const execGraphp,
                                const std::vector<AstCFunc*>& funcps, uint32_t scheduleId) {
@@ -848,31 +1043,31 @@ void addThreadStartToExecGraph(AstExecGraph* const execGraphp,
     const string& tag = execGraphp->name();
 
     // Add thread function invocations to execGraph
-    const auto addStrStmt = [=](const string& stmt) -> void {  //
+    const auto addCStmt = [=](const string& stmt) -> void {  //
         execGraphp->addStmtsp(new AstCStmt{fl, stmt});
-    };
-    const auto addTextStmt = [=](const string& text) -> void {
-        execGraphp->addStmtsp(new AstText{fl, text, /* tracking: */ true});
     };
 
     const uint32_t last = funcps.size() - 1;
     if (!v3Global.opt.hierBlocks().empty() && last > 0) {
-        addStrStmt(
-            "for (size_t i = 0; i < " + cvtToStr(last)
-            + "; ++i) indexes.push_back(vlSymsp->__Vm_threadPoolp->assignWorkerIndex());\n");
+        addCStmt("for (size_t i = 0; i < " + std::to_string(last) + "; ++i) {\n"  //
+                 + "indexes.push_back(vlSymsp->__Vm_threadPoolp->assignWorkerIndex());\n"  //
+                 + "}");
     }
     uint32_t i = 0;
     for (AstCFunc* const funcp : funcps) {
         if (i != last) {
             // The first N-1 will run on the thread pool.
+            AstCStmt* const cstmtp = new AstCStmt{fl};
+            execGraphp->addStmtsp(cstmtp);
+            cstmtp->add("vlSymsp->__Vm_threadPoolp->workerp(");
             if (v3Global.opt.hierChild() || !v3Global.opt.hierBlocks().empty()) {
-                addTextStmt("vlSymsp->__Vm_threadPoolp->workerp(indexes[" + cvtToStr(i)
-                            + "])->addTask(");
+                cstmtp->add("indexes[" + std::to_string(i) + "]");
             } else {
-                addTextStmt("vlSymsp->__Vm_threadPoolp->workerp(" + cvtToStr(i) + ")->addTask(");
+                cstmtp->add(std::to_string(i));
             }
-            execGraphp->addStmtsp(new AstAddrOfCFunc{fl, funcp});
-            addTextStmt(", vlSelf, vlSymsp->__Vm_even_cycle__" + tag + ");\n");
+            cstmtp->add(")->addTask(");
+            cstmtp->add(new AstAddrOfCFunc{fl, funcp});
+            cstmtp->add(", vlSelf, vlSymsp->__Vm_even_cycle__" + tag + ");");
         } else {
             // The last will run on the main thread.
             AstCCall* const callp = new AstCCall{fl, funcp};
@@ -885,69 +1080,51 @@ void addThreadStartToExecGraph(AstExecGraph* const execGraphp,
     V3Stats::addStatSum("Optimizations, Thread schedule total tasks", i);
 
     if (v3Global.opt.profExec()) {
-        addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).threadScheduleWaitBegin();\n");
+        addCStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).threadScheduleWaitBegin();");
     }
-    addStrStmt("vlSelf->__Vm_mtaskstate_final__" + std::to_string(scheduleId) + tag
-               + ".waitUntilUpstreamDone(vlSymsp->__Vm_even_cycle__" + tag + ");\n");
+    addCStmt("vlSelf->__Vm_mtaskstate_final__" + std::to_string(scheduleId) + tag
+             + ".waitUntilUpstreamDone(vlSymsp->__Vm_even_cycle__" + tag + ");");
     if (v3Global.opt.profExec()) {
-        addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).threadScheduleWaitEnd();\n");
+        addCStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).threadScheduleWaitEnd();");
     }
     // Free all assigned worker indices in this section
     if (!v3Global.opt.hierBlocks().empty() && last > 0) {
-        addStrStmt("vlSymsp->__Vm_threadPoolp->freeWorkerIndexes(indexes);\n");
+        addCStmt("vlSymsp->__Vm_threadPoolp->freeWorkerIndexes(indexes);");
     }
 }
 
-void wrapMTaskBodies(AstExecGraph* const execGraphp) {
-    FileLine* const flp = execGraphp->fileline();
-    const string& tag = execGraphp->name();
-    AstNodeModule* const modp = v3Global.rootp()->topModulep();
-
-    for (AstMTaskBody* mtaskBodyp = execGraphp->mTaskBodiesp(); mtaskBodyp;
-         mtaskBodyp = VN_AS(mtaskBodyp->nextp(), MTaskBody)) {
-        ExecMTask* const mtaskp = mtaskBodyp->execMTaskp();
-        const std::string name = tag + "_mtask" + std::to_string(mtaskp->id());
-        AstCFunc* const funcp = new AstCFunc{flp, name, nullptr};
-        funcp->isLoose(true);
-        modp->addStmtsp(funcp);
+void processMTaskBodies(AstExecGraph* const execGraphp) {
+    for (V3GraphVertex* const vtxp : execGraphp->depGraphp()->vertices().unlinkable()) {
+        ExecMTask* const mtaskp = vtxp->as<ExecMTask>();
+        AstCFunc* const funcp = mtaskp->funcp();
+        // Temporarily unlink function body so we can add more statemetns
+        AstNode* stmtsp = funcp->stmtsp()->unlinkFrBackWithNext();
 
         // Helper function to make the code a bit more legible
-        const auto addStrStmt = [=](const string& stmt) -> void {  //
-            funcp->addStmtsp(new AstCStmt{flp, stmt});
+        const auto addCStmt = [=](const string& stmt) -> void {  //
+            funcp->addStmtsp(new AstCStmt{execGraphp->fileline(), stmt});
         };
 
-        addStrStmt("static constexpr unsigned taskId = " + cvtToStr(mtaskp->id()) + ";\n");
-
+        // Profiling mtaskStart
         if (v3Global.opt.profExec()) {
-            const string& predictStart = std::to_string(mtaskp->predictStart());
-            if (v3Global.opt.hierChild()) {
-                addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).mtaskBegin(taskId, " + predictStart
-                           + ", \"" + v3Global.opt.topModule() + "\");\n");
-            } else {
-                addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).mtaskBegin(taskId, " + predictStart
-                           + ");\n");
-            }
+            std::string args = std::to_string(mtaskp->id());
+            args += ", " + std::to_string(mtaskp->predictStart());
+            args += ", \"";
+            if (v3Global.opt.hierChild()) args += v3Global.opt.topModule();
+            args += "\"";
+            addCStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).mtaskBegin(" + args + ");");
         }
-
         // Set mtask ID in the run-time system
-        addStrStmt("Verilated::mtaskId(taskId);\n");
-
-        // Run body
-        funcp->addStmtsp(mtaskBodyp->stmtsp()->unlinkFrBackWithNext());
-
+        addCStmt("Verilated::mtaskId(" + std::to_string(mtaskp->id()) + ");");
+        // Add back the body
+        funcp->addStmtsp(stmtsp);
         // Flush message queue
-        addStrStmt("Verilated::endOfThreadMTask(vlSymsp->__Vm_evalMsgQp);\n");
-
+        addCStmt("Verilated::endOfThreadMTask(vlSymsp->__Vm_evalMsgQp);");
+        // Profiling mtaskEnd
         if (v3Global.opt.profExec()) {
-            const string& predictCost = std::to_string(mtaskp->cost());
-            addStrStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).mtaskEnd(" + predictCost + ");\n");
+            const std::string& args = std::to_string(mtaskp->cost());
+            addCStmt("VL_EXEC_TRACE_ADD_RECORD(vlSymsp).mtaskEnd(" + args + ");");
         }
-
-        // AstMTask will simply contain a call
-        AstCCall* const callp = new AstCCall{flp, funcp};
-        callp->selfPointer(VSelfPointerText{VSelfPointerText::This{}});
-        callp->dtypeSetVoid();
-        mtaskBodyp->addStmtsp(callp->makeStmt());
     }
 }
 
@@ -955,8 +1132,7 @@ void implementExecGraph(AstExecGraph* const execGraphp, const ThreadSchedule& sc
     // Nothing to be done if there are no MTasks in the graph at all.
     if (execGraphp->depGraphp()->empty()) return;
 
-    // Create a function to be run by each thread. Note this moves all AstMTaskBody nodes form the
-    // AstExecGraph into the AstCFunc created
+    // Create a function to be run by each thread.
     const std::vector<AstCFunc*>& funcps = createThreadFunctions(schedule, execGraphp->name());
     UASSERT(!funcps.empty(), "Non-empty ExecGraph yields no threads?");
 
@@ -964,9 +1140,30 @@ void implementExecGraph(AstExecGraph* const execGraphp, const ThreadSchedule& sc
     addThreadStartToExecGraph(execGraphp, funcps, schedule.id());
 }
 
+// Called by Verilator top stage
 void implement(AstNetlist* netlistp) {
-    // Called by Verilator top stage
-    netlistp->topModulep()->foreach([&](AstExecGraph* execGraphp) {
+    // Gather all ExecGraphs
+    std::vector<AstExecGraph*> execGraphps;
+    netlistp->topModulep()->foreach([&](AstExecGraph* egp) { execGraphps.emplace_back(egp); });
+
+    // Process each
+    for (AstExecGraph* const execGraphp : execGraphps) {
+        // We can delete the placeholder calls to the MTask functions that
+        // were used for code analysis until now. We will replace them with
+        // statements that dispatch execution to the thread pool.
+        if (execGraphp->stmtsp()) execGraphp->stmtsp()->unlinkFrBackWithNext()->deleteTree();
+
+        // Some MTasks may have become empty after scheduling due to
+        // optimizations after scheduling. Remove those.
+        removeEmptyMTasks(execGraphp->depGraphp());
+
+        // In some very small test cases, we might end up with a completely
+        // empty ExecGraph, if so just delete it.
+        if (execGraphp->depGraphp()->empty()) {
+            VL_DO_DANGLING(execGraphp->unlinkFrBack()->deleteTree(), execGraphp);
+            return;
+        }
+
         // Back in V3Order, we partitioned mtasks using provisional cost
         // estimates. However, V3Order precedes some optimizations (notably
         // V3LifePost) that can change the cost of logic within each mtask.
@@ -985,8 +1182,8 @@ void implement(AstNetlist* netlistp) {
         V3Stats::addStatSum("Optimizations, Thread schedule count",
                             static_cast<double>(packed.size()));
 
-        // Wrap each MTask body into a CFunc for better profiling/debugging
-        wrapMTaskBodies(execGraphp);
+        // Process MTask function bodies to add additional code
+        processMTaskBodies(execGraphp);
 
         for (const ThreadSchedule& schedule : packed) {
             // Replace the graph body with its multi-threaded implementation.
@@ -994,7 +1191,7 @@ void implement(AstNetlist* netlistp) {
         }
 
         addThreadEndWrapper(execGraphp);
-    });
+    }
 }
 
 void selfTest() {
@@ -1004,12 +1201,12 @@ void selfTest() {
                      {2, {20, 0}},  // Note no profile
                      {3, {30, 3000}}});
         normalizeCosts(costs);
-        UASSERT_SELFTEST(uint64_t, costs[1].first, 1000);
-        UASSERT_SELFTEST(uint64_t, costs[1].second, 1000);
-        UASSERT_SELFTEST(uint64_t, costs[2].first, 2000);
-        UASSERT_SELFTEST(uint64_t, costs[2].second, 0);
-        UASSERT_SELFTEST(uint64_t, costs[3].first, 3000);
-        UASSERT_SELFTEST(uint64_t, costs[3].second, 3000);
+        UASSERT_SELFTEST(const uint64_t, costs[1].first, 1000);
+        UASSERT_SELFTEST(const uint64_t, costs[1].second, 1000);
+        UASSERT_SELFTEST(const uint64_t, costs[2].first, 2000);
+        UASSERT_SELFTEST(const uint64_t, costs[2].second, 0);
+        UASSERT_SELFTEST(const uint64_t, costs[3].first, 3000);
+        UASSERT_SELFTEST(const uint64_t, costs[3].second, 3000);
     }
     {  // Test that very large profile data properly scales
         Costs costs({// id  est  prof
@@ -1017,12 +1214,12 @@ void selfTest() {
                      {2, {20, 200000000000}},
                      {3, {30, 1}}});  // Make sure doesn't underflow
         normalizeCosts(costs);
-        UASSERT_SELFTEST(uint64_t, costs[1].first, 2500000);
-        UASSERT_SELFTEST(uint64_t, costs[1].second, 5000000);
-        UASSERT_SELFTEST(uint64_t, costs[2].first, 5000000);
-        UASSERT_SELFTEST(uint64_t, costs[2].second, 10000000);
-        UASSERT_SELFTEST(uint64_t, costs[3].first, 7500000);
-        UASSERT_SELFTEST(uint64_t, costs[3].second, 1);
+        UASSERT_SELFTEST(const uint64_t, costs[1].first, 2500000);
+        UASSERT_SELFTEST(const uint64_t, costs[1].second, 5000000);
+        UASSERT_SELFTEST(const uint64_t, costs[2].first, 5000000);
+        UASSERT_SELFTEST(const uint64_t, costs[2].second, 10000000);
+        UASSERT_SELFTEST(const uint64_t, costs[3].first, 7500000);
+        UASSERT_SELFTEST(const uint64_t, costs[3].second, 1);
     }
 
     PackThreads::selfTest();

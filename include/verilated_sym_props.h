@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -27,6 +27,8 @@
 #define VERILATOR_VERILATED_SYM_PROPS_H_
 
 #include "verilatedos.h"
+
+#include "verilated.h"
 
 #include <vector>
 
@@ -156,20 +158,21 @@ public:
         return bits;
     }
     bool isPublicRW() const { return ((m_vlflags & VLVF_PUB_RW) != 0); }
+    bool isForceable() const { return ((m_vlflags & VLVF_FORCEABLE) != 0); }
+    bool isContinuously() const { return ((m_vlflags & VLVF_CONTINUOUSLY) != 0); }
     // DPI compatible C standard layout
     bool isDpiCLayout() const { return ((m_vlflags & VLVF_DPI_CLAY) != 0); }
+    bool isSigned() const { return ((m_vlflags & VLVF_SIGNED) != 0); }
+    bool isBitVar() const { return ((m_vlflags & VLVF_BITVAR) != 0); }
     int udims() const VL_MT_SAFE { return m_unpacked.size(); }
     int pdims() const VL_MT_SAFE { return m_packed.size(); }
     int dims() const VL_MT_SAFE { return pdims() + udims(); }
     const std::vector<VerilatedRange>& packedRanges() const VL_MT_SAFE { return m_packed; }
     const std::vector<VerilatedRange>& unpackedRanges() const VL_MT_SAFE { return m_unpacked; }
     const VerilatedRange* range(int dim) const VL_MT_SAFE {
-        if (dim < udims())
-            return &m_unpacked[dim];
-        else if (dim < dims())
-            return &m_packed[dim - udims()];
-        else
-            return nullptr;
+        if (dim < udims()) return &m_unpacked[dim];
+        if (dim < dims()) return &m_packed[dim - udims()];
+        return nullptr;
     }
     // DPI accessors (with packed dimensions flattened!)
     int left(int dim) const VL_MT_SAFE {
@@ -248,27 +251,61 @@ public:
 // Verilator variable
 // Thread safety: Assume is constructed only with model, then any number of readers
 
+struct VerilatedForceControlSignals;
 class VerilatedVar final : public VerilatedVarProps {
     // MEMBERS
     void* const m_datap;  // Location of data
     const char* const m_namep;  // Name - slowpath
+    std::unique_ptr<const VerilatedForceControlSignals>
+        m_forceControlSignals;  // Force control signals
+
 protected:
     const bool m_isParam;
     friend class VerilatedScope;
     // CONSTRUCTORS
     VerilatedVar(const char* namep, void* datap, VerilatedVarType vltype,
-                 VerilatedVarFlags vlflags, int udims, int pdims, bool isParam)
-        : VerilatedVarProps{vltype, vlflags, udims, pdims}
-        , m_datap{datap}
-        , m_namep{namep}
-        , m_isParam{isParam} {}
+                 VerilatedVarFlags vlflags, int udims, int pdims, bool isParam);
+    VerilatedVar(const char* namep, void* datap, VerilatedVarType vltype,
+                 VerilatedVarFlags vlflags, int udims, int pdims, bool isParam,
+                 std::unique_ptr<const VerilatedForceControlSignals> forceControlSignals);
 
 public:
-    ~VerilatedVar() = default;
+    ~VerilatedVar();
+    VerilatedVar(VerilatedVar&&);
     // ACCESSORS
     void* datap() const { return m_datap; }
     const char* name() const { return m_namep; }
     bool isParam() const { return m_isParam; }
+    const VerilatedForceControlSignals* forceControlSignals() const {
+        return m_forceControlSignals.get();
+    }
 };
+
+//===========================================================================
+// Force control signals of a VerilatedVar
+
+struct VerilatedForceControlSignals final {
+    const VerilatedVar* forceEnableSignalp{nullptr};  // __VforceEn signal
+    const VerilatedVar* forceValueSignalp{nullptr};  // __VforceVal signal
+    const VerilatedVar forceReadSignal;  // __VforceRd signal
+};
+
+inline VerilatedVar::VerilatedVar(const char* namep, void* datap, VerilatedVarType vltype,
+                                  VerilatedVarFlags vlflags, int udims, int pdims, bool isParam)
+    : VerilatedVarProps{vltype, vlflags, udims, pdims}
+    , m_datap{datap}
+    , m_namep{namep}
+    , m_isParam{isParam} {}
+inline VerilatedVar::VerilatedVar(
+    const char* namep, void* datap, VerilatedVarType vltype, VerilatedVarFlags vlflags, int udims,
+    int pdims, bool isParam,
+    std::unique_ptr<const VerilatedForceControlSignals> forceControlSignals)
+    : VerilatedVarProps{vltype, vlflags, udims, pdims}
+    , m_datap{datap}
+    , m_namep{namep}
+    , m_forceControlSignals{std::move(forceControlSignals)}
+    , m_isParam{isParam} {}
+inline VerilatedVar::~VerilatedVar() = default;
+inline VerilatedVar::VerilatedVar(VerilatedVar&&) = default;
 
 #endif  // Guard

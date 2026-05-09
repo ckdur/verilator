@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2001-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2001-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=============================================================================
@@ -220,7 +220,7 @@ void VerilatedRestore::fill() VL_MT_UNSAFE_ONE {
     if (VL_UNLIKELY(!isOpen())) return;
     // Move remaining characters down to start of buffer.  (No memcpy, overlaps allowed)
     uint8_t* rp = m_bufp;
-    for (uint8_t* sp = m_cp; sp < m_endp; *rp++ = *sp++) {}  // Overlaps
+    for (const uint8_t* sp = m_cp; sp < m_endp; *rp++ = *sp++) {}  // Overlaps
     m_endp = m_bufp + (m_endp - m_cp);
     m_cp = m_bufp;  // Reset buffer
     // Read into buffer starting at m_endp
@@ -254,13 +254,13 @@ void VerilatedRestore::fill() VL_MT_UNSAFE_ONE {
 // Serialization of types
 
 VerilatedSerialize& operator<<(VerilatedSerialize& os, VerilatedContext* rhsp) {
-    os.write(rhsp->serialized1Ptr(), rhsp->serialized1Size());
+    os.write(rhsp->serialized1Ptr(), VerilatedContext::serialized1Size());
     os << rhsp->impp()->timeFormatSuffix();
     os << rhsp->dumpfile();
     return os;
 }
 VerilatedDeserialize& operator>>(VerilatedDeserialize& os, VerilatedContext* rhsp) {
-    os.read(rhsp->serialized1Ptr(), rhsp->serialized1Size());
+    os.read(rhsp->serialized1Ptr(), VerilatedContext::serialized1Size());
     std::string s;
     os >> s;
     rhsp->impp()->timeFormatSuffix(s);

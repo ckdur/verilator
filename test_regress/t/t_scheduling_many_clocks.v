@@ -1,18 +1,17 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2025 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2025 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
+// verilog_format: off
 `define stop $stop
 `define checkh(gotv,expv) do if ((gotv) !== (expv)) begin $write("%%Error: %s:%0d:  got=%0x exp=%0x (%s !== %s)\n", `__FILE__,`__LINE__, (gotv), (expv), `"gotv`", `"expv`"); `stop; end while(0);
+// verilog_format: on
 
-module t(/*AUTOARG*/
-   // Inputs
-   clk
-   );
-
-  input clk;
+module t (
+    input clk
+);
 
   localparam int ITERATIONS = 5;
   localparam int N = 227;
@@ -26,26 +25,32 @@ module t(/*AUTOARG*/
   endfunction
 
   int cyc = 0;
+  bit par = 0;
   always @(posedge clk) begin
-     if (~|gclk) begin
-       gclk[0] = 1'b1;
-     end else begin
-       gclk = {gclk[N-2:0], gclk[N-1]};
-     end
+    if (~|gclk) begin
+      gclk[0] = 1'b1;
+    end
+    else begin
+      gclk = {gclk[N-2:0], gclk[N-1]};
+    end
 
-     cyc <= cyc + 32'd1;
-     if (cyc == ITERATIONS*N - 1) begin
-         $display("cyc");
-         $write("*-* All Finished *-*\n");
-         $finish;
-     end
+    // This make the always block requires a 'pre' trigger (and makes it non-splitable)
+    par <= ^gclk;
+
+    cyc <= cyc + 32'd1;
+    if (cyc == ITERATIONS * N - 1) begin
+      $display("final cycle: %0d, par: %0d", cyc, par);
+      $write("*-* All Finished *-*\n");
+      $finish;
+    end
   end
 
   for (genvar n = 0; n < N; n++) begin : gen
     int cnt = 0;
     always @(posedge gclk[n]) cnt <= cnt + 1;
 
-    wire int cnt_plus_one = cnt + 1;
+    int cnt_plus_one;
+    always_comb cnt_plus_one = cnt + 1;
 
     final begin
       `checkh(cnt_plus_one, ITERATIONS + 1);

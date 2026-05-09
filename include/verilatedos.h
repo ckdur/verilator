@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -37,7 +37,7 @@
 //=========================================================================
 // Compiler pragma abstraction
 
-#if defined(__clang__)
+#ifdef __clang__
 # define VL_CLANG_ATTR(attr) __attribute__(( attr ))
 #else
 # define VL_CLANG_ATTR(attr)
@@ -52,15 +52,13 @@
 // clang and gcc-8.0+ support no_sanitize("string") style attribute
 # if defined(__clang__) || (__GNUC__ >= 8)
 #  define VL_ATTR_NO_SANITIZE_ALIGN __attribute__((no_sanitize("alignment")))
-#else  // The entire undefined sanitizer has to be disabled for older gcc
+# else  // The entire undefined sanitizer has to be disabled for older gcc
 #  define VL_ATTR_NO_SANITIZE_ALIGN __attribute__((no_sanitize_undefined))
-#endif
+# endif
 # define VL_ATTR_PRINTF(fmtArgNum) __attribute__((format(printf, (fmtArgNum), (fmtArgNum) + 1)))
 # define VL_ATTR_PURE __attribute__((pure))
 # define VL_ATTR_UNUSED __attribute__((unused))
-#ifndef VL_ATTR_WARN_UNUSED_RESULT
 # define VL_ATTR_WARN_UNUSED_RESULT __attribute__((warn_unused_result))
-#endif
 # if !defined(_WIN32) && !defined(__MINGW32__)
 // All VL_ATTR_WEAK symbols must be marked with the macOS -U linker flag in verilated.mk.in
 #  define VL_ATTR_WEAK __attribute__((weak))
@@ -122,9 +120,14 @@
 // Allowed on: function, method. (-fthread-safety)
 #define VL_ASSERT_CAPABILITY(x) \
         VL_CLANG_ATTR(assert_capability(x))
+// Disable thread safety analysis for the annotted function
+// Use this only when absolutely sure code is correct, but too
+// complicated for the compiler to prove.
+#define VL_NO_THREAD_SAFETY_ANALYSIS \
+        VL_CLANG_ATTR(no_thread_safety_analysis)
 
 // Require mutex locks only in code units which work with enabled multi-threading.
-#if !defined(VL_MT_DISABLED_CODE_UNIT)
+#ifndef VL_MT_DISABLED_CODE_UNIT
 // Function requires not having a capability inbound (-fthread-safety)
 # define VL_REQUIRES(x) \
         VL_CLANG_ATTR(annotate("REQUIRES")) \
@@ -258,6 +261,16 @@
         VL_DANGLING(var); \
     } while (false)
 
+/// As with VL_DO_DANGLING, but two variables dangle.
+#define VL_DO_DANGLING2(stmt, var, var2) \
+    do { \
+        do { \
+            stmt; \
+        } while (false); \
+        VL_DANGLING(var); \
+        VL_DANGLING(var2); \
+    } while (false)
+
 /// Perform an e.g. delete, then set variable to nullptr as a requirement
 #define VL_DO_CLEAR(stmt, stmt2) \
     do { \
@@ -305,12 +318,13 @@
 # define VL_CONSTEXPR_CXX17
 #endif
 
-
 //=========================================================================
 // Optimization
 
-#ifndef VL_INLINE_OPT
-# define VL_INLINE_OPT  ///< "inline" if compiling all objects in single compiler run
+#ifndef VL_NO_LEGACY
+# ifndef VL_INLINE_OPT
+#   define VL_INLINE_OPT  // Historical, has no effect on Verilated models.
+# endif
 #endif
 
 //=========================================================================
@@ -336,6 +350,8 @@ extern "C" void __gcov_dump();
 #  pragma warning(disable:4189)  // C4189: local variable is initialized but not referenced (L4)
 #  pragma warning(disable:4244)  // C4244: conversion from 'uint64_t' to 'uint_32_t', possible loss of data
 #  pragma warning(disable:4245)  // C4245: conversion from 'int' to 'unsigned', signed/unsigned mismatch
+#  pragma warning(disable:4267)  // C4267: conversion from 'size_t' to 'int', possible loss of data
+#  pragma warning(disable:4316)  // C4316: 'Vtop': object allocated on the heap may not be aligned 64
 #  pragma warning(disable:4996)  // C4996: sscanf/fopen/etc may be unsafe
 # endif
 #endif
@@ -368,7 +384,7 @@ using vlsint32_t = int32_t;  ///< 32-bit signed type (backward compatibility)
 using vlsint64_t = int64_t;  ///< 64-bit signed type (backward compatibility)
 #endif
 
-#if defined(__CYGWIN__)
+#ifdef __CYGWIN__
 
 # include <sys/types.h>  // __WORDSIZE
 # include <unistd.h>  // ssize_t
@@ -419,6 +435,17 @@ using ssize_t = uint32_t;  ///< signed size_t; returned from read()
 # define VL_VSNPRINTF vsnprintf
 #endif
 
+// Constants for VL_SFORMATF; see V3Number.h VFormatAttr
+// Character codes are upper case so harder to confuse with format %codes.
+// (...) indicates what is passed as arguments in emitted code
+#define VL_VFORMATATTR_UNSIGNED '#'  // (int widthMin, IData/WData/etc) Use standard format
+#define VL_VFORMATATTR_SIGNED '~'  // (int widthMin, IData/WData/etc) Signed number; for %d showing sign
+#define VL_VFORMATATTR_COMPLEX '!'  // (std::string*); for non-POD; e.g. struct, requires %p typically
+#define VL_VFORMATATTR_DOUBLE 'D'  // (double); promote %p to %f
+#define VL_VFORMATATTR_SCOPE 'M'  // (char* name, char* scope); for scopes
+#define VL_VFORMATATTR_STRING 'S'  // (char* name, char* scope); for scopes  // (std::string*); for %p/%s
+#define VL_VFORMATATTR_TIMEUNIT 'T'  // (int timeunit); timeunits passed from V3Emit to runtime
+
 //=========================================================================
 // File system functions
 
@@ -458,23 +485,18 @@ using ssize_t = uint32_t;  ///< signed size_t; returned from read()
 
 // Declare a class as uncopyable; put after a private:
 #define VL_UNCOPYABLE(Type) \
-    Type(const Type& other) = delete; \
+    Type(const Type& other) = delete;         \
     Type& operator=(const Type&) = delete
 
 // Declare a class as unmovable; put after a private:
 #define VL_UNMOVABLE(Type) \
-    Type(Type&& other) = delete; \
+    Type(Type&& other) = delete;              \
     Type& operator=(Type&&) = delete
 
 //=========================================================================
 // Verilated function size macros
 
 #define VL_MULS_MAX_WORDS 128  ///< Max size in words of MULS operation
-
-#ifndef VL_VALUE_STRING_MAX_WORDS
-    #define VL_VALUE_STRING_MAX_WORDS 64  ///< Max size in words of String conversion operation
-#endif
-#define VL_VALUE_STRING_MAX_CHARS (VL_VALUE_STRING_MAX_WORDS) * 4
 
 //=========================================================================
 // Base macros
@@ -575,7 +597,9 @@ static inline double VL_ROUND(double n) {
 # define VL_CPU_RELAX() asm volatile("nop" ::: "memory")
 #elif defined(__mips64el__) || defined(__mips__) || defined(__mips64__) || defined(__mips64)
 # define VL_CPU_RELAX() asm volatile("pause" ::: "memory")
-#elif defined(__powerpc64__)
+#elif defined(__POWERPC__) && defined(__APPLE__) // First check for a special case of macOS
+# define VL_CPU_RELAX() asm volatile("or r1, r1, r1; or r2, r2, r2;" ::: "memory")
+#elif defined(__powerpc64__) || defined(__powerpc__) // Generic powerpc
 # define VL_CPU_RELAX() asm volatile("or 1, 1, 1; or 2, 2, 2;" ::: "memory")
 #elif defined(__riscv)  // RiscV does not currently have yield/pause, but one is proposed
 # define VL_CPU_RELAX() asm volatile("nop" ::: "memory")
@@ -637,8 +661,18 @@ extern std::string getenvStr(const std::string& envvar,
 /// Return currently executing processor number; may do an OS call underneath so slow
 extern uint16_t getcpu() VL_MT_SAFE;
 
+/// Return number of processors available to the current process. This might be
+/// less than the number of logical processors in the machine, if a processor
+/// affinity mask was used, e.g. via 'numactl -C 0-3'. Returns 0 if cannot
+/// be determiend.
+extern unsigned getProcessAvailableParallelism() VL_MT_SAFE;
+
+/// Return getProcessAvailableParallelism if non-zero, otherwise the number of
+/// hardware threads in the host machine.
+extern unsigned getProcessDefaultParallelism() VL_MT_SAFE;
+
 /// Return memory usage in bytes, or 0 if unknown
-extern uint64_t memUsageBytes() VL_MT_SAFE;
+extern void memUsageBytes(uint64_t& peakr, uint64_t& currentr) VL_MT_SAFE;
 
 // Internal: Record CPU time, starting point on construction, and current delta from that
 class DeltaCpuTime final {
@@ -692,7 +726,7 @@ struct reverse_wrapper final {
     const T& m_v;
 
     explicit reverse_wrapper(const T& a_v)
-        : m_v(a_v) {}
+        : m_v(a_v) {}  // Need () constructor
     auto begin() -> decltype(m_v.rbegin()) { return m_v.rbegin(); }
     auto end() -> decltype(m_v.rend()) { return m_v.rend(); }
 };
@@ -711,6 +745,13 @@ reverse_wrapper<T> reverse_view(const T& v) {
 template <typename T>
 T const& as_const(T& v) VL_MT_SAFE {
     return v;
+}
+
+// Utility function
+template <size_t N>
+inline constexpr size_t roundUpToMultipleOf(size_t value) {
+    static_assert((N & (N - 1)) == 0, "'N' must be a power of 2");
+    return (value + N - 1) & ~(N - 1);
 }
 
 };  // namespace vlstd

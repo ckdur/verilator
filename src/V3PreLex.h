@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2000-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2000-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -195,6 +195,7 @@ public:  // Used only by V3PreLex.cpp and V3PreProc.cpp
         VL_DO_CLEAR(yy_delete_buffer(m_bufferState), m_bufferState = nullptr);
         yylex_destroy();
     }
+    VPreStream* newStream(FileLine* fl, V3PreLex* lexp);
 
     // Called by V3PreLex.l from lexer
     VPreStream* curStreamp() { return m_streampStack.top(); }  // Can't be empty, "EOF" is on top
@@ -210,7 +211,7 @@ public:  // Used only by V3PreLex.cpp and V3PreProc.cpp
         }
     }
     void warnBackslashSpace();
-    void verilatorCmtLint(const char* textp, bool warnOff);
+    void verilatorCmtLint(const char* textp, bool turnOff);
     void verilatorCmtLintRestore();
     void verilatorCmtLintSave();
     // Called by V3PreProc.cpp to inform lexer
@@ -219,6 +220,7 @@ public:  // Used only by V3PreLex.cpp and V3PreProc.cpp
     void pushStateDefValue();
     void pushStateExpr();
     void pushStateIncFilename();
+    void pushStatePassthru();
     void scanNewFile(FileLine* filelinep);
     void scanBytes(const string& str);
     void scanBytesBack(const string& str);

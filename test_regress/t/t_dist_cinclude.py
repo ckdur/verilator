@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
 
 test.scenarios('dist')
 
-root = ".."
-
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 
 ### Must trim output before and after our file list
-cmd = "cd " + root + " && git ls-files --exclude-standard"
+cmd = "cd " + test.root + " && git ls-files --exclude-standard"
 files = test.run_capture(cmd)
 if test.verbose:
     print("ST " + files)
@@ -27,7 +25,9 @@ for filename in files.split():
         continue
     if "include/gtkwave/" in filename:  # Standard file - can't change it
         continue
-    filename = os.path.join(root, filename)
+    if "test_regress/t/uvm/" in filename:  # Standard file - can't change it
+        continue
+    filename = os.path.join(test.root, filename)
     if not os.path.exists(filename):
         continue
     with open(filename, 'r', encoding='latin-1') as fh:

@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
 event evt1, evt2;
@@ -33,7 +33,7 @@ class Bar extends Foo;
   endtask
 endclass
 
-module t();
+module t;
   initial begin
     process p;
     Foo foo;
@@ -50,7 +50,7 @@ module t();
         bar.ewait();
       end
     join_none
-
+    #1;
     p.kill();
 
     ->evt1;

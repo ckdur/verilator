@@ -2,21 +2,19 @@
 # DESCRIPTION: Verilator: Hacky import order checker, used to ensure all getters
 # come before setters for consistent codegen when using autocxx (#5182)
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
 
 test.scenarios('dist')
 
-root = ".."
 
-
-def get_source_files(root):
-    git_files = test.run_capture("cd " + root + " && git ls-files")
+def get_source_files():
+    git_files = test.run_capture("cd " + test.root + " && git ls-files")
     if test.verbose:
         print("MF " + git_files)
     files = {}
@@ -27,14 +25,14 @@ def get_source_files(root):
     return files
 
 
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 
 ### Must trim output before and after our file list
-files = get_source_files(root)
+files = get_source_files()
 
 for filename in sorted(files.keys()):
-    filename = os.path.join(root, filename)
+    filename = os.path.join(test.root, filename)
     if not os.path.exists(filename):  # git file might be deleted but not yet staged
         continue
     if not re.search(r'include.*verilated.*\.[ch].*$', filename):

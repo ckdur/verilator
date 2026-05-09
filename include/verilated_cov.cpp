@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2001-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2001-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=============================================================================
@@ -147,7 +147,7 @@ private:
             if (!std::isprint(*pos) || *pos == '%' || *pos == '"') {
                 constexpr size_t LEN_MAX_HEX = 20;
                 char hex[LEN_MAX_HEX];
-                VL_SNPRINTF(hex, LEN_MAX_HEX, "%%%02X", pos[0]);
+                (void)VL_SNPRINTF(hex, LEN_MAX_HEX, "%%%02X", pos[0]);
                 rtn += hex;
             } else {
                 rtn += *pos;
@@ -255,17 +255,21 @@ private:
 
 public:
     // PUBLIC METHODS
+    // cppcheck-suppress duplInheritedMember
     std::string defaultFilename() VL_MT_SAFE { return m_contextp->coverageFilename(); }
+    // cppcheck-suppress duplInheritedMember
     void forcePerInstance(const bool flag) VL_MT_SAFE_EXCLUDES(m_mutex) {
         Verilated::quiesce();
         const VerilatedLockGuard lock{m_mutex};
         m_forcePerInstance = flag;
     }
+    // cppcheck-suppress duplInheritedMember
     void clear() VL_MT_SAFE_EXCLUDES(m_mutex) {
         Verilated::quiesce();
         const VerilatedLockGuard lock{m_mutex};
         clearGuts();
     }
+    // cppcheck-suppress duplInheritedMember
     void clearNonMatch(const char* const matchp) VL_MT_SAFE_EXCLUDES(m_mutex) {
         Verilated::quiesce();
         const VerilatedLockGuard lock{m_mutex};
@@ -281,10 +285,11 @@ public:
             m_items = newlist;
         }
     }
+    // cppcheck-suppress duplInheritedMember
     void zero() VL_MT_SAFE_EXCLUDES(m_mutex) {
         Verilated::quiesce();
         const VerilatedLockGuard lock{m_mutex};
-        for (const auto& itemp : m_items) itemp->zero();
+        for (const VerilatedCovImpItem* const itemp : m_items) itemp->zero();
     }
 
     // We assume there's always call to i/f/p in that order
@@ -307,15 +312,17 @@ public:
         valps[0] = m_insertFilenamep;
         const std::string linestr = std::to_string(m_insertLineno);
         ckeyps[1] = "lineno";
+        // cppcheck-suppress autoVariables  // Used only below for insert
         valps[1] = linestr.c_str();
         // Default page if not specified
         const char* fnstartp = m_insertFilenamep;
         while (const char* foundp = std::strchr(fnstartp, '/')) fnstartp = foundp + 1;
         const char* fnendp = fnstartp;
-        for (; *fnendp && *fnendp != '.'; fnendp++) {}
+        for (; *fnendp && *fnendp != '.'; ++fnendp) {}
         const size_t page_len = fnendp - fnstartp;
         const std::string page_default = "sp_user/" + std::string{fnstartp, page_len};
         ckeyps[2] = "page";
+        // cppcheck-suppress autoVariables  // Used only below for insert
         valps[2] = page_default.c_str();
 
         // Keys -> strings
@@ -337,9 +344,9 @@ public:
         // Insert the values
         int addKeynum = 0;
         for (int i = 0; i < VerilatedCovConst::MAX_KEYS; ++i) {
-            const std::string key = keys[i];
+            const std::string& key = keys[i];
             if (!keys[i].empty()) {
-                const std::string val = valps[i];
+                const std::string& val = valps[i];
                 // std::cout << "   " << __FUNCTION__ << "  " << key << " = " << val << "\n";
                 m_insertp->m_keys[addKeynum] = valueIndex(key);
                 m_insertp->m_vals[addKeynum] = valueIndex(val);
@@ -357,6 +364,7 @@ public:
         m_insertp = nullptr;
     }
 
+    // cppcheck-suppress duplInheritedMember
     void write(const std::string& filename) VL_MT_SAFE_EXCLUDES(m_mutex) {
         Verilated::quiesce();
         const VerilatedLockGuard lock{m_mutex};
@@ -390,6 +398,10 @@ public:
                         hier = val;
                     } else {
                         // Print it
+                        if (key == "page") {
+                            const std::string type = val.substr(2, val.find('/') - 2);
+                            name += keyValueFormatter(VL_CIK_TYPE, type);
+                        }
                         name += keyValueFormatter(key, val);
                     }
                 }
@@ -486,6 +498,26 @@ void VerilatedCovContext::_insertp(A(0), A(1), A(2), A(3), A(4), A(5), A(6), A(7
     _insertp(C(0), C(1), C(2), C(3), C(4), C(5), C(6), C(7), C(8), C(9), C(10), C(11), C(12),
              C(13), C(14), C(15), C(16), C(17), C(18), C(19), N(20), N(21), N(22), N(23), N(24),
              N(25), N(26), N(27), N(28), N(29));
+}
+// Backward compatibility for mixed inserts with integer-valued
+// lineno/column pairs and C-string-valued metadata pairs.
+void VerilatedCovContext::_insertp(A(0), A(1), K(2), int val2, K(3), int val3, A(4), A(5), A(6),
+                                   A(7)) VL_MT_SAFE {
+    const std::string val2str = std::to_string(val2);
+    const std::string val3str = std::to_string(val3);
+    _insertp(C(0), C(1), key2, val2str.c_str(), key3, val3str.c_str(), C(4), C(5), C(6), C(7),
+             N(8), N(9), N(10), N(11), N(12), N(13), N(14), N(15), N(16), N(17), N(18), N(19),
+             N(20), N(21), N(22), N(23), N(24), N(25), N(26), N(27), N(28), N(29));
+}
+// Backward compatibility for mixed inserts with integer-valued
+// lineno/column pairs and additional FSM metadata pairs.
+void VerilatedCovContext::_insertp(A(0), A(1), K(2), int val2, K(3), int val3, A(4), A(5), A(6),
+                                   A(7), A(8), A(9), A(10), A(11)) VL_MT_SAFE {
+    const std::string val2str = std::to_string(val2);
+    const std::string val3str = std::to_string(val3);
+    _insertp(C(0), C(1), key2, val2str.c_str(), key3, val3str.c_str(), C(4), C(5), C(6), C(7),
+             C(8), C(9), C(10), C(11), N(12), N(13), N(14), N(15), N(16), N(17), N(18), N(19),
+             N(20), N(21), N(22), N(23), N(24), N(25), N(26), N(27), N(28), N(29));
 }
 // Backward compatibility for Verilator
 void VerilatedCovContext::_insertp(A(0), A(1), K(2), int val2, K(3), int val3, K(4),

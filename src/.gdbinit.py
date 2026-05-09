@@ -1,11 +1,6 @@
 # pylint: disable=line-too-long,invalid-name,multiple-statements,missing-function-docstring,missing-class-docstring,missing-module-docstring,no-else-return,too-few-public-methods,unused-argument
-# DESCRIPTION: Verilator: GDB startup file with useful define
-#
-# Copyright 2023 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify the Verilator internals under the terms
-# of either the GNU Lesser General Public License Version 3 or the Perl
-# Artistic License Version 2.0.
-#
+# DESCRIPTION: Verilator: GDB startup file with useful defines
+# SPDX-FileCopyrightText: 2023 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 ######################################################################
 
@@ -16,7 +11,7 @@ import gdb  # pylint: disable=import-error
 def _vltgdb_get_dump(node):
     gdb.execute(f'set $_gdb_dump_json_str = AstNode::dumpTreeJsonGdb({node})')
     dump = gdb.execute('printf "%s", $_gdb_dump_json_str', to_string=True)
-    gdb.execute('call free($_gdb_dump_json_str)')
+    gdb.execute('call (void)free($_gdb_dump_json_str)')
     return dump
 
 

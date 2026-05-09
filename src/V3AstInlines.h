@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -33,8 +33,11 @@ bool AstNode::width1() const {  // V3Const uses to know it can optimize
 int AstNode::widthInstrs() const {
     return (!dtypep() ? 1 : (dtypep()->isWide() ? dtypep()->widthWords() : 1));
 }
+bool AstNode::isCHandle() const VL_MT_STABLE {
+    return dtypep() && dtypep()->basicp() && dtypep()->basicp()->isCHandle();
+}
 bool AstNode::isDouble() const VL_MT_STABLE {
-    return dtypep() && VN_IS(dtypep(), BasicDType) && VN_AS(dtypep(), BasicDType)->isDouble();
+    return dtypep() && dtypep()->basicp() && dtypep()->basicp()->isDouble();
 }
 bool AstNode::isString() const VL_MT_STABLE {
     return dtypep() && dtypep()->basicp() && dtypep()->basicp()->isString();
@@ -77,8 +80,8 @@ int AstNodeArrayDType::lo() const VL_MT_STABLE { return rangep()->loConst(); }
 int AstNodeArrayDType::elementsConst() const VL_MT_STABLE { return rangep()->elementsConst(); }
 VNumRange AstNodeArrayDType::declRange() const VL_MT_STABLE { return VNumRange{left(), right()}; }
 
-AstFuncRef::AstFuncRef(FileLine* fl, AstFunc* taskp, AstNodeExpr* pinsp)
-    : ASTGEN_SUPER_FuncRef(fl, taskp->name(), pinsp) {
+AstFuncRef::AstFuncRef(FileLine* fl, AstFunc* taskp, AstArg* argsp)
+    : ASTGEN_SUPER_FuncRef(fl, taskp->name(), argsp) {
     this->taskp(taskp);
     dtypeFrom(taskp);
 }
@@ -94,19 +97,12 @@ AstRange::AstRange(FileLine* fl, const VNumRange& range)
     rightp(new AstConst{fl, static_cast<uint32_t>(range.right())});
 }
 int AstRange::leftConst() const VL_MT_STABLE {
-    AstConst* const constp = VN_CAST(leftp(), Const);
+    const AstConst* const constp = VN_CAST(leftp(), Const);
     return (constp ? constp->toSInt() : 0);
 }
 int AstRange::rightConst() const VL_MT_STABLE {
-    AstConst* const constp = VN_CAST(rightp(), Const);
+    const AstConst* const constp = VN_CAST(rightp(), Const);
     return (constp ? constp->toSInt() : 0);
-}
-
-AstPin::AstPin(FileLine* fl, int pinNum, AstVarRef* varname, AstNode* exprp)
-    : ASTGEN_SUPER_Pin(fl)
-    , m_pinNum{pinNum}
-    , m_name{varname->name()} {
-    this->exprp(exprp);
 }
 
 AstPackArrayDType::AstPackArrayDType(FileLine* fl, VFlagChildDType, AstNodeDType* dtp,
@@ -129,12 +125,12 @@ AstPackArrayDType::AstPackArrayDType(FileLine* fl, AstNodeDType* dtp, AstRange* 
 }
 
 int AstQueueDType::boundConst() const VL_MT_STABLE {
-    AstConst* const constp = VN_CAST(boundp(), Const);
+    const AstConst* const constp = VN_CAST(boundp(), Const);
     return (constp ? constp->toSInt() : 0);
 }
 
-AstTaskRef::AstTaskRef(FileLine* fl, AstTask* taskp, AstNodeExpr* pinsp)
-    : ASTGEN_SUPER_TaskRef(fl, taskp->name(), pinsp) {
+AstTaskRef::AstTaskRef(FileLine* fl, AstTask* taskp, AstArg* argsp)
+    : ASTGEN_SUPER_TaskRef(fl, taskp->name(), argsp) {
     this->taskp(taskp);
     dtypeSetVoid();
 }
@@ -148,30 +144,33 @@ bool AstBasicDType::ascending() const {
     return (rangep() ? rangep()->ascending() : m.m_nrange.ascending());
 }
 
-bool AstActive::hasClocked() const { return m_sensesp->hasClocked(); }
-bool AstActive::hasCombo() const { return m_sensesp->hasCombo(); }
+bool AstActive::hasClocked() const { return m_sentreep->hasClocked(); }
+bool AstActive::hasCombo() const { return m_sentreep->hasCombo(); }
+bool AstActive::hasStatic() const { return m_sentreep->hasStatic(); }
+
+AstAlways::AstAlways(AstAssignW* assignp)
+    : ASTGEN_SUPER_Always(assignp->fileline(), assignp)
+    , m_keyword{VAlwaysKwd::CONT_ASSIGN} {}
 
 AstElabDisplay::AstElabDisplay(FileLine* fl, VDisplayType dispType, AstNodeExpr* exprsp)
     : ASTGEN_SUPER_ElabDisplay(fl) {
-    addFmtp(new AstSFormatF{fl, AstSFormatF::NoFormat{}, exprsp});
+    addFmtp(new AstSFormatF{fl, "", true, exprsp});
     m_displayType = dispType;
 }
 
-AstCStmt::AstCStmt(FileLine* fl, const string& textStmt)
-    : ASTGEN_SUPER_CStmt(fl) {
-    addExprsp(new AstText{fl, textStmt, true});
-}
-
-AstCExpr::AstCExpr(FileLine* fl, const string& textStmt, int setwidth, bool cleanOut)
-    : ASTGEN_SUPER_CExpr(fl)
-    , m_cleanOut{cleanOut}
-    , m_pure{true} {
-    addExprsp(new AstText{fl, textStmt, true});
-    if (setwidth) dtypeSetLogicSized(setwidth, VSigning::UNSIGNED);
+bool AstVar::sameNode(const AstNode* samep) const {
+    const AstVar* const asamep = VN_DBG_AS(samep, Var);
+    return m_name == asamep->m_name && varType() == asamep->varType();
 }
 
 AstVarRef::AstVarRef(FileLine* fl, AstVar* varp, const VAccess& access)
-    : ASTGEN_SUPER_VarRef(fl, varp, access) {}
+    : ASTGEN_SUPER_VarRef(fl, varp, access) {
+    if (v3Global.assertDTypesResolved()) {
+        UASSERT_OBJ(varp, this, "Require non-null varp post resolution");
+    } else if (varp) {
+        m_name = varp->name();
+    }
+}
 AstVarRef::AstVarRef(FileLine* fl, AstNodeModule* pkgp, AstVar* varp, const VAccess& access)
     : AstVarRef{fl, varp, access} {
     classOrPackagep(pkgp);
@@ -182,26 +181,20 @@ AstVarRef::AstVarRef(FileLine* fl, AstVarScope* varscp, const VAccess& access)
     varScopep(varscp);
 }
 
-string AstVarRef::name() const { return varp() ? varp()->name() : "<null>"; }
+string AstVarRef::name() const { return varp() ? varp()->name() : nameThis(); }
 
 bool AstVarRef::sameNode(const AstVarRef* samep) const {
-    if (varScopep()) {
-        return (varScopep() == samep->varScopep() && access() == samep->access());
-    } else {
-        return (selfPointer() == samep->selfPointer()
-                && classOrPackagep() == samep->classOrPackagep() && access() == samep->access()
-                && (varp() && samep->varp() && varp()->name() == samep->varp()->name()));
-    }
+    if (varScopep()) return (varScopep() == samep->varScopep() && access() == samep->access());
+    return (selfPointer() == samep->selfPointer() && classOrPackagep() == samep->classOrPackagep()
+            && access() == samep->access()
+            && (varp() && samep->varp() && varp()->sameNode(samep->varp())));
 }
-bool AstVarRef::sameNoLvalue(AstVarRef* samep) const {
-    if (varScopep()) {
-        return (varScopep() == samep->varScopep());
-    } else {
-        return (selfPointer() == samep->selfPointer()
-                && classOrPackagep() == samep->classOrPackagep()
-                && (!selfPointer().isEmpty() || !samep->selfPointer().isEmpty())
-                && varp()->name() == samep->varp()->name());
-    }
+bool AstVarRef::sameNoLvalue(const AstVarRef* samep) const {
+    if (varScopep()) return (varScopep() == samep->varScopep());
+
+    return (selfPointer() == samep->selfPointer() && classOrPackagep() == samep->classOrPackagep()
+            && (!selfPointer().isEmpty() || !samep->selfPointer().isEmpty())
+            && varp()->sameNode(samep->varp()));
 }
 
 AstVarXRef::AstVarXRef(FileLine* fl, AstVar* varp, const string& dotted, const VAccess& access)
@@ -212,5 +205,14 @@ AstVarXRef::AstVarXRef(FileLine* fl, AstVar* varp, const string& dotted, const V
 }
 
 AstStmtExpr* AstNodeExpr::makeStmt() { return new AstStmtExpr{fileline(), this}; }
+
+// Walk up the AST via backp() to find the containing AstNodeModule.
+// Returns nullptr if not found.
+inline AstNodeModule* findParentModule(AstNode* nodep) {
+    for (AstNode* curp = nodep; curp; curp = curp->backp()) {
+        if (AstNodeModule* const modp = VN_CAST(curp, NodeModule)) return modp;
+    }
+    return nullptr;
+}
 
 #endif  // Guard

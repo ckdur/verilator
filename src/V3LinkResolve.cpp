@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -47,21 +47,19 @@ class LinkResolveVisitor final : public VNVisitor {
     // Below state needs to be preserved between each module call.
     AstNodeModule* m_modp = nullptr;  // Current module
     AstClass* m_classp = nullptr;  // Class we're inside
-    string m_randcIllegalWhy;  // Why randc illegal
-    AstNode* m_randcIllegalp = nullptr;  // Node causing randc illegal
     AstNodeFTask* m_ftaskp = nullptr;  // Function or task we're inside
-    AstNodeCoverOrAssert* m_assertp = nullptr;  // Current assertion
     int m_senitemCvtNum = 0;  // Temporary signal counter
-    bool m_underGenFor = false;  // Under GenFor
+    std::deque<AstGenFor*> m_underGenFors;  // Stack of GenFor underneath
     bool m_underGenerate = false;  // Under GenFor/GenIf
 
     // VISITORS
     // TODO: Most of these visitors are here for historical reasons.
     // TODO: ExpectDescriptor can move to data type resolution, and the rest
     // TODO: could move to V3LinkParse to get them out of the way of elaboration
+    // TODO: Some also can move to V3LinkWidth, to happen once post-LinkDot
     void visit(AstNodeModule* nodep) override {
         // Module: Create sim table for entire module and iterate
-        UINFO(8, "MODULE " << nodep << endl);
+        UINFO(8, "MODULE " << nodep);
         if (nodep->dead()) return;
         VL_RESTORER(m_modp);
         VL_RESTORER(m_senitemCvtNum);
@@ -72,40 +70,12 @@ class LinkResolveVisitor final : public VNVisitor {
     void visit(AstClass* nodep) override {
         VL_RESTORER(m_classp);
         m_classp = nodep;
-        iterateChildren(nodep);
-    }
-    void visit(AstConstraint* nodep) override {
-        // V3LinkDot moved the isExternDef into the class, the extern proto was
-        // checked to exist, and now isn't needed
-        nodep->isExternDef(false);
-        if (nodep->isExternProto()) {
-            VL_DO_DANGLING(nodep->unlinkFrBack()->deleteTree(), nodep);
-            return;
+        for (AstNode* stmtp = nodep->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
+            if (AstVar* const varp = VN_CAST(stmtp, Var)) {
+                if (!varp->isParam()) varp->varType(VVarType::MEMBER);
+            }
         }
         iterateChildren(nodep);
-    }
-    void visit(AstConstraintBefore* nodep) override {
-        VL_RESTORER(m_randcIllegalWhy);
-        VL_RESTORER(m_randcIllegalp);
-        m_randcIllegalWhy = "'solve before' (IEEE 1800-2023 18.5.9)";
-        m_randcIllegalp = nodep;
-        iterateChildrenConst(nodep);
-    }
-    void visit(AstDist* nodep) override {
-        VL_RESTORER(m_randcIllegalWhy);
-        VL_RESTORER(m_randcIllegalp);
-        m_randcIllegalWhy = "'constraint dist' (IEEE 1800-2023 18.5.3)";
-        m_randcIllegalp = nodep;
-        iterateChildrenConst(nodep);
-    }
-    void visit(AstConstraintExpr* nodep) override {
-        VL_RESTORER(m_randcIllegalWhy);
-        VL_RESTORER(m_randcIllegalp);
-        if (nodep->isSoft()) {
-            m_randcIllegalWhy = "'constraint soft' (IEEE 1800-2023 18.5.13.1)";
-            m_randcIllegalp = nodep;
-        }
-        iterateChildrenConst(nodep);
     }
 
     void visit(AstInitialAutomatic* nodep) override {
@@ -117,17 +87,8 @@ class LinkResolveVisitor final : public VNVisitor {
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
         }
     }
-    void visit(AstNodeCoverOrAssert* nodep) override {
-        if (m_assertp) {
-            nodep->v3warn(E_UNSUPPORTED, "Unsupported: Assert not allowed under another assert");
-        }
-        VL_RESTORER(m_assertp);
-        m_assertp = nodep;
-        iterateChildren(nodep);
-    }
     void visit(AstVar* nodep) override {
         iterateChildren(nodep);
-        if (m_classp && !nodep->isParam()) nodep->varType(VVarType::MEMBER);
         if (m_ftaskp) nodep->funcLocal(true);
         if (nodep->isSigModPublic()) {
             nodep->sigModPublic(false);  // We're done with this attribute
@@ -139,20 +100,20 @@ class LinkResolveVisitor final : public VNVisitor {
         if (nodep->varp()) {  // Else due to dead code, might not have var pointer
             // VarRef: Resolve its reference
             nodep->varp()->usedParam(true);
-            // TODO should look for where genvar is valid, but for now catch
-            // just gross errors of using genvar outside any generate
-            if (nodep->varp()->isGenVar() && !m_underGenFor) {
+            // Look for where genvar is valid
+            bool ok = false;
+            // cppcheck-suppress constVariablePointer
+            for (AstGenFor* const forp : m_underGenFors) {
+                if (ok) break;
+                if (forp->initsp())
+                    forp->initsp()->foreach([&](const AstVarRef* refp) {  //
+                        if (refp->varp() == nodep->varp()) ok = true;
+                    });
+            }
+            if (nodep->varp()->isGenVar() && !ok) {
                 nodep->v3error("Genvar "
                                << nodep->prettyNameQ()
                                << " used outside generate for loop (IEEE 1800-2023 27.4)");
-            }
-            if (nodep->varp()->isRandC() && m_randcIllegalp) {
-                nodep->v3error("Randc variables not allowed in "
-                               << m_randcIllegalWhy << '\n'
-                               << nodep->warnContextPrimary() << '\n'
-                               << m_randcIllegalp->warnOther()
-                               << "... Location of restricting expression\n"
-                               << m_randcIllegalp->warnContextSecondary());
             }
         }
         iterateChildren(nodep);
@@ -173,13 +134,27 @@ class LinkResolveVisitor final : public VNVisitor {
         }
         VL_RESTORER(m_ftaskp);
         m_ftaskp = nodep;
+
+        if (nodep->lifetime().isAutomatic() && nodep->fvarp()) {
+            // Must clear automatic function output variable on function invocation
+            AstVar* const fvarp = VN_AS(nodep->fvarp(), Var);
+            AstNode* const crstp = new AstAssign{
+                fvarp->fileline(), new AstVarRef{fvarp->fileline(), fvarp, VAccess::WRITE},
+                new AstCReset{fvarp->fileline(), fvarp, false}};
+            fvarp->noCReset(true);
+            if (nodep->stmtsp()) {
+                nodep->stmtsp()->addHereThisAsNext(crstp);
+            } else {
+                nodep->addStmtsp(crstp);
+            }
+        }
         iterateChildren(nodep);
         if (nodep->dpiExport()) nodep->scopeNamep(new AstScopeName{nodep->fileline(), false});
     }
     void visit(AstNodeFTaskRef* nodep) override {
         iterateChildren(nodep);
         if (AstLet* letp = VN_CAST(nodep->taskp(), Let)) {
-            UINFO(7, "letSubstitute() " << nodep << " <- " << letp << endl);
+            UINFO(7, "letSubstitute() " << nodep << " <- " << letp);
             if (letp->user2()) {
                 nodep->v3error("Recursive let substitution " << letp->prettyNameQ());
                 nodep->replaceWith(new AstConst{nodep->fileline(), AstConst::BitFalse{}});
@@ -190,8 +165,9 @@ class LinkResolveVisitor final : public VNVisitor {
             if (VN_IS(nodep->backp(), StmtExpr)) {
                 nodep->v3error("Expected statement, not let substitution " << letp->prettyNameQ());
             }
-            // letp->dumpTree("-let-let ");
-            // nodep->dumpTree("-let-ref ");
+            // UINFOTREE(9, letp, "", "let-let");
+            // UINFOTREE(9, nodep, "", "let-ref");
+            // cppcheck-suppress constVariablePointer
             AstStmtExpr* const letStmtp = VN_AS(letp->stmtsp(), StmtExpr);
             AstNodeExpr* const newp = letStmtp->exprp()->cloneTree(false);
             const V3TaskConnects tconnects = V3Task::taskConnects(nodep, letp->stmtsp());
@@ -208,13 +184,13 @@ class LinkResolveVisitor final : public VNVisitor {
                 const auto it = portToExprs.find(refp->varp());
                 if (it != portToExprs.end()) {
                     AstNodeExpr* const pinp = it->second;
-                    UINFO(9, "let pin subst " << refp << " <- " << pinp << endl);
+                    UINFO(9, "let pin subst " << refp << " <- " << pinp);
                     // Side effects are copied into pins, to match other simulators
                     refp->replaceWith(pinp->cloneTree(false));
                     VL_DO_DANGLING(pushDeletep(refp), refp);
                 }
             });
-            // newp->dumpTree("-let-new ");
+            // UINFOTREE(9, newp, "", "let-new");
             nodep->replaceWith(newp);
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
             // Iterate to expand further now, so we can look for recursions
@@ -222,28 +198,23 @@ class LinkResolveVisitor final : public VNVisitor {
             letp->user2(false);
             return;
         }
-        if (nodep->taskp() && !nodep->scopeNamep()
-            && (nodep->taskp()->dpiContext() || nodep->taskp()->dpiExport())) {
-            nodep->scopeNamep(new AstScopeName{nodep->fileline(), false});
-        }
-    }
-
-    void visit(AstCaseItem* nodep) override {
-        // Move default caseItems to the bottom of the list
-        // That saves us from having to search each case list twice, for non-defaults and defaults
-        iterateChildren(nodep);
-        if (!nodep->user2() && nodep->isDefault() && nodep->nextp()) {
-            nodep->user2(true);
-            AstNode* const nextp = nodep->nextp();
-            nodep->unlinkFrBack();
-            nextp->addNext(nodep);
-        }
     }
 
     void visit(AstLet* nodep) override {
         // Lets have been (or about to be) substituted, we can remove
         nodep->unlinkFrBack();
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
+    }
+
+    void visit(AstStmtPragma* nodep) override {
+        if (nodep->pragp()->pragType() == VPragmaType::COVERAGE_BLOCK_OFF) {
+            // Strip pragma if not needed, may optimize better without
+            if (!v3Global.opt.coverageLine()) {
+                VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
+                return;
+            }
+        }
+        iterateChildren(nodep);
     }
 
     void visit(AstPragma* nodep) override {
@@ -268,12 +239,11 @@ class LinkResolveVisitor final : public VNVisitor {
             m_modp->modPublic(true);  // Need to get to the task...
             nodep->unlinkFrBack();
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
-        } else if (nodep->pragType() == VPragmaType::COVERAGE_BLOCK_OFF) {
-            if (!v3Global.opt.coverageLine()) {  // No need for block statements; may optimize
-                                                 // better without
-                nodep->unlinkFrBack();
-                VL_DO_DANGLING(pushDeletep(nodep), nodep);
-            }
+        } else if (nodep->pragType() == VPragmaType::VERILATOR_LIB) {
+            UASSERT_OBJ(m_modp, nodep, "VERILATOR_LIB not under a module");
+            m_modp->verilatorLib(true);
+            nodep->unlinkFrBack();
+            VL_DO_DANGLING(pushDeletep(nodep), nodep);
         } else {
             iterateChildren(nodep);
         }
@@ -285,112 +255,82 @@ class LinkResolveVisitor final : public VNVisitor {
         bool inPct = false;
         bool inIgnore = false;
         string fmt;
-        for (const char ch : format) {
-            if (!inPct && ch == '%') {
-                inPct = true;
-                inIgnore = false;
-                fmt = ch;
-            } else if (inPct && (std::isdigit(ch) || ch == '.' || ch == '-')) {
-                fmt += ch;
-            } else if (inPct) {
-                inPct = false;
-                fmt += ch;
-                switch (std::tolower(ch)) {
-                case '%':  // %% - just output a %
-                    break;
-                case '*':
+        string parseFormat = format;
+        while (!parseFormat.empty() || argp) {
+            for (const char ch : parseFormat) {
+                if (!inPct && ch == '%') {
                     inPct = true;
-                    inIgnore = true;
-                    break;
-                case 'm':  // %m - auto insert "name"
-                    if (isScan) {
-                        nodep->v3warn(E_UNSUPPORTED, "Unsupported: %m in $fscanf");
-                        fmt = "";
-                    }
-                    break;
-                case 'l':  // %l - auto insert "library"
-                    if (isScan) {
-                        nodep->v3warn(E_UNSUPPORTED, "Unsupported: %l in $fscanf");
-                        fmt = "";
-                    }
-                    if (m_modp) fmt = VString::quotePercent(m_modp->prettyName());
-                    break;
-                default:  // Most operators, just move to next argument
-                    if (!V3Number::displayedFmtLegal(ch, isScan)) {
-                        nodep->v3error("Unknown $display-like format code: '%" << ch << "'");
-                    } else if (!inIgnore) {
-                        if (!argp) {
-                            nodep->v3error("Missing arguments for $display-like format");
-                        } else {
-                            argp = argp->nextp();
+                    inIgnore = false;
+                    fmt = ch;
+                } else if (inPct && (std::isdigit(ch) || ch == '.' || ch == '-')) {
+                    fmt += ch;
+                } else if (inPct) {
+                    inPct = false;
+                    fmt += ch;
+                    switch (std::tolower(ch)) {
+                    case '%':  // %% - just output a %
+                        break;
+                    case '*':
+                        inPct = true;
+                        inIgnore = true;
+                        break;
+                    case 'm':  // %m - auto insert "name"
+                        if (isScan) {
+                            nodep->v3warn(E_UNSUPPORTED, "Unsupported: %m in $fscanf");
+                            fmt = "";
                         }
-                    }
-                    break;
-                }  // switch
-                newFormat += fmt;
-            } else {
-                newFormat += ch;
-            }
-        }
-
-        if (argp && !isScan) {
-            int skipCount = 0;  // number of args consume by any additional format strings
-            while (argp) {
-                if (skipCount) {
-                    argp = argp->nextp();
-                    --skipCount;
-                    continue;
-                }
-                const AstConst* const constp = VN_CAST(argp, Const);
-                const bool isFromString = (constp) ? constp->num().isFromString() : false;
-                if (isFromString) {
-                    const int numchars = argp->dtypep()->width() / 8;
-                    if (!constp->num().toString().empty()) {
-                        string str(numchars, ' ');
-                        // now scan for % operators
-                        bool inpercent = false;
-                        for (int i = 0; i < numchars; i++) {
-                            const int ii = numchars - i - 1;
-                            const char c = constp->num().dataByte(ii);
-                            str[i] = c;
-                            if (!inpercent && c == '%') {
-                                inpercent = true;
-                            } else if (inpercent) {
-                                inpercent = false;
-                                switch (c) {
-                                case '0':  // FALLTHRU
-                                case '1':  // FALLTHRU
-                                case '2':  // FALLTHRU
-                                case '3':  // FALLTHRU
-                                case '4':  // FALLTHRU
-                                case '5':  // FALLTHRU
-                                case '6':  // FALLTHRU
-                                case '7':  // FALLTHRU
-                                case '8':  // FALLTHRU
-                                case '9':  // FALLTHRU
-                                case '.': inpercent = true; break;
-                                case '%': break;
-                                default:
-                                    if (V3Number::displayedFmtLegal(c, isScan)) ++skipCount;
-                                }
+                        break;
+                    case 'l':  // %l - auto insert "library"
+                        if (isScan) {
+                            nodep->v3warn(E_UNSUPPORTED, "Unsupported: %l in $fscanf");
+                            fmt = "";
+                        }
+                        if (m_modp)
+                            fmt = AstNode::prettyName(m_modp->libname()) + "."
+                                  + m_modp->prettyName();
+                        break;
+                    default:  // Most operators, just move to next argument
+                        if (!V3Number::displayedFmtHasArg(ch, isScan)) {
+                            nodep->v3error("Unknown $display-like format code: '%" << ch << "'");
+                        } else if (!inIgnore) {
+                            if (!argp) {
+                                nodep->v3error("Missing arguments for $display-like format");
+                            } else {
+                                argp = argp->nextp();
                             }
                         }
-                        newFormat.append(str);
-                    }
+                        break;
+                    }  // switch
+                    newFormat += fmt;
+                } else {
+                    newFormat += ch;
+                }
+            }
+
+            // Find additional arguments (without format) or additional format strings
+            parseFormat = "";
+
+            if (isScan) break;
+            while (argp) {
+                const AstConst* const constp = VN_CAST(argp, Const);
+                const bool isFromString = (constp) ? constp->num().isFromString() : false;
+                if (!isFromString) {
+                    newFormat.append("%?");  // V3Width to figure it out
+                    argp = argp->nextp();
+                } else {  // New format string
+                    parseFormat += constp->num().toString();
                     AstNode* const nextp = argp->nextp();
                     argp->unlinkFrBack();
                     VL_DO_DANGLING(pushDeletep(argp), argp);
                     argp = nextp;
-                } else {
-                    newFormat.append("%?");  // V3Width to figure it out
-                    argp = argp->nextp();
+                    break;  // And continue at top of parsing the new parseFormat
                 }
             }
         }
         return newFormat;
     }
 
-    static void expectDescriptor(AstNode* /*nodep*/, AstNodeVarRef* filep) {
+    static void expectDescriptor(AstNode* /*nodep*/, const AstNodeVarRef* filep) {
         // This might fail on complex expressions like arrays
         // We use attrFileDescr() only for lint suppression, so that's ok
         if (filep && filep->varp()) filep->varp()->attrFileDescr(true);
@@ -424,28 +364,33 @@ class LinkResolveVisitor final : public VNVisitor {
         if (nodep->user2SetOnce()) return;
         iterateChildren(nodep);
         // Cleanup old-school displays without format arguments
-        if (!nodep->hasFormat()) {
-            UASSERT_OBJ(nodep->text() == "", nodep,
-                        "Non-format $sformatf should have \"\" format");
+        // Similar code in V3Const::visit(AstSFormatF)
+        if (nodep->exprFormat()) {
             if (VN_IS(nodep->exprsp(), Const)
                 && VN_AS(nodep->exprsp(), Const)->num().isFromString()) {
                 AstConst* const fmtp = VN_AS(nodep->exprsp()->unlinkFrBack(), Const);
                 nodep->text(fmtp->num().toString());
+                nodep->exprFormat(false);
                 VL_DO_DANGLING(pushDeletep(fmtp), fmtp);
             }
-            nodep->hasFormat(true);
         }
-        const string newFormat = expectFormat(nodep, nodep->text(), nodep->exprsp(), false);
-        nodep->text(newFormat);
+        if (nodep->optionalFormat()) {  // e.g. $display, $swrite; _not_ $sformat/$sformatf
+            nodep->optionalFormat(false);
+            nodep->exprFormat(false);
+        }
         if ((VN_IS(nodep->backp(), Display)
              && VN_AS(nodep->backp(), Display)->displayType().needScopeTracking())
             || nodep->formatScopeTracking()) {
             nodep->scopeNamep(new AstScopeName{nodep->fileline(), true});
         }
+        if (!nodep->exprFormat()) {
+            const string newFormat = expectFormat(nodep, nodep->text(), nodep->exprsp(), false);
+            nodep->text(newFormat);
+        }
     }
 
     void visit(AstUdpTable* nodep) override {
-        UINFO(5, "UDPTABLE  " << nodep << endl);
+        UINFO(5, "UDPTABLE  " << nodep);
         if (!v3Global.opt.bboxUnsup()) {
             // We don't warn until V3Inst, so that UDPs that are in libraries and
             // never used won't result in any warnings.
@@ -461,10 +406,11 @@ class LinkResolveVisitor final : public VNVisitor {
                         }
                         varoutp = varp;
                         // Tie off
-                        m_modp->addStmtsp(
-                            new AstAssignW{varp->fileline(),
-                                           new AstVarRef{varp->fileline(), varp, VAccess::WRITE},
-                                           new AstConst{varp->fileline(), AstConst::BitFalse{}}});
+                        AstAssignW* const ap
+                            = new AstAssignW{varp->fileline(),
+                                             new AstVarRef{varp->fileline(), varp, VAccess::WRITE},
+                                             new AstConst{varp->fileline(), AstConst::BitFalse{}}};
+                        m_modp->addStmtsp(new AstAlways{ap});
                     } else {
                         varp->v3error("Only inputs and outputs are allowed in udp modules");
                     }
@@ -475,20 +421,15 @@ class LinkResolveVisitor final : public VNVisitor {
         }
     }
 
-    void visit(AstScCtor* nodep) override {
-        // Constructor info means the module must remain public
-        m_modp->modPublic(true);
-        iterateChildren(nodep);
-    }
-    void visit(AstScDtor* nodep) override {
-        // Destructor info means the module must remain public
-        m_modp->modPublic(true);
-        iterateChildren(nodep);
-    }
-    void visit(AstScInt* nodep) override {
-        // Special class info means the module must remain public
-        m_modp->modPublic(true);
-        iterateChildren(nodep);
+    void visit(AstSystemCSection* nodep) override {
+        switch (nodep->sectionType()) {
+        // Constructor, desctructor or special class info means the module must remain public
+        case VSystemCSectionType::CTOR:
+        case VSystemCSectionType::DTOR:
+        case VSystemCSectionType::INT: m_modp->modPublic(true); break;
+        default: break;
+        }
+        // Has no children
     }
 
     void visit(AstIfaceRefDType* nodep) override {
@@ -499,14 +440,15 @@ class LinkResolveVisitor final : public VNVisitor {
         iterateChildren(nodep);
     }
     //  void visit(AstModport* nodep) override { ... }
-    // We keep Modport's themselves around for XML dump purposes
+    // We keep Modport's themselves around for JSON dump purposes
 
     void visit(AstGenFor* nodep) override {
-        VL_RESTORER(m_underGenFor);
         VL_RESTORER(m_underGenerate);
-        m_underGenFor = true;
         m_underGenerate = true;
+        m_underGenFors.emplace_back(nodep);
         iterateChildren(nodep);
+        UASSERT_OBJ(!m_underGenFors.empty(), nodep, "Underflow");
+        m_underGenFors.pop_back();
     }
     void visit(AstGenIf* nodep) override {
         VL_RESTORER(m_underGenerate);
@@ -556,10 +498,10 @@ public:
 };
 
 //######################################################################
-// Link class functions
+// V3LinkResolve class functions
 
 void V3LinkResolve::linkResolve(AstNetlist* rootp) {
-    UINFO(4, __FUNCTION__ << ": " << endl);
+    UINFO(4, __FUNCTION__ << ": ");
     {
         const LinkResolveVisitor visitor{rootp};
         LinkBotupVisitor{rootp};

@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2012-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2012-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=============================================================================
@@ -40,7 +40,7 @@ constexpr const char* const VlExecutionRecord::s_ascii[];
 template <size_t N>
 static size_t roundUptoMultipleOf(size_t value) {
     static_assert((N & (N - 1)) == 0, "'N' must be a power of 2");
-    size_t mask = N - 1;
+    const size_t mask = N - 1;
     return (value + mask) & ~mask;
 }
 
@@ -145,7 +145,7 @@ void VlExecutionProfiler::dump(const char* filenamep, uint64_t tickEnd)
     fprintf(fp, "VLPROF arg +verilator+prof+exec+window+%u\n",
             Verilated::threadContextp()->profExecWindow());
     std::string numa = "no threads";
-    if (VlThreadPool* const threadPoolp
+    if (const VlThreadPool* const threadPoolp
         = static_cast<VlThreadPool*>(Verilated::threadContextp()->threadPoolp())) {
         numa = threadPoolp->numaStatus();
     }

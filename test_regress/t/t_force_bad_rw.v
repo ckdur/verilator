@@ -1,23 +1,27 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2022 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2022 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
-module t (/*AUTOARG*/);
+module t;
 
-   int ass[int];
+  int value;
 
-   initial begin
-      ass[2] = 20;
+  task increment(ref int i);
+    // verilator no_inline_task
+    ++i;
+  endtask
 
-      foreach (ass[index]) begin
-         force index = 0;
-         $display("ii %d\n", index);
-      end
+  initial begin
+    value = 3;
+    increment(value);
 
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+    force value = 0;
+    $display("ii %d\n", value);
+
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 
 endmodule

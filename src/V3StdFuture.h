@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -20,12 +20,6 @@
 #include <functional>
 
 namespace vlstd {
-
-// constexpr std::max with arguments passed by value (required by constexpr before C++14)
-template <typename T>
-constexpr T max(T a, T b) {
-    return a > b ? a : b;
-}
 
 // C++17 is_invocable
 template <typename F, typename... Args>

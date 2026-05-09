@@ -1,10 +1,10 @@
 // -*- mode: C++; c-file-style: "cc-mode" -*-
 //*************************************************************************
 //
-// Copyright 2024 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2024 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -28,6 +28,7 @@
 #endif
 
 #include <cassert>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -254,13 +255,13 @@ void _arr_access_format_check(TestVpiHandle& reg_h, int wordSize, const int* low
             strVal_s[spanSize] = '\0';
             value_in.value.str = strVal_s;
         } else if (format == vpiDecStrVal) {
-            sprintf(strVal_s, "%" PRIu64, intVal);
+            snprintf(strVal_s, MAX_SPANSIZE + 1, "%" PRIu64, intVal);
             value_in.value.str = strVal_s;
         } else if (format == vpiHexStrVal) {
-            sprintf(strVal_s, "%0*" PRIx64, (spanSize + 3) / 4, intVal);
+            snprintf(strVal_s, MAX_SPANSIZE + 1, "%0*" PRIx64, (spanSize + 3) / 4, intVal);
             value_in.value.str = strVal_s;
         } else if (format == vpiOctStrVal) {
-            sprintf(strVal_s, "%0*" PRIo64, (spanSize + 2) / 3, intVal);
+            snprintf(strVal_s, MAX_SPANSIZE + 1, "%0*" PRIo64, (spanSize + 2) / 3, intVal);
             value_in.value.str = strVal_s;
         } else if (format == vpiStringVal) {
             const int byteCount = (spanSize + 7) / 8;

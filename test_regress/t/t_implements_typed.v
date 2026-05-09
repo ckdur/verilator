@@ -1,23 +1,23 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 interface class Icls;
-   typedef int int_t;
-   pure virtual function int ifunc(int_t val);
+  typedef int int_t;
+  pure virtual function int ifunc(int_t val);
 endclass
 
 interface class IclsExt extends Icls;
-   // Typedefs seen by extended, but not implements (need ::)
-   pure virtual function int ifuncExt(int_t v1, int_t v2);
+  // Typedefs seen by extended, but not implements (need ::)
+  pure virtual function int ifuncExt(int_t v1, int_t v2);
 endclass
 
 class IclsImp implements Icls;
-   function int ifunc(Icls::int_t val);
-      return val + 1;
-   endfunction
+  function int ifunc(Icls::int_t val);
+    return val + 1;
+  endfunction
 endclass
 
 // Bad, already have error for
@@ -26,16 +26,16 @@ endclass
 //    endfunction
 // endclass
 
-module t(/*AUTOARG*/);
+module t;
 
-   IclsImp i1;
+  IclsImp i1;
 
-   initial begin
-      i1 = new;
-      if (i1.ifunc(2) != 3) $stop;
+  initial begin
+    i1 = new;
+    if (i1.ifunc(2) != 3) $stop;
 
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 
 endmodule

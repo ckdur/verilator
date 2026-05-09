@@ -1,10 +1,10 @@
 // -*- mode: C++; c-file-style: "cc-mode" -*-
 //*************************************************************************
 //
-// Copyright 2010-2011 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2010-2011 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -81,7 +81,7 @@ int _mon_check_unimpl(p_cb_data cb_data) {
 
         handle = vpi_register_cb(NULL);
         CHECK_RESULT(handle, 0);
-        s_cb_data cb_data_s;
+        s_cb_data cb_data_s{};
         cb_data_s.reason = 0;  // Bad
         handle = vpi_register_cb(&cb_data_s);
         CHECK_RESULT(handle, 0);

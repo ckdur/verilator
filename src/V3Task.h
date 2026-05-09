@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -21,6 +21,7 @@
 #include "verilatedos.h"
 
 #include "V3Ast.h"
+#include "V3Container.h"
 #include "V3Error.h"
 
 #include <utility>
@@ -37,7 +38,7 @@ class V3TaskConnectState final {
     using WrapMap = std::map<std::pair<AstNodeFTask*, std::string>, AstNodeFTask*>;
     WrapMap m_wrapMap;  // Map of {old function, arguments} -> new function
 public:
-    V3TaskConnectState() {}
+    V3TaskConnectState() = default;
     ~V3TaskConnectState() = default;
     void pushDeletep(AstNode* nodep) { m_deleter.pushDeletep(nodep); }
     bool didWrap() const { return m_didWrap; }
@@ -58,10 +59,10 @@ public:
                                        bool makeChanges = true) VL_MT_DISABLED;
     static void taskConnectWrap(AstNodeFTaskRef* nodep, const V3TaskConnects& tconnects,
                                 V3TaskConnectState* statep,
-                                const std::set<const AstVar*>& argWrap) VL_MT_DISABLED;
-    static AstNodeFTask* taskConnectWrapNew(AstNodeFTask* taskp, const string& newname,
-                                            const V3TaskConnects& tconnects,
-                                            const std::set<const AstVar*>& argWrap) VL_MT_DISABLED;
+                                const VInsertionSet<const AstVar*>& argWrap) VL_MT_DISABLED;
+    static AstNodeFTask*
+    taskConnectWrapNew(AstNodeFTask* taskp, const string& newname, const V3TaskConnects& tconnects,
+                       const VInsertionSet<const AstVar*>& argWrap) VL_MT_DISABLED;
     static string assignInternalToDpi(AstVar* portp, bool isPtr, const string& frSuffix,
                                       const string& toSuffix,
                                       const string& frPrefix = "") VL_MT_DISABLED;

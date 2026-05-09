@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -38,13 +38,16 @@ public:
         : m_value{0} {}
     explicit V3Hash(uint32_t val)
         : m_value{val} {}
-    explicit V3Hash(int32_t val)
-        : m_value{static_cast<uint32_t>(val)} {}
     explicit V3Hash(uint64_t val)
         : m_value{combine(static_cast<uint32_t>(val), static_cast<uint32_t>(val >> 32))} {}
-    explicit V3Hash(int64_t val)
-        : m_value{combine(static_cast<uint32_t>(val), static_cast<uint32_t>(val >> 32))} {}
     explicit V3Hash(const std::string& val);
+
+    explicit V3Hash(int32_t val)
+        : V3Hash{static_cast<uint32_t>(val)} {}
+    explicit V3Hash(int64_t val)
+        : V3Hash{static_cast<uint64_t>(val)} {}
+    explicit V3Hash(const void* val)
+        : V3Hash{static_cast<uint64_t>(reinterpret_cast<uintptr_t>(val))} {}
 
     // METHODS
     uint32_t value() const VL_MT_SAFE { return m_value; }
@@ -61,12 +64,16 @@ public:
     V3Hash operator+(T that) const {
         return V3Hash{combine(m_value, V3Hash{that}.m_value)};
     }
+    V3Hash operator+(const std::string& that) const {
+        return V3Hash{combine(m_value, V3Hash{that}.m_value)};
+    }
 
     // '+=' combines in place
     template <typename T>
     V3Hash& operator+=(T that) {
         return *this = *this + that;
     }
+    V3Hash& operator+=(const std::string& that) { return *this = *this + that; }
 };
 
 std::ostream& operator<<(std::ostream& os, const V3Hash& rhs) VL_MT_SAFE;

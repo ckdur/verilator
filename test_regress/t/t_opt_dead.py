@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
 
 test.scenarios('simulator')
 
-test.compile()
+test.compile(verilator_flags2=[test.pli_filename])
 
 test.execute()
 
 # bug2227, Verilator unsupported, class dead
 # This is what we really want:
-#   test.file_grep_not(test.obj_dir + "/V"+test.name+"__Syms.h", r'dead')
-test.file_grep(test.obj_dir + "/V" + test.name + "__Syms.h", r'dead')
+#   test.file_grep_not(test.obj_dir + "/V"+test.name+"__Syms.h", r'Dead')
+#   test.file_grep_not(test.obj_dir + "/V" + test.name + "_classes.mk", r'Dead');
+test.file_grep(test.obj_dir + "/V" + test.name + "__Dpi.h", r'dpii_Keep')
+test.file_grep(test.obj_dir + "/V" + test.name + "__Dpi.h", r'dpix_Keep')
+test.file_grep(test.obj_dir + "/V" + test.name + "_Pkg_public_kpt.h", r'public_int_Keep')
 
 test.passes()

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -34,13 +34,13 @@
 // roles are:
 //
 // OrderVarStdVertex:   Data dependencies for combinational logic and delayed assignment
-//                      updates (AssignPost).
+//                      updates (AlwaysPost).
 // OrderVarPostVertex:  Ensures all sequential logic blocks reading a signal do so before any
 //                      combinational or delayed assignments update that signal.
-// OrderVarPordVertex:  Ensures a _d = _q AssignPre used to implement delayed (non-blocking)
+// OrderVarPordVertex:  Ensures a _d = _q AlwaysPre used to implement delayed (non-blocking)
 //                      assignments is the first write of a _d, before any sequential blocks
 //                      write to that _d.
-// OrderVarPreVertex:   This is an optimization. Try to ensure that a _d = _q AssignPre is the
+// OrderVarPreVertex:   This is an optimization. Try to ensure that a _d = _q AlwaysPre is the
 //                      last read of a _q, after all reads of that _q by sequential logic. The
 //                      model is still correct if we cannot satisfy this due to other interfering
 //                      constraints. If respecting this constraint is possible, then combined
@@ -52,7 +52,7 @@
 //
 // Ordering constraints are represented by directed edges, where the source of an edge needs to be
 // ordered before the sink of an edge. A constraint can be either hard (must be satisfied),
-// represented by a non cutable edge, or a constraint can be soft (ideally should be satisfied, but
+// represented by a non-cutable edge, or a constraint can be soft (ideally should be satisfied, but
 // is ok not to if other hard constraints interfere), represented by a cutable edge. Edges
 // otherwise carry no additional information. TODO: what about weight?
 //

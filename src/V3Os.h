@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -31,6 +31,7 @@
 class V3Os final {
 public:
     // METHODS (environment)
+    static string cwd() { return filenameRealPath("."); }
     static string getenvStr(const string& envvar, const string& defaultValue);
     static void setenvStr(const string& envvar, const string& value, const string& why);
 
@@ -70,6 +71,9 @@ public:
     static void filesystemFlush(const string& dirname);
     static void filesystemFlushBuildDir(const string& dirname);
     static void unlinkRegexp(const string& dir, const string& regexp);
+
+    // METHODS (memory)
+    static void releaseMemory();
 
     // METHODS (random)
     static uint64_t rand64(std::array<uint64_t, 2>& stater);

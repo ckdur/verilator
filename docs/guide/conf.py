@@ -1,7 +1,7 @@
 # pylint: disable=C0103,C0114,C0116,C0301,E0402,W0622
 #
 # Configuration file for Verilator's Sphinx documentation builder.
-# Copyright 2003-2025 by Wilson Snyder.
+# SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 #
 # This file only contains overridden options. For a full list:
@@ -44,7 +44,7 @@ def setup(app):
 # -- Project information
 
 project = 'Verilator'
-copyright = '2024 by Wilson Snyder, under LGPL-3.0 or Artistic-2.0'
+copyright = '2026 by Wilson Snyder, under LGPL-3.0 or Artistic-2.0'
 author = 'Wilson Snyder'
 
 # The master toctree document.
@@ -63,18 +63,25 @@ rst_prolog = """
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
+#
 # To install:
 #   sudo install enchant
-#   sudo pip3 install sphinx sphinx_rtd_theme breathe sphinxcontrib-spelling
-# We keep this list empty for now to avoid needing dependencies
+#   python3 -m venv --system-site-packages ~/.verilator_pyenv
+#   source ~/.verilator_pyenv/bin/activate
+#   pip3 install sphinx sphinx_rtd_theme sphinxcontrib-spelling breathe
+#
+# We keep this extensions list empty for now to avoid needing dependencies
 extensions = []
 # extensions = ['breathe', 'sphinxcontrib.spelling']
+# For website builds, this will add sphinxcontrib.jquery
+if 'VERILATOR_SPHINX_EXTENSIONS' in os.environ:
+    extensions.extend(os.environ.get('VERILATOR_SPHINX_EXTENSIONS', '').split(':'))
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = [
-    '_build', 'Thumbs.db', '.DS_Store', 'internals.rst', 'xml.rst', 'gen/ex_*', 'CONTRIBUTING.rst'
+    '_build', 'Thumbs.db', '.DS_Store', 'internals.rst', 'gen/ex_*', 'CONTRIBUTING.rst'
 ]
 
 # Warn about refs
@@ -110,6 +117,8 @@ html_domain_indices = False
 html_logo = "../_static/verilator_192_150_min.png"
 
 html_theme = 'sphinx_rtd_theme'
+# Despite a 'WARNING: Calling get_html_theme_path is deprecated'
+# the HTML output is different without this line
 html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 
 html_theme_options = {

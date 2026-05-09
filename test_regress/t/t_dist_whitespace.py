@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
 
 test.scenarios('dist')
 
-root = ".."
-
 Tabs_Exempt_Re = r'(\.out$)|(/gtkwave)|(Makefile)|(\.mk$)|(\.mk\.in$)|test_regress/t/t_preproc\.v|install-sh'
 
+Unicode_Exempt_Re = r'(Changes$|CONTRIBUTORS$|LICENSES?|contributors.rst$|spelling.txt$)'
 
-def get_source_files(root):
-    git_files = test.run_capture("cd " + root + " && git ls-files")
+
+def get_source_files():
+    git_files = test.run_capture("cd " + test.root + " && git ls-files")
     if test.verbose:
         print("MF " + git_files)
     files = {}
@@ -28,17 +28,15 @@ def get_source_files(root):
     return files
 
 
-if not os.path.exists(root + "/.git"):
+if not os.path.exists(test.root + "/.git"):
     test.skip("Not in a git repository")
 
-root = ".."
-
-files = get_source_files(root)
+files = get_source_files()
 
 warns = {}
 fcount = 0
 for filename in sorted(files.keys()):
-    filename = os.path.join(root, filename)
+    filename = os.path.join(test.root, filename)
     if not os.path.exists(filename):  # git file might be deleted but not yet staged
         continue
     contents = test.file_contents(filename)
@@ -90,11 +88,11 @@ for filename in sorted(files.keys()):
 
     # Unicode checker; should this be done in another file?
     # No way to auto-fix.
-    unicode_exempt = (re.search(r'Changes$', filename) or re.search(r'CONTRIBUTORS$', filename)
-                      or re.search(r'contributors.rst$', filename)
-                      or re.search(r'spelling.txt$', filename))
-    if not unicode_exempt and re.search(r'[^ \t\r\n\x20-\x7e]', contents):
-        warns[filename] = "Warning: non-ASCII contents in " + filename
+    unicode_exempt = re.search(Unicode_Exempt_Re, filename)
+    m = re.search(r'(([^ \t\r\n\x20-\x7e]).*)', contents)
+    if not unicode_exempt and m:
+        warns[filename] = "Warning: non-ASCII contents '" + m.group(2) + "' at '" + m.group(
+            1) + "' in " + filename
 
     fcount += 1
 

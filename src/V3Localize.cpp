@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -65,6 +65,13 @@ class LocalizeVisitor final : public VNVisitor {
     bool isOptimizable(AstVarScope* nodep) {
         // Don't want to malloc/free the backing store all the time
         if (VN_IS(nodep->dtypep(), NBACommitQueueDType)) return false;
+        // Do not localize strings. They result in unnecessary initialization
+        // and bloated code size due to destructor calls when unused.
+        // TODO: Local variables should be pushed into the narrowest scope rather
+        // than emitted at the top of the function. See discussion in #6969.
+        if (nodep->dtypep()->skipRefp()->isString()) return false;
+        // Variables used in super constructor call can't be localized, because
+        // in C++ there is no way to declare them before base class constructor call
         return ((!nodep->user1()  // Not marked as not optimizable, or ...
                                   // .. a block temp used in a single CFunc
                  || (nodep->varp()->varType() == VVarType::BLOCKTEMP
@@ -93,7 +100,7 @@ class LocalizeVisitor final : public VNVisitor {
             // cannot cope with. This should be rare (introduced by V3Depth).
             if (funcps.size() > 1 && existsNonLeaf(funcps)) continue;
 
-            UINFO(4, "Localizing " << nodep << endl);
+            UINFO(4, "Localizing " << nodep);
             ++m_statLocVars;
 
             // Yank the VarScope from it's parent and schedule them for deletion. Leave the Var
@@ -112,7 +119,8 @@ class LocalizeVisitor final : public VNVisitor {
                     = new AstVar{oldVarp->fileline(), oldVarp->varType(), newName, oldVarp};
                 newVarp->funcLocal(true);
                 newVarp->noReset(oldVarp->noReset());
-                funcp->addInitsp(newVarp);
+                newVarp->noSubst(oldVarp->noSubst());
+                funcp->addVarsp(newVarp);
 
                 // Fix up all the references within this function
                 const auto er = m_references(funcp).equal_range(nodep);
@@ -132,14 +140,24 @@ class LocalizeVisitor final : public VNVisitor {
         moveVarScopes();
     }
 
+    void visit(AstCAwait* nodep) override {
+        m_cfuncp->user1(true);  // Mark caller as not a leaf function
+        iterateChildrenConst(nodep);
+    }
+
     void visit(AstCFunc* nodep) override {
-        UINFO(4, "  CFUNC " << nodep << endl);
+        UINFO(4, "  CFUNC " << nodep);
         VL_RESTORER(m_cfuncp);
         VL_RESTORER(m_nodeDepth);
         m_cfuncp = nodep;
         m_nodeDepth = 0;
         const VNUser2InUse user2InUse;
         iterateChildrenConst(nodep);
+    }
+
+    void visit(AstCNew* nodep) override {
+        m_cfuncp->user1(true);  // Mark caller as not a leaf function
+        iterateChildren(nodep);
     }
 
     void visit(AstCCall* nodep) override {
@@ -172,9 +190,10 @@ class LocalizeVisitor final : public VNVisitor {
             && !nodep->varp()->isStatic()  // Not a static variable
             && !nodep->varp()->isClassMember()  // Statically exists in design hierarchy
             && !nodep->varp()->sensIfacep()  // Not sensitive to an interface
+            && !nodep->varp()->isVirtIface()  // Not interface pointer
             && !nodep->varp()->valuep()  // Does not have an initializer
         ) {
-            UINFO(4, "Consider for localization: " << nodep << endl);
+            UINFO(4, "Consider for localization: " << nodep);
             m_varScopeps.push_back(nodep);
         }
         // No iterate; Don't want varrefs under it (e.g.: in child dtype?)
@@ -186,18 +205,17 @@ class LocalizeVisitor final : public VNVisitor {
         AstVarScope* const varScopep = nodep->varScopep();
         // Remember this function accesses this VarScope (we always need this as we might optimize
         // this VarScope into a local, even if it's not assigned. See 'isOptimizable')
-        m_accessors(varScopep).emplace(m_cfuncp);
+        m_accessors(varScopep).insert(m_cfuncp);  // emplace performs a temporary malloc
         // Remember the reference so we can fix it up later (we always need this as well)
         m_references(m_cfuncp).emplace(varScopep, nodep);
 
-        // Check if already marked as not optimizable
-        if (!varScopep->user1()) {
+        if (!varScopep->user1()) {  // Check if already marked as not optimizable
             // Note: we only check read variables, as it's ok to localize (and in fact discard)
             // any variables that are only written but never read.
             if (nodep->access().isReadOrRW() && !varScopep->user2()) {
                 // Variable is read, but is not known to have been assigned in this function. Mark
                 // as not optimizable.
-                UINFO(4, "Not optimizable (not written): " << nodep << endl);
+                UINFO(4, "Not optimizable (not written): " << nodep);
                 varScopep->user1(1);
             }
         }
@@ -222,7 +240,7 @@ public:
 // Localize class functions
 
 void V3Localize::localizeAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { LocalizeVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("localize", 0, dumpTreeEitherLevel() >= 6);
 }

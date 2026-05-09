@@ -1,10 +1,10 @@
 // -*- mode: C++; c-file-style: "cc-mode" -*-
 //*************************************************************************
 //
-// Copyright 2013-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2013-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -13,6 +13,10 @@
 #include "vpi_user.h"
 
 #include <iostream>
+
+extern "C" {
+#include <libgen.h>
+}
 
 // Avoid C++11 in this file as not all simulators allow it
 
@@ -25,11 +29,11 @@ class TestVpiHandle {
 
 public:
     TestVpiHandle()
-        : m_handle(NULL)
-        , m_freeit(true) {}
+        : m_handle(NULL)  // Need (), not C++11
+        , m_freeit(true) {}  // Need (), not C++11
     TestVpiHandle(vpiHandle h)
-        : m_handle(h)
-        , m_freeit(true) {}
+        : m_handle(h)  // Need (), not C++11
+        , m_freeit(true) {}  // Need (), not C++11
     ~TestVpiHandle() { release(); }
     operator vpiHandle() const { return m_handle; }
     TestVpiHandle& operator=(vpiHandle h) {

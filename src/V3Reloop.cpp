@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -68,17 +68,18 @@ class ReloopVisitor final : public VNVisitor {
         const string newvarname{"__Vilp" + std::to_string(cfuncp->user1Inc() + 1)};
         AstVar* const varp
             = new AstVar{fl, VVarType::STMTTEMP, newvarname, VFlagLogicPacked{}, 32};
+        cfuncp->addVarsp(varp);
         return varp;
     }
     void mergeEnd() {
         if (!m_mgAssignps.empty()) {
             const uint32_t items = m_mgIndexHi - m_mgIndexLo + 1;
             UINFO(9, "End merge iter=" << items << " " << m_mgIndexHi << ":" << m_mgIndexLo << " "
-                                       << m_mgOffset << " " << m_mgAssignps[0] << endl);
+                                       << m_mgOffset << " " << m_mgAssignps[0]);
             if (items >= static_cast<uint32_t>(v3Global.opt.reloopLimit())) {
                 UINFO(6, "Reloop merging items=" << items << " " << m_mgIndexHi << ":"
                                                  << m_mgIndexLo << " " << m_mgOffset << " "
-                                                 << m_mgAssignps[0] << endl);
+                                                 << m_mgAssignps[0]);
                 ++m_statReloops;
                 m_statReItems += items;
 
@@ -102,11 +103,12 @@ class ReloopVisitor final : public VNVisitor {
                 AstNode* const incp = new AstAssign{
                     fl, new AstVarRef{fl, itp, VAccess::WRITE},
                     new AstAdd{fl, new AstConst{fl, 1}, new AstVarRef{fl, itp, VAccess::READ}}};
-                AstWhile* const whilep = new AstWhile{fl, condp, nullptr, incp};
-                initp->addNext(whilep);
-                itp->AstNode::addNext(initp);
-                bodyp->replaceWith(itp);
-                whilep->addStmtsp(bodyp);
+                AstLoop* const loopp = new AstLoop{fl};
+                loopp->addStmtsp(new AstLoopTest{fl, loopp, condp});
+                initp->addNext(loopp);
+                bodyp->replaceWith(initp);
+                loopp->addStmtsp(bodyp);
+                loopp->addStmtsp(incp);
 
                 // Replace constant index with new loop index
                 AstNodeExpr* const offsetp
@@ -121,8 +123,8 @@ class ReloopVisitor final : public VNVisitor {
                     rbitp->replaceWith(m_mgOffset < 0 ? new AstAdd{fl, rvrefp, offsetp} : rvrefp);
                     VL_DO_DANGLING(rbitp->deleteTree(), lbitp);
                 }
-                if (debug() >= 9) initp->dumpTree("-  new: ");
-                if (debug() >= 9) whilep->dumpTree("-  new: ");
+                UINFOTREE(9, initp, "", "new");
+                UINFOTREE(9, loopp, "", "new");
 
                 // Remove remaining assigns
                 for (AstNodeAssign* assp : m_mgAssignps) {
@@ -212,14 +214,14 @@ class ReloopVisitor final : public VNVisitor {
                     m_mgIndexHi = lindex;
                 }
                 UINFO(9, "Continue merge i=" << lindex << " " << m_mgIndexHi << ":" << m_mgIndexLo
-                                             << " " << nodep << endl);
+                                             << " " << nodep);
                 m_mgAssignps.push_back(nodep);
                 m_mgNextp = nodep->nextp();
                 return;
             } else {
-                UINFO(9, "End merge i="
-                             << lindex << " " << m_mgIndexHi << ":" << m_mgIndexLo << " " << nodep
-                             << endl);  // This assign doesn't merge with previous assign,
+                UINFO(9, "End merge i=" << lindex << " " << m_mgIndexHi << ":" << m_mgIndexLo
+                                        << " " << nodep);
+                // This assign doesn't merge with previous assign,
                 // but should start a new merge
                 mergeEnd();
             }
@@ -237,7 +239,7 @@ class ReloopVisitor final : public VNVisitor {
         m_mgConstRp = rconstp;
         m_mgIndexLo = lindex;
         m_mgIndexHi = lindex;
-        UINFO(9, "Start merge i=" << lindex << " o=" << m_mgOffset << nodep << endl);
+        UINFO(9, "Start merge i=" << lindex << " o=" << m_mgOffset << nodep);
     }
     void visit(AstExprStmt* nodep) override { iterateChildren(nodep); }
     //--------------------
@@ -258,7 +260,7 @@ public:
 // Reloop class functions
 
 void V3Reloop::reloopAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { ReloopVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("reloop", 0, dumpTreeEitherLevel() >= 6);
 }

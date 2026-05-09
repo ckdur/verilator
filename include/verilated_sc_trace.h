@@ -1,10 +1,10 @@
 // -*- mode: C++; c-file-style: "cc-mode" -*-
 //=============================================================================
 //
-// Copyright 2001-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2001-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=============================================================================
@@ -60,7 +60,7 @@ class VerilatedScTraceBase VL_NOT_FINAL : private sc_core::sc_object,
                                           private sc_core::sc_trace_file {
     bool m_enableDeltaCycles = false;
     bool m_traceFileAdded = false;
-    static void stubReportHandler(const sc_core::sc_report&, const sc_core::sc_actions&){};
+    static void stubReportHandler(const sc_core::sc_report&, const sc_core::sc_actions&) {};
 
 public:
     void enableDeltaCycles(bool flag = true) {
@@ -180,7 +180,7 @@ private:
     // Cadence Incisive has these as abstract functions so we must create them
     void set_time_unit(int exponent10_seconds) override {}  // deprecated
 #endif
-    void set_time_unit(double v, sc_core::sc_time_unit tu) override {}  // LCOV_EXCL_LINE
+    void set_time_unit(double v, sc_core::sc_time_unit tu) override {}
 
     //--------------------------------------------------
     // SystemC 2.1.v1

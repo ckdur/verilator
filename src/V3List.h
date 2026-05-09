@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -82,7 +82,7 @@ class V3List final {
 
     VL_ATTR_ALWINLINE
     static void prefetch(const T_Base* elementp, const T_Base* fallbackp) {
-        UDEBUGONLY(UASSERT(fallbackp, "Prefetch fallback pointer must be non nullptr"););
+        UDEBUGONLY(UASSERT(fallbackp, "Prefetch fallback pointer must be non-nullptr"););
         // This compiles to a branchless prefetch with cmove, with the address always valid
         VL_PREFETCH_RW(elementp ? elementp : fallbackp);
     }
@@ -241,6 +241,7 @@ public:
     bool empty() const { return !m_headp; }
     bool hasSingleElement() const { return m_headp && m_headp == m_lastp; }
     bool hasMultipleElements() const { return m_headp && m_headp != m_lastp; }
+    bool hasTwoElements() const { return m_headp && toLinks(m_headp).m_nextp == m_lastp; }
 
     // These return pointers, as we often want to unlink/delete them, and can also signal empty
     T_Element* frontp() { return static_cast<T_Element*>(m_headp); }

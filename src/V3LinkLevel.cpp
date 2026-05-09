@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -39,7 +39,7 @@ struct CmpLevel final {
 void V3LinkLevel::modSortByLevel() {
     // Sort modules by levels, root down to lowest children
     // Calculate levels again in case we added modules
-    UINFO(2, "modSortByLevel()\n");
+    UINFO(2, "modSortByLevel()");
 
     // level() was computed for us in V3LinkCells
 
@@ -47,17 +47,20 @@ void V3LinkLevel::modSortByLevel() {
     ModVec tops;  // Top level modules
     for (AstNodeModule* nodep = v3Global.rootp()->modulesp(); nodep;
          nodep = VN_AS(nodep->nextp(), NodeModule)) {
-        if (nodep->level() <= 2 && !VN_IS(nodep, NotFoundModule)) tops.push_back(nodep);
+        if (nodep->isTop() && !VN_IS(nodep, NotFoundModule)) {
+            UINFO(9, "top candidate " << nodep);
+            tops.push_back(nodep);
+        }
         mods.push_back(nodep);
     }
     if (tops.size() >= 2) {
         const AstNode* const secp = tops[1];  // Complain about second one, as first often intended
         if (!secp->fileline()->warnIsOff(V3ErrorCode::MULTITOP)) {
-            auto warnTopModules = [](const std::string& warnMore, ModVec tops)
+            auto warnTopModules = [](const AstNode* const secp, ModVec tops)
                                       VL_REQUIRES(V3Error::s().m_mutex) -> std::string {
                 std::stringstream ss;
                 for (AstNode* alsop : tops) {
-                    ss << warnMore << "... Top module " << alsop->prettyNameQ() << endl
+                    ss << secp->warnMore() << "... Top module " << alsop->prettyNameQ() << '\n'
                        << alsop->warnContextSecondary();
                 }
                 return ss.str();
@@ -69,7 +72,7 @@ void V3LinkLevel::modSortByLevel() {
                                           "--top-module to select top."
                                        << V3Error::s().warnContextNone()
                                        << V3Error::warnAdditionalInfo()
-                                       << warnTopModules(secp->warnMore(), tops));
+                                       << warnTopModules(secp, tops));
         }
     }
 
@@ -77,20 +80,36 @@ void V3LinkLevel::modSortByLevel() {
 
     // Reorder the netlist's modules to have modules in level sorted order
     stable_sort(mods.begin(), mods.end(), CmpLevel());  // Sort the vector
-    UINFO(9, "modSortByLevel() sorted\n");  // Comment required for gcc4.6.3 / bug666
+    UINFO(9, "modSortByLevel() sorted");  // Comment required for gcc4.6.3 / bug666
     for (AstNodeModule* nodep : mods) nodep->unlinkFrBack();
     UASSERT_OBJ(!v3Global.rootp()->modulesp(), v3Global.rootp(), "Unlink didn't work");
     for (AstNodeModule* nodep : mods) v3Global.rootp()->addModulesp(nodep);
-    UINFO(9, "modSortByLevel() done\n");  // Comment required for gcc4.6.3 / bug666
+    UINFO(9, "modSortByLevel() done");  // Comment required for gcc4.6.3 / bug666
     V3Global::dumpCheckGlobalTree("cellsort", false, dumpTreeEitherLevel() >= 3);
 }
 
 void V3LinkLevel::timescaling(const ModVec& mods) {
     // Timescale determination
     const AstNodeModule* modTimedp = nullptr;
-    VTimescale unit(VTimescale::NONE);
+    VTimescale unit{VTimescale::NONE};
+
+    // Move timeunit attributes from parse to module unit
+    // Grammar only allows timeunit as module_item, so no need to recurse full tree
+    for (AstNodeModule* modp : mods) {
+        for (AstNode *nextp, *childp = modp->stmtsp(); childp; childp = nextp) {
+            nextp = childp->nextp();
+            // cppcheck-suppress constVariablePointer
+            if (AstPragma* pragp = VN_CAST(childp, Pragma)) {
+                if (pragp->pragType() == VPragmaType::TIMEUNIT_SET) {
+                    modp->timeunit(pragp->timescale());
+                    VL_DO_DANGLING(pragp->unlinkFrBack()->deleteTree(), pragp);
+                }
+            }
+        }
+    }
     // Use highest level module as default unit - already sorted in proper order
-    for (const auto& modp : mods) {
+    // Combine timing into later modules
+    for (AstNodeModule* modp : mods) {
         if (!modTimedp && !modp->timeunit().isNone()) {
             modTimedp = modp;
             unit = modTimedp->timeunit();
@@ -106,24 +125,24 @@ void V3LinkLevel::timescaling(const ModVec& mods) {
         if (!upkgp->timeunit().isNone()) dunitTimed = true;
     }
 
-    for (AstNodeModule* nodep : mods) {
-        if (!v3Global.opt.timeOverrideUnit().isNone()) nodep->timeunit(unit);
-        if (nodep->timeunit().isNone()) {
+    for (AstNodeModule* modp : mods) {
+        if (!v3Global.opt.timeOverrideUnit().isNone()) modp->timeunit(unit);
+        if (modp->timeunit().isNone()) {
             if (modTimedp  // Got previous
                 && !dunitTimed
                 && (  // unit doesn't already include an override
                     v3Global.opt.timeOverrideUnit().isNone()
                     && v3Global.opt.timeDefaultUnit().isNone())
-                && nodep->timescaleMatters()) {
-                nodep->v3warn(TIMESCALEMOD,
-                              "Timescale missing on this module as other modules have "
-                              "it (IEEE 1800-2023 3.14.2.3)\n"
-                                  << nodep->warnContextPrimary() << '\n'
-                                  << modTimedp->warnOther()
-                                  << "... Location of module with timescale\n"
-                                  << modTimedp->warnContextSecondary());
+                && modp->timescaleMatters()) {
+                modp->v3warn(TIMESCALEMOD,
+                             "Timescale missing on this module as other modules have "
+                             "it (IEEE 1800-2023 3.14.2.3)\n"
+                                 << modp->warnContextPrimary() << '\n'
+                                 << modTimedp->warnOther()
+                                 << "... Location of module with timescale\n"
+                                 << modTimedp->warnContextSecondary());
             }
-            nodep->timeunit(unit);
+            modp->timeunit(unit);
         }
     }
 
@@ -141,19 +160,20 @@ void V3LinkLevel::timescaling(const ModVec& mods) {
 // Wrapping
 
 void V3LinkLevel::wrapTop(AstNetlist* rootp) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     // We do ONLY the top module
     AstNodeModule* const oldmodp = rootp->modulesp();
     if (!oldmodp) {  // Later V3LinkDot will warn
-        UINFO(1, "No module found to wrap\n");
+        UINFO(1, "No module found to wrap");
         return;
     }
 
-    AstNodeModule* const newmodp = new AstModule{oldmodp->fileline(), "$root"};
+    AstNodeModule* const newmodp = new AstModule{oldmodp->fileline(), "$root", oldmodp->libname()};
     newmodp->name(AstNode::encodeName(newmodp->name()));  // so origName is nice
     // Make the new module first in the list
     oldmodp->unlinkFrBackWithNext();
     newmodp->addNext(oldmodp);
+    newmodp->depth(1);
     newmodp->level(1);
     newmodp->modPublic(true);
     newmodp->protect(false);
@@ -178,6 +198,11 @@ void V3LinkLevel::wrapTop(AstNetlist* rootp) {
         }
     }
 
+    // All modules and hier-classes except one we created are now a level deeper
+    rootp->foreach([&](AstNodeModule* const modp) {
+        if (modp != newmodp && modp->level()) modp->level(1 + modp->level());
+    });
+
     V3Global::dumpCheckGlobalTree("wraptop", 0, dumpTreeEitherLevel() >= 6);
 }
 
@@ -190,13 +215,14 @@ void V3LinkLevel::wrapTopCell(AstNetlist* rootp) {
     NameSet ioNames;
     NameSet dupNames;
     // For all modules, skipping over new top
+    // cppcheck-suppress constVariablePointer
     for (AstNodeModule* oldmodp = VN_AS(rootp->modulesp()->nextp(), NodeModule);
-         oldmodp && oldmodp->level() <= 2; oldmodp = VN_AS(oldmodp->nextp(), NodeModule)) {
+         oldmodp && oldmodp->isTop(); oldmodp = VN_AS(oldmodp->nextp(), NodeModule)) {
         for (AstNode* subnodep = oldmodp->stmtsp(); subnodep; subnodep = subnodep->nextp()) {
             if (AstVar* const oldvarp = VN_CAST(subnodep, Var)) {
                 if (oldvarp->isIO()) {
                     if (!ioNames.insert(oldvarp->name()).second) {
-                        // UINFO(8, "Multitop dup I/O found: " << oldvarp << endl);
+                        // UINFO(8, "Multitop dup I/O found: " << oldvarp);
                         dupNames.insert(oldvarp->name());
                     }
                 } else if (v3Global.opt.topIfacesSupported() && oldvarp->isIfaceRef()) {
@@ -205,7 +231,7 @@ void V3LinkLevel::wrapTopCell(AstNetlist* rootp) {
                         const AstIfaceRefDType* const ifacerefp = VN_AS(subtypep, IfaceRefDType);
                         if (!ifacerefp->cellp()) {
                             if (!ioNames.insert(oldvarp->name()).second) {
-                                // UINFO(8, "Multitop dup interface found: " << oldvarp << endl);
+                                // UINFO(8, "Multitop dup interface found: " << oldvarp);
                                 dupNames.insert(oldvarp->name());
                             }
                         }
@@ -218,8 +244,7 @@ void V3LinkLevel::wrapTopCell(AstNetlist* rootp) {
                                 = VN_AS(arrsubtypep, IfaceRefDType);
                             if (!ifacerefp->cellp()) {
                                 if (!ioNames.insert(oldvarp->name()).second) {
-                                    // UINFO(8, "Multitop dup interface array found: " << oldvarp
-                                    // << endl);
+                                    // UINFO(8, "Multitop dup interface array found: " << oldvarp);
                                     dupNames.insert(oldvarp->name());
                                 }
                             }
@@ -232,10 +257,10 @@ void V3LinkLevel::wrapTopCell(AstNetlist* rootp) {
 
     // For all modules, skipping over new top
     for (AstNodeModule* oldmodp = VN_AS(rootp->modulesp()->nextp(), NodeModule);
-         oldmodp && oldmodp->level() <= 2; oldmodp = VN_AS(oldmodp->nextp(), NodeModule)) {
+         oldmodp && oldmodp->isTop(); oldmodp = VN_AS(oldmodp->nextp(), NodeModule)) {
         if (VN_IS(oldmodp, Package)) continue;
         // Add instance
-        UINFO(5, "LOOP " << oldmodp << endl);
+        UINFO(5, "LOOP " << oldmodp);
         AstCell* const cellp = new AstCell{
             newmodp->fileline(),
             newmodp->fileline(),
@@ -250,7 +275,7 @@ void V3LinkLevel::wrapTopCell(AstNetlist* rootp) {
         // Add pins
         for (AstNode* subnodep = oldmodp->stmtsp(); subnodep; subnodep = subnodep->nextp()) {
             if (AstVar* const oldvarp = VN_CAST(subnodep, Var)) {
-                UINFO(8, "VARWRAP " << oldvarp << endl);
+                UINFO(8, "VARWRAP " << oldvarp);
                 if (oldvarp->isIO()) {
                     string name = oldvarp->name();
                     if (dupNames.find(name) != dupNames.end()) {
@@ -384,6 +409,41 @@ void V3LinkLevel::wrapTopCell(AstNetlist* rootp) {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+void V3LinkLevel::nonWrapTop(AstNetlist* rootp) {
+    // Perform variable setting step for top modules to prevent
+    // optimizing away primary ports when only serializing input
+    if (!rootp->modulesp()) {  // Later V3LinkDot will warn
+        UINFO(1, "No module found");
+        return;
+    }
+
+    // For all top modules
+    for (AstNodeModule* modp = rootp->modulesp(); modp && modp->isTop();
+         modp = VN_AS(modp->nextp(), NodeModule)) {
+        if (VN_IS(modp, Package)) continue;
+
+        UINFO(5, "LOOP " << modp);
+
+        for (AstNode* subnodep = modp->stmtsp(); subnodep; subnodep = subnodep->nextp()) {
+            if (AstVar* const varp = VN_CAST(subnodep, Var)) {
+                UINFO(8, "VARWRAP " << varp);
+                if (varp->isIO()) {
+                    varp->protect(false);
+                    varp->sigPublic(true);
+                    varp->primaryIO(true);
+                    if (varp->isRef() || varp->isConstRef()) {
+                        varp->v3warn(E_UNSUPPORTED,
+                                     "Unsupported: ref/const ref as primary input/output: "
+                                         << varp->prettyNameQ());
+                    }
+                    if (v3Global.opt.systemC()) varp->sc(true);
+                    if (v3Global.opt.noTraceTop()) varp->trace(false);
                 }
             }
         }

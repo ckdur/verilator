@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -24,13 +24,21 @@
 
 #include "V3TraceDecl.h"
 
-#include "V3Config.h"
+#include "V3Ast.h"
+#include "V3Control.h"
 #include "V3EmitCBase.h"
+#include "V3Error.h"
+#include "V3File.h"
+#include "V3Global.h"
+#include "V3Number.h"
 #include "V3Stats.h"
+#include "V3UniqueNames.h"
 
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -51,32 +59,37 @@ public:
         , m_emit{emit} {}
 
     // Emit Prefix adjustments until the current path is 'newPath'
-    void adjust(const string& newPath) {
+    void adjust(const string& newPath, AstCell* cellp, AstVarScope* vscp) {
         // Move up to enclosing path
-        unsigned toPop = 0;
         while (!VString::startsWith(newPath, m_stack.back())) {
-            ++toPop;
+            m_emit(new AstTracePopPrefix{m_flp});
             m_stack.pop_back();
         }
-        while (toPop--) m_emit(new AstTracePopPrefix{m_flp});
+
+        if (newPath == m_stack.back()) return;
+
+        const VTracePrefixType lastScopeType =  //
+            (cellp && VN_IS(cellp->modp(), Iface))
+                    || (vscp && VN_IS(vscp->dtypep(), IfaceRefDType))
+                ? VTracePrefixType::SCOPE_INTERFACE
+                : VTracePrefixType::SCOPE_MODULE;
+        const std::string extraPrefix = newPath.substr(m_stack.back().size());
+        size_t begin = 0;
+        const size_t last = extraPrefix.rfind(SEPARATOR);
         // Move down, one path element at a time
-        if (newPath != m_stack.back()) {
-            const string& extraPrefix = newPath.substr(m_stack.back().size());
-            size_t begin = 0;
-            while (true) {
-                const size_t end = extraPrefix.find(SEPARATOR, begin);
-                if (end == string::npos) break;
-                const string& extra = extraPrefix.substr(begin, end - begin);
+        while (true) {
+            const size_t end = extraPrefix.find(SEPARATOR, begin);
+            if (end == string::npos) break;
+            const string& extra = extraPrefix.substr(begin, end - begin);
+            if (end == last) {
+                m_emit(new AstTracePushPrefix{m_flp, extra, lastScopeType});
+            } else {
                 m_emit(new AstTracePushPrefix{m_flp, extra, VTracePrefixType::SCOPE_MODULE});
-                m_stack.push_back(m_stack.back() + extra + SEPARATOR);
-                begin = end + 1;
             }
-            const string& extra = extraPrefix.substr(begin);
-            if (!extra.empty()) {
-                m_emit(new AstTracePushPrefix{m_flp, extra, VTracePrefixType::SCOPE_MODULE});
-                m_stack.push_back(m_stack.back() + extra);
-            }
+            m_stack.push_back(m_stack.back() + extra + SEPARATOR);
+            begin = end + 1;
         }
+        UASSERT(begin == extraPrefix.size(), "Should have consumed all of extraPrefix");
     }
 
     // Emit Prefix adjustments to unwind the path back to its original state
@@ -90,6 +103,8 @@ public:
 
 class TraceDeclVisitor final : public VNVisitor {
     // NODE STATE
+    // AstCFunc::user1()                // code offset for current type
+    // AstCFunc::user2()                // VarScope for dtype functions
 
     // STATE
     AstTopScope* const m_topScopep;  // The singleton AstTopScope
@@ -98,6 +113,30 @@ class TraceDeclVisitor final : public VNVisitor {
     std::vector<AstCFunc*> m_topFuncps;  // Top level trace initialization functions
     std::vector<AstCFunc*> m_subFuncps;  // Trace sub functions for this scope
     std::set<const AstTraceDecl*> m_declUncalledps;  // Declarations not called
+    // Functions per type and variable kind (wire vs logic etc.)
+    struct DtypeFuncKey final {
+        const AstNodeDType* dtypep;
+        VVarType varType;
+        bool operator==(const DtypeFuncKey& other) const {
+            return dtypep == other.dtypep && varType == other.varType;
+        }
+    };
+    struct DtypeFuncKeyHash final {
+        size_t operator()(const DtypeFuncKey& key) const {
+            return std::hash<const AstNodeDType*>{}(key.dtypep)
+                   ^ (std::hash<uint8_t>{}(key.varType) << 1);
+        }
+    };
+    std::unordered_map<DtypeFuncKey, AstCFunc*, DtypeFuncKeyHash>
+        m_dtypeFuncs;  // Functions per type+kind
+    AstCFunc* m_dtypeFuncp = nullptr;  // Current type func
+    AstCFunc* m_dtypeSubFuncp = nullptr;  // Current type sub func
+    const string m_dtypeArgs{", const char* name, uint32_t fidx, uint32_t c, "
+                             "VerilatedTraceSigDirection direction"};  // Type func args
+    AstTraceDecl* m_dtypeDeclp = nullptr;  // Current type func decl
+    V3UniqueNames m_dtypeNames{""};  // Unique names for dtype funcs
+    bool m_skipDtypeFunc = false;  // Don't create a type func
+    uint32_t m_offset = std::numeric_limits<uint32_t>::max();  // Offset for types
     int m_topFuncSize = 0;  // Size of the top function currently being built
     int m_subFuncSize = 0;  // Size of the sub function currently being built
     const int m_funcSizeLimit  // Maximum size of a function
@@ -120,37 +159,67 @@ class TraceDeclVisitor final : public VNVisitor {
     // - A sub scope (stored as the cell corresponding to the sub scope)
     // Note: members are non-const to allow copy during sorting
     class TraceEntry final {
-        // AstVarScope under scope being traced
-        AstVarScope* m_vscp{nullptr};
-        // Sub scope (as AstCell) under scope being traced
-        AstCell* m_cellp{nullptr};
-        // Path to enclosing module in original hierarchy (non-trivail due to inlining)
-        std::string m_path;
-        // Name of signal/subscope
-        std::string m_name;
+        AstVarScope* m_vscp = nullptr;  // AstVarScope under scope being traced
+        AstCell* m_cellp = nullptr;  // Sub scope (as AstCell) under scope being traced
+        std::string m_path;  // Path to enclosing module in original hierarchy
+        std::string m_name;  // Name of signal/subscope
 
-        void init(const std::string& name) {
+        void init(const std::string& name, AstNode* nodep, bool inTopScope) {
             // Compute path in hierarchy and item name
             const std::string& vcdName = AstNode::vcdName(name);
-            const size_t pos = vcdName.rfind(' ');
-            const size_t pathLen = pos == std::string::npos ? 0 : pos + 1;
-            m_path = vcdName.substr(0, pathLen);
-            m_name = vcdName.substr(pathLen);
+            AstVar* const varp = VN_CAST(nodep, Var);
+            if (VN_IS(nodep, Cell) || VN_IS(varp->dtypep(), IfaceRefDType)) {
+                // Cell or interface reference
+                m_path = vcdName + " ";
+                m_name.clear();
+            } else if (varp->isPrimaryIO()) {
+                // Primary IO variable
+                m_path = "$rootio ";
+                m_name = vcdName;
+            } else {
+                // Other Variable
+                const size_t pos = vcdName.rfind(' ');
+                const size_t pathLen = pos == std::string::npos ? 0 : pos + 1;
+                m_path = vcdName.substr(0, pathLen);
+                m_name = vcdName.substr(pathLen);
+            }
+
+            // When creating a --lib-create library, drop the name of the top module (l2 name).
+            // This will be replaced by the instance name in the model that uses the library.
+            // This would be a bit murky when there are other top level entities ($unit,
+            // packages, which have an instance in all libs - a problem on its own). If
+            // --top-module was explicitly specified, then we will drop the prefix only for the
+            // actual top level module, and wrap the rest in '$libroot'. This way at least we get a
+            // usable dump of everything, with library instances showing in a right place, without
+            // pollution from other top level entities.
+            if (inTopScope && !v3Global.opt.libCreate().empty()) {
+                const size_t start = m_path.find(' ');
+                // Must have a prefix in the top scope with lib, as top wrapper signals not traced
+                UASSERT_OBJ(start != std::string::npos, nodep, "No prefix with --lib-create");
+                const std::string prefix = m_path.substr(0, start);
+                m_path = m_path.substr(start + 1);
+                if (v3Global.opt.topModule() != prefix) m_path = "$libroot " + m_path;
+            }
         }
 
     public:
-        explicit TraceEntry(AstVarScope* vscp)
+        explicit TraceEntry(const AstScope* scopep, AstVarScope* vscp)
             : m_vscp{vscp} {
-            init(vscp->varp()->name());
+            init(vscp->varp()->name(), vscp->varp(), scopep->isTop());
         }
-        explicit TraceEntry(AstCell* cellp)
+        explicit TraceEntry(const AstScope* scopep, AstCell* cellp)
             : m_cellp{cellp} {
-            init(cellp->name());
+            init(cellp->name(), cellp, scopep->isTop());
         }
-
+        int operatorCompare(const TraceEntry& b) const {
+            if (const int cmp = path().compare(b.path())) return cmp < 0;
+            if (const int cmp = fileline().operatorCompare(b.fileline())) return cmp < 0;
+            return name() < b.name();
+        }
         AstVarScope* vscp() const { return m_vscp; }
         AstCell* cellp() const { return m_cellp; }
         const std::string& path() const { return m_path; }
+        void path(const std::string& path) { m_path = path; }
         const std::string& name() const { return m_name; }
         FileLine& fileline() const { return m_vscp ? *m_vscp->fileline() : *m_cellp->fileline(); }
     };
@@ -164,23 +233,36 @@ class TraceDeclVisitor final : public VNVisitor {
 
     // METHODS
 
-    const char* vscIgnoreTrace(const AstVarScope* nodep) {
+    string vscIgnoreTrace(const AstVarScope* nodep) {
         // Return true if this shouldn't be traced
         // See also similar rule in V3Coverage::varIgnoreToggle
         const AstVar* const varp = nodep->varp();
-        if (!varp->isTrace()) {
-            return "Verilator trace_off";
-        } else if (!nodep->isTrace()) {
-            return "Verilator instance trace_off";
-        } else {
-            const string prettyName = nodep->prettyName();
-            if (!v3Global.opt.traceUnderscore()) {
-                if (!prettyName.empty() && prettyName[0] == '_') return "Leading underscore";
-                if (prettyName.find("._") != string::npos) return "Inlined leading underscore";
-            }
-            if (!V3Config::getScopeTraceOn(prettyName)) return "Vlt scope trace_off";
+        if (!varp->isTrace()) return "Verilator trace_off";
+        if (!nodep->isTrace()) return "Verilator instance trace_off";
+        // Automatics (typically, excluding forks) have no persistance over
+        // time, and may optimize differently when multithreadeded or hierarchical.
+        // Class automatics refer to being in a class but might still be pointed
+        // to by a static, so are ok.
+        if (varp->lifetime().isAutomatic() && !varp->isClassMember() && !varp->isParam())
+            return "Automatic variable";
+
+        const int width = recurseDTypeWidth(nodep->varp()->dtypep());
+        if (v3Global.opt.traceMaxWidth() && width > v3Global.opt.traceMaxWidth())
+            return "Width " + cvtToStr(width) + " > --trace-max-width";
+
+        const string prettyName = nodep->prettyName();
+        if (!V3Control::getScopeTraceOn(prettyName)) return "Vlt scope trace_off";
+        if (!v3Global.opt.traceUnderscore()) {
+            if (!prettyName.empty() && prettyName[0] == '_') return "Leading underscore";
+            if (prettyName.find("._") != string::npos) return "Inlined leading underscore";
         }
-        return nullptr;
+        return ""s;
+    }
+
+    int recurseDTypeWidth(const AstNodeDType* nodep) {
+        if (const AstNodeArrayDType* adtypep = VN_CAST(nodep, NodeArrayDType))
+            return recurseDTypeWidth(adtypep->subDTypep()) * adtypep->declRange().elements();
+        return nodep->width();
     }
 
     AstCFunc* newCFunc(FileLine* flp, const string& name) {
@@ -209,107 +291,138 @@ class TraceDeclVisitor final : public VNVisitor {
     }
 
     void addToSubFunc(AstNodeStmt* stmtp) {
-        if (m_subFuncSize > m_funcSizeLimit || m_subFuncps.empty()) {
-            m_subFuncSize = 0;
-            //
+        // TODO (maybe) -- sub funcs for dtype components
+        if (m_dtypeSubFuncp) {
+            if (m_subFuncSize > m_funcSizeLimit) newDeclSubFunc();
+            m_dtypeSubFuncp->addStmtsp(stmtp);
+            m_subFuncSize += stmtp->nodeCount();
+            return;
+        }
+        // Defer trace splitting until V3Trace
+        if (m_subFuncps.empty()) {
             FileLine* const flp = m_currScopep->fileline();
             const string n = cvtToStr(m_subFuncps.size());
             const string name{"trace_init_sub__" + m_currScopep->nameDotless() + "__" + n};
             AstCFunc* const funcp = newCFunc(flp, name);
-            funcp->addInitsp(new AstCStmt{flp, "const int c = vlSymsp->__Vm_baseCode;\n"});
+            funcp->addStmtsp(new AstCStmt{flp, "const int c = vlSymsp->__Vm_baseCode;"});
             m_subFuncps.push_back(funcp);
         }
         m_subFuncps.back()->addStmtsp(stmtp);
         m_subFuncSize += stmtp->nodeCount();
     }
 
-    void addTraceDecl(const VNumRange& arrayRange,
-                      int widthOverride) {  // If !=0, is packed struct/array where basicp size
-                                            // misreflects one element
+    AstTraceDecl* addTraceDecl(const VNumRange& arrayRange,
+                               int widthOverride,  // If !=0, is packed struct/array where basicp
+                                                   // size misreflects one element
+                               AstCCall* const dtypeCallp = nullptr) {
         VNumRange bitRange;
         if (widthOverride) {
             bitRange = VNumRange{widthOverride - 1, 0};
         } else if (const AstBasicDType* const bdtypep = m_traValuep->dtypep()->basicp()) {
             bitRange = bdtypep->nrange();
         }
+        FileLine* const flp = m_traVscp->fileline();
+        AstNodeExpr* valuep = m_traValuep->cloneTree(false);
+        const bool validOffset = m_offset != std::numeric_limits<uint32_t>::max();
         AstTraceDecl* const newp
-            = new AstTraceDecl{m_traVscp->fileline(),         m_traName, m_traVscp->varp(),
-                               m_traValuep->cloneTree(false), bitRange,  arrayRange};
+            = new AstTraceDecl{flp,      m_traName,  m_traVscp->varp(), valuep,
+                               bitRange, arrayRange, dtypeCallp,        validOffset};
+        if (validOffset) {
+            newp->code(m_offset);
+            if (!dtypeCallp) { m_offset += newp->codeInc(); }
+            valuep->foreach([&](AstVarRef* const refp) {
+                UASSERT_OBJ(refp->varScopep() == m_traVscp, refp,
+                            "Trace decl expression references unexpected var");
+                refp->replaceWith(new AstCExpr{flp, "__VdtypeVar", m_traVscp->width()});
+                VL_DO_DANGLING(refp->deleteTree(), refp);
+            });
+        } else {
+            newp->dtypeDeclp(m_dtypeDeclp);
+        }
         m_declUncalledps.emplace(newp);
         addToSubFunc(newp);
+
+        return newp;
     }
 
-    void addIgnore(const char* why) {
+    void addIgnore(const string& why) {
         ++m_statIgnSigs;
-        std::string cmt = "Tracing: "s + m_traName + " // Ignored: " + why;
-        if (debug() > 3 && m_traVscp) std::cout << "- " << m_traVscp->fileline() << cmt << endl;
+        const std::string cmt = "Tracing: "s + m_traName + " // Ignored: " + why;
+        if (debug() > 3 && m_traVscp) std::cout << "- " << m_traVscp->fileline() << cmt << '\n';
     }
 
     void fixupPlaceholder(const std::string& path, AstNodeStmt* placeholderp) {
         // Find the scope for the path. As we are working based on cell names,
         // it is possible there is no corresponding scope (e.g.: for an empty
         // module).
-        const auto it = m_pathToScopep.find(path);
+        const auto it = m_pathToScopep.find(AstNode::prettyName(path));
         if (it != m_pathToScopep.end()) {
             const AstScope* const scopep = it->second;
             FileLine* const flp = placeholderp->fileline();
 
-            // Pick up the last path element. The prefixes have already been pushed
-            // when building the initialization functions
-            const size_t pos = path.rfind('.');
-            const std::string name = path.substr(pos == string::npos ? 0 : pos + 1);
-
-            // Compute the type of the scope being fixed up
-            const AstCell* const cellp = scopep->aboveCellp();
-            const VTracePrefixType scopeType
-                = cellp ? (VN_IS((cellp->modp()), Iface) ? VTracePrefixType::SCOPE_INTERFACE
-                                                         : VTracePrefixType::SCOPE_MODULE)
-                        : VTracePrefixType::SCOPE_MODULE;
-
-            // Push the scope prefix
-            AstNodeStmt* const pushp = new AstTracePushPrefix{flp, name, scopeType};
-
             // Call the initialization functions for the scope
+            AstNode* stmtp = nullptr;
             for (AstCFunc* const subFuncp : m_scopeInitFuncps.at(scopep)) {
                 AstCCall* const callp = new AstCCall{flp, subFuncp};
                 callp->dtypeSetVoid();
                 callp->argTypes("tracep");
-                pushp->addNext(callp->makeStmt());
+                stmtp = AstNode::addNext(stmtp, callp->makeStmt());
             }
 
-            // Pop the scope prefix
-            pushp->addNext(new AstTracePopPrefix{flp});
-
             // Add after the placeholder
-            placeholderp->addNextHere(pushp);
+            if (stmtp) placeholderp->addNextHere(stmtp);
         }
         // Delete the placeholder
         placeholderp->unlinkFrBack();
         VL_DO_DANGLING(placeholderp->deleteTree(), placeholderp);
     }
 
+    void fixupLibStub(const std::string& path, AstNodeStmt* placeholderp) {
+        FileLine* const flp = placeholderp->fileline();
+
+        // Call the initialization function for the library instance
+        AstCStmt* const initp = new AstCStmt{flp};
+        initp->add("{\n");
+        initp->add("std::string __VlibName = vlSymsp->name();\n");
+        initp->add("if (!__VlibName.empty()) __VlibName += '.';\n");
+        initp->add("__VlibName += ");
+        initp->add(new AstConst{flp, AstConst::String{}, AstNode::prettyName(path)});
+        initp->add(";\n");
+        initp->add("tracep->initLib(__VlibName);\n");
+        initp->add("}\n");
+
+        placeholderp->addNextHere(initp);
+        // Delete the placeholder
+        VL_DO_DANGLING(placeholderp->unlinkFrBack()->deleteTree(), placeholderp);
+    }
+
     void fixupPlaceholders() {
         // Fix up cell initialization placehodlers
-        UINFO(9, "fixupPlaceholders()\n");
+        UINFO(9, "fixupPlaceholders()");
         for (const auto& item : m_cellInitPlaceholders) {
             const AstScope* const parentp = std::get<0>(item);
             const AstCell* const cellp = std::get<1>(item);
             AstNodeStmt* const placeholderp = std::get<2>(item);
-            const std::string path = AstNode::prettyName(parentp->name() + "." + cellp->name());
-            fixupPlaceholder(path, placeholderp);
+            const std::string path = parentp->name() + "__DOT__" + cellp->name();
+            if (cellp->modp()->verilatorLib()) {
+                fixupLibStub(path, placeholderp);
+            } else {
+                fixupPlaceholder(path, placeholderp);
+            }
         }
 
         // Fix up interface reference initialization placeholders
         for (const auto& item : m_ifaceRefInitPlaceholders) {
             const AstVarScope* const vscp = std::get<0>(item);
             AstNodeStmt* const placeholderp = std::get<1>(item);
-            const std::string path = vscp->prettyName();
+            const std::string path = vscp->scopep()->name() + "__DOT__" + vscp->varp()->name();
             fixupPlaceholder(path, placeholderp);
         }
     }
 
     void removeRedundantPrefixPushPop() {
         for (const auto& pair : m_scopeInitFuncps) {
+            // cppcheck-suppress constVariablePointer
             for (AstCFunc* const funcp : pair.second) {
                 AstNode* prevp = nullptr;
                 AstNode* currp = funcp->stmtsp();
@@ -330,10 +443,10 @@ class TraceDeclVisitor final : public VNVisitor {
     void checkCalls(const AstCFunc* funcp) {
         if (!v3Global.opt.debugCheck()) return;
         checkCallsRecurse(funcp);
-        if (!m_declUncalledps.empty()) {
-            for (auto tracep : m_declUncalledps) UINFO(0, "-nodep " << tracep << "\n");
+        if (!m_declUncalledps.empty()) {  // LCOV_EXCL_START
+            for (auto tracep : m_declUncalledps) UINFO(0, "-nodep " << tracep);
             (*(m_declUncalledps.begin()))->v3fatalSrc("Created TraceDecl which is never called");
-        }
+        }  // LCOV_EXCL_STOP
     }
     void checkCallsRecurse(const AstCFunc* funcp) {
         funcp->foreach([this](const AstNode* nodep) {
@@ -345,15 +458,178 @@ class TraceDeclVisitor final : public VNVisitor {
         });
     }
 
+    bool isBasicIO() { return m_traVscp->varp()->isVLIO(); }
+    void newDeclSubFunc() {
+        FileLine* const flp = m_dtypeFuncp->fileline();
+        AstCFunc* const subFuncp = newCFunc(flp, m_dtypeNames.get("trace_init_dtype_sub__"));
+        subFuncp->argTypes(subFuncp->argTypes() + m_dtypeArgs);
+        AstCCall* const subCallp = new AstCCall{flp, subFuncp};
+        subCallp->dtypeSetVoid();
+        subCallp->argTypes("tracep, name, fidx, c, direction");
+        m_dtypeFuncp->addStmtsp(subCallp->makeStmt());
+        m_dtypeSubFuncp = subFuncp;
+        m_subFuncSize = 0;
+    }
+    void newDeclFunc(AstNodeDType* nodep) {
+        AstNodeDType* const skipTypep = nodep->skipRefp();
+        // offset and direction args added in EmitCImp
+        std::string callArgs{"tracep, \"" + VIdProtect::protect(m_traName) + "\""};
+        VL_RESTORER(m_traName);
+        FileLine* const flp = skipTypep->fileline();
+
+        const DtypeFuncKey dtypeKey{skipTypep, m_traVscp->varp()->varType()};
+        auto pair = m_dtypeFuncs.emplace(dtypeKey, nullptr);
+        AstCFunc** funcpp = &pair.first->second;
+        if (pair.second) {
+            *funcpp = newCFunc(flp, m_dtypeNames.get("trace_init_dtype__"));
+            (*funcpp)->argTypes((*funcpp)->argTypes() + m_dtypeArgs);
+            (*funcpp)->user2p(m_traVscp);
+        }
+
+        AstCCall* const callp = new AstCCall{flp, *funcpp};
+        callp->dtypeSetVoid();
+        callp->argTypes(callArgs);
+        m_dtypeDeclp = addTraceDecl(VNumRange{}, skipTypep->width(), callp);
+        addToSubFunc(callp->makeStmt());
+
+        if (pair.second) {
+            VL_RESTORER(m_offset);
+            m_offset = 0;
+
+            VL_RESTORER(m_dtypeFuncp);
+            VL_RESTORER(m_dtypeSubFuncp);
+            VL_RESTORER(m_subFuncSize);
+            m_dtypeFuncp = *funcpp;
+            newDeclSubFunc();
+            if (AstStructDType* const dtypep = VN_CAST(skipTypep, StructDType)) {
+                declStruct(dtypep, true);
+            } else if (AstUnpackArrayDType* const dtypep = VN_CAST(skipTypep, UnpackArrayDType)) {
+                declUnpackedArray(dtypep, true);
+            } else if (AstPackArrayDType* const dtypep = VN_CAST(skipTypep, PackArrayDType)) {
+                declPackedArray(dtypep, true);
+            } else {
+                UASSERT_OBJ(false, skipTypep, "Creating a trace function for an unexpected type");
+            }
+            m_dtypeFuncp->user1(m_offset);
+        }
+
+        m_dtypeDeclp->codeInc((*funcpp)->user1());
+        m_offset += m_dtypeDeclp->codeInc();
+    }
+    void declUnpackedArray(AstUnpackArrayDType* const nodep, bool newFunc) {
+        string prefixName(newFunc ? "name" : m_traName);
+
+        VL_RESTORER(m_traName);
+        FileLine* const flp = nodep->fileline();
+
+        addToSubFunc(new AstTracePushPrefix{flp, prefixName, VTracePrefixType::ARRAY_UNPACKED,
+                                            nodep->left(), nodep->right(), !newFunc});
+
+        if (VN_IS(nodep->subDTypep()->skipRefToEnump(),
+                  BasicDType)  // Nothing lower than this array
+            && m_traVscp->dtypep()->skipRefToEnump() == nodep) {  // Nothing above this array
+            // Simple 1-D array, use existing V3EmitC runtime loop rather than unrolling
+            // This will put "(index)" at end of signal name for us
+            if (m_traVscp->dtypep()->skipRefToEnump()->isString()) {
+                addIgnore("Unsupported: strings");
+            } else {
+                m_traName = "";
+                addTraceDecl(nodep->declRange(), 0);
+            }
+        } else {
+            AstNodeDType* const subtypep = nodep->subDTypep()->skipRefToEnump();
+            // Always iterate left index to right index
+            const int inc = nodep->rangep()->ascending() ? 1 : -1;
+            for (int i = nodep->left(); i != nodep->right() + inc; i += inc) {
+                VL_RESTORER(m_traValuep);
+                m_traName = '[' + std::to_string(i) + ']';
+                m_traValuep = m_traValuep->cloneTree(false);
+                m_traValuep = new AstArraySel{flp, m_traValuep, i - nodep->lo()};
+                m_traValuep->dtypep(subtypep);
+                iterate(subtypep);
+                VL_DO_DANGLING(m_traValuep->deleteTree(), m_traValuep);
+            }
+        }
+
+        addToSubFunc(new AstTracePopPrefix{flp});
+    }
+    void declPackedArray(AstPackArrayDType* const nodep, bool newFunc) {
+        string prefixName(newFunc ? "name" : m_traName);
+        AstNodeDType* const subtypep = nodep->subDTypep()->skipRefToEnump();
+
+        VL_RESTORER(m_traName);
+        FileLine* const flp = nodep->fileline();
+
+        addToSubFunc(new AstTracePushPrefix{flp, prefixName, VTracePrefixType::ARRAY_PACKED,
+                                            nodep->left(), nodep->right(), !newFunc});
+
+        // Always iterate left index to right index
+        const int inc = nodep->rangep()->ascending() ? 1 : -1;
+        for (int i = nodep->left(); i != nodep->right() + inc; i += inc) {
+            VL_RESTORER(m_traValuep);
+            m_traName = '[' + std::to_string(i) + ']';
+            const int lsb = (i - nodep->lo()) * subtypep->width();
+            m_traValuep = m_traValuep->cloneTree(false);
+            m_traValuep = new AstSel{flp, m_traValuep, lsb, subtypep->width()};
+            m_traValuep->dtypep(subtypep);
+            iterate(subtypep);
+            VL_DO_CLEAR(m_traValuep->deleteTree(), m_traValuep = nullptr);
+        }
+
+        addToSubFunc(new AstTracePopPrefix{flp});
+    }
+    void declStruct(AstStructDType* const nodep, bool newFunc) {
+        FileLine* const flp = nodep->fileline();
+        string prefixName(newFunc ? "name" : m_traName);
+        int nMembers = 0;
+        for (AstNode* mp = nodep->membersp(); mp; mp = mp->nextp()) ++nMembers;
+        if (!nodep->packed()) {
+            addToSubFunc(new AstTracePushPrefix{flp, prefixName,  //
+                                                VTracePrefixType::STRUCT_UNPACKED, nMembers, 0,
+                                                !newFunc});
+            for (const AstMemberDType *itemp = nodep->membersp(), *nextp; itemp; itemp = nextp) {
+                nextp = VN_AS(itemp->nextp(), MemberDType);
+                AstNodeDType* const subtypep = itemp->subDTypep()->skipRefToEnump();
+                m_traName = itemp->prettyName();
+                VL_RESTORER(m_traValuep);
+                m_traValuep = m_traValuep->cloneTree(false);
+                m_traValuep = new AstStructSel{flp, m_traValuep, itemp->name()};
+                m_traValuep->dtypep(subtypep);
+                iterate(subtypep);
+                VL_DO_DANGLING(m_traValuep->deleteTree(), m_traValuep);
+            }
+            addToSubFunc(new AstTracePopPrefix{flp});
+        } else {
+            addToSubFunc(new AstTracePushPrefix{flp, prefixName,  //
+                                                VTracePrefixType::STRUCT_PACKED, nMembers, 0,
+                                                !newFunc});
+            for (const AstMemberDType *itemp = nodep->membersp(), *nextp; itemp; itemp = nextp) {
+                nextp = VN_AS(itemp->nextp(), MemberDType);
+                AstNodeDType* const subtypep = itemp->subDTypep()->skipRefToEnump();
+                m_traName = itemp->prettyName();
+                VL_RESTORER(m_traValuep);
+                m_traValuep = m_traValuep->cloneTree(false);
+                m_traValuep = new AstSel{flp, m_traValuep, itemp->lsb(), subtypep->width()};
+                m_traValuep->dtypep(subtypep);
+                iterate(subtypep);
+                VL_DO_DANGLING(m_traValuep->deleteTree(), m_traValuep);
+            }
+            addToSubFunc(new AstTracePopPrefix{flp});
+        }
+    }
+
     // VISITORS
     void visit(AstScope* nodep) override {
-        UINFO(9, "visit " << nodep << "\n");
+        UINFO(9, "visit " << nodep);
         UASSERT_OBJ(!m_currScopep, nodep, "Should not nest");
         UASSERT_OBJ(m_subFuncps.empty(), nodep, "Should not nest");
         UASSERT_OBJ(m_entries.empty(), nodep, "Should not nest");
         UASSERT_OBJ(!m_traVscp, nodep, "Should not nest");
         UASSERT_OBJ(!m_traValuep, nodep, "Should not nest");
         UASSERT_OBJ(m_traName.empty(), nodep, "Should not nest");
+
+        // If this is a stub for a --lib-create library, skip.
+        if (nodep->modp()->verilatorLib()) return;
 
         VL_RESTORER(m_currScopep);
         m_currScopep = nodep;
@@ -363,35 +639,34 @@ class TraceDeclVisitor final : public VNVisitor {
 
         // Gather cells under this scope
         for (AstNode* stmtp = nodep->modp()->stmtsp(); stmtp; stmtp = stmtp->nextp()) {
-            if (AstCell* const cellp = VN_CAST(stmtp, Cell)) m_entries.emplace_back(cellp);
+            if (AstCell* const cellp = VN_CAST(stmtp, Cell)) m_entries.emplace_back(nodep, cellp);
         }
 
         if (!m_entries.empty()) {
-            // Sort trace entries, first by enclosing instance (necessary for
-            // single traversal of hierarchy during initialization), then by
-            // source location, then by name.
-            std::stable_sort(m_entries.begin(), m_entries.end(),
-                             [](const TraceEntry& a, const TraceEntry& b) {
-                                 if (const int cmp = a.path().compare(b.path())) return cmp < 0;
-                                 if (const int cmp = a.fileline().operatorCompare(b.fileline()))
-                                     return cmp < 0;
-                                 return a.name() < b.name();
-                             });
+            // Sort trace entries, by enclosing instance (necessary for single traversal of
+            // hierarchy during initialization), then by source location, then by name.
+            std::stable_sort(
+                m_entries.begin(), m_entries.end(),
+                [](const TraceEntry& a, const TraceEntry& b) { return a.operatorCompare(b); });
 
             // Build trace initialization functions for this AstScope
             FileLine* const flp = nodep->fileline();
             PathAdjustor pathAdjustor{flp, [&](AstNodeStmt* stmtp) { addToSubFunc(stmtp); }};
             for (const TraceEntry& entry : m_entries) {
                 // Adjust name prefix based on path in hierarchy
-                pathAdjustor.adjust(entry.path());
+                UINFO(9, "path='" << entry.path() << "' name='" << entry.name() << "' "
+                                  << (entry.cellp() ? static_cast<AstNode*>(entry.cellp())
+                                                    : static_cast<AstNode*>(entry.vscp())));
+                pathAdjustor.adjust(entry.path(), entry.cellp(), entry.vscp());
 
                 m_traName = entry.name();
 
                 if (AstVarScope* const vscp = entry.vscp()) {
                     // This is a signal: build AstTraceDecl for it
                     m_traVscp = vscp;
-                    if (const char* const ignoreReasonp = vscIgnoreTrace(m_traVscp)) {
-                        addIgnore(ignoreReasonp);
+                    const string& ignoreReason = vscIgnoreTrace(m_traVscp);
+                    if (!ignoreReason.empty()) {
+                        addIgnore(ignoreReason);
                     } else {
                         ++m_statSigs;
                         // Create reference to whole signal. We will operate on this during the
@@ -413,7 +688,7 @@ class TraceDeclVisitor final : public VNVisitor {
                     // This is a subscope: insert a placeholder to be fixed up later
                     AstCell* const cellp = entry.cellp();
                     AstNodeStmt* const stmtp = new AstComment{
-                        cellp->fileline(), "Cell init for: " + cellp->prettyName()};
+                        cellp->fileline(), "Instance init for: " + cellp->prettyName()};
                     addToSubFunc(stmtp);
                     m_cellInitPlaceholders.emplace_back(nodep, cellp, stmtp);
                 }
@@ -475,20 +750,32 @@ class TraceDeclVisitor final : public VNVisitor {
         if (nodep->varp()->isClassMember()) return;
         if (nodep->varp()->isFuncLocal()) return;
 
+        // When creating a --lib-create library ...
+        if (!v3Global.opt.libCreate().empty()) {
+            // Ignore the wrapper created primary IO ports
+            if (nodep->varp()->isPrimaryIO()) return;
+            // Ignore parameters in packages. These will be traced at the top level.
+            if (nodep->varp()->isParam() && VN_IS(nodep->scopep()->modp(), Package)) return;
+        }
+
         // Add to traced signal list
-        m_entries.emplace_back(nodep);
+        m_entries.emplace_back(m_currScopep, nodep);
     }
 
     // VISITORS - Data types when tracing
     void visit(AstConstDType* nodep) override {
         if (!m_traVscp) return;
+        VL_RESTORER(m_offset);
+        VL_RESTORER(m_skipDtypeFunc);
+        m_skipDtypeFunc = true;
         iterate(nodep->subDTypep()->skipRefToEnump());
     }
     void visit(AstRefDType* nodep) override {
         if (!m_traVscp) return;
+        VL_RESTORER(m_offset);
         iterate(nodep->subDTypep()->skipRefToEnump());
     }
-    void visit(AstIfaceRefDType* nodep) override {
+    void visit(AstIfaceRefDType* /*nodep*/) override {
         if (!m_traVscp) return;
         // Insert a placeholder to be fixed up later
         FileLine* const flp = m_traVscp->fileline();
@@ -501,41 +788,28 @@ class TraceDeclVisitor final : public VNVisitor {
         // Note more specific dtypes above
         if (!m_traVscp) return;
 
-        if (static_cast<int>(nodep->arrayUnpackedElements()) > v3Global.opt.traceMaxArray()) {
+        if (v3Global.opt.traceMaxArray()
+            && static_cast<int>(nodep->arrayUnpackedElements()) > v3Global.opt.traceMaxArray()) {
             addIgnore("Wide memory > --trace-max-array ents");
             return;
         }
 
-        VL_RESTORER(m_traName);
-        FileLine* const flp = nodep->fileline();
-
-        addToSubFunc(new AstTracePushPrefix{flp, m_traName, VTracePrefixType::ARRAY_UNPACKED});
-
-        if (VN_IS(nodep->subDTypep()->skipRefToEnump(),
-                  BasicDType)  // Nothing lower than this array
-            && m_traVscp->dtypep()->skipRefToEnump() == nodep) {  // Nothing above this array
-            // Simple 1-D array, use existing V3EmitC runtime loop rather than unrolling
-            // This will put "(index)" at end of signal name for us
-            if (m_traVscp->dtypep()->skipRefToEnump()->isString()) {
-                addIgnore("Unsupported: strings");
-            } else {
-                m_traName = "";
-                addTraceDecl(nodep->declRange(), 0);
-            }
-        } else {
-            AstNodeDType* const subtypep = nodep->subDTypep()->skipRefToEnump();
-            for (int i = nodep->lo(); i <= nodep->hi(); ++i) {
-                VL_RESTORER(m_traValuep);
-                m_traName = '[' + std::to_string(i) + ']';
-                m_traValuep = m_traValuep->cloneTree(false);
-                m_traValuep = new AstArraySel{flp, m_traValuep, i - nodep->lo()};
-                m_traValuep->dtypep(subtypep);
-                iterate(subtypep);
-                VL_DO_DANGLING(m_traValuep->deleteTree(), m_traValuep);
-            }
+        // Skip unpacked arrays of non-traceable leaf types (e.g. strings)
+        if (VN_IS(nodep->subDTypep()->skipRefToEnump(), BasicDType)
+            && nodep->subDTypep()->skipRefToEnump()->isString()) {
+            addIgnore("Unsupported: strings");
+            return;
         }
 
-        addToSubFunc(new AstTracePopPrefix{flp});
+        VL_RESTORER(m_skipDtypeFunc);
+        VL_RESTORER(m_dtypeDeclp);
+        if (isBasicIO()) m_skipDtypeFunc = true;
+
+        if (!(m_skipDtypeFunc || m_dtypeDeclp)) {
+            VL_RESTORER(m_offset);
+            newDeclFunc(nodep);
+        }
+        declUnpackedArray(nodep, false);
     }
     void visit(AstPackArrayDType* nodep) override {
         if (!m_traVscp) return;
@@ -548,23 +822,25 @@ class TraceDeclVisitor final : public VNVisitor {
             return;
         }
 
-        VL_RESTORER(m_traName);
-        FileLine* const flp = nodep->fileline();
-        addToSubFunc(new AstTracePushPrefix{flp, m_traName, VTracePrefixType::ARRAY_PACKED});
-
         AstNodeDType* const subtypep = nodep->subDTypep()->skipRefToEnump();
-        for (int i = nodep->lo(); i <= nodep->hi(); ++i) {
-            VL_RESTORER(m_traValuep);
-            m_traName = '[' + std::to_string(i) + ']';
-            const int lsb = (i - nodep->lo()) * subtypep->width();
-            m_traValuep = m_traValuep->cloneTree(false);
-            m_traValuep = new AstSel{flp, m_traValuep, lsb, subtypep->width()};
-            m_traValuep->dtypep(subtypep);
-            iterate(subtypep);
-            VL_DO_CLEAR(m_traValuep->deleteTree(), m_traValuep = nullptr);
+
+        // Do not unroll if the elements are simple 'bit', or 'logic'
+        if (AstBasicDType* const basicp = VN_CAST(subtypep->skipRefp(), BasicDType)) {
+            if (basicp->isBitLogic() && !basicp->isRanged()) {
+                addTraceDecl(VNumRange{}, nodep->width());
+                return;
+            }
         }
 
-        addToSubFunc(new AstTracePopPrefix{flp});
+        VL_RESTORER(m_skipDtypeFunc);
+        VL_RESTORER(m_dtypeDeclp);
+        if (isBasicIO()) m_skipDtypeFunc = true;
+
+        if (!(m_skipDtypeFunc || m_dtypeDeclp)) {
+            VL_RESTORER(m_offset);
+            newDeclFunc(nodep);
+        }
+        declPackedArray(nodep, false);
     }
     void visit(AstStructDType* nodep) override {
         if (!m_traVscp) return;
@@ -577,42 +853,25 @@ class TraceDeclVisitor final : public VNVisitor {
             return;
         }
 
-        VL_RESTORER(m_traName);
-        FileLine* const flp = nodep->fileline();
+        VL_RESTORER(m_skipDtypeFunc);
+        VL_RESTORER(m_dtypeDeclp);
+        if (isBasicIO()) m_skipDtypeFunc = true;
 
-        if (!nodep->packed()) {
-            addToSubFunc(
-                new AstTracePushPrefix{flp, m_traName, VTracePrefixType::STRUCT_UNPACKED});
-            for (const AstMemberDType *itemp = nodep->membersp(), *nextp; itemp; itemp = nextp) {
-                nextp = VN_AS(itemp->nextp(), MemberDType);
-                AstNodeDType* const subtypep = itemp->subDTypep()->skipRefToEnump();
-                m_traName = itemp->prettyName();
-                VL_RESTORER(m_traValuep);
-                m_traValuep = m_traValuep->cloneTree(false);
-                m_traValuep = new AstStructSel{flp, m_traValuep, itemp->name()};
-                m_traValuep->dtypep(subtypep);
-                iterate(subtypep);
-                VL_DO_DANGLING(m_traValuep->deleteTree(), m_traValuep);
-            }
-            addToSubFunc(new AstTracePopPrefix{flp});
-        } else {
-            addToSubFunc(new AstTracePushPrefix{flp, m_traName, VTracePrefixType::STRUCT_PACKED});
-            for (const AstMemberDType *itemp = nodep->membersp(), *nextp; itemp; itemp = nextp) {
-                nextp = VN_AS(itemp->nextp(), MemberDType);
-                AstNodeDType* const subtypep = itemp->subDTypep()->skipRefToEnump();
-                m_traName = itemp->prettyName();
-                VL_RESTORER(m_traValuep);
-                m_traValuep = m_traValuep->cloneTree(false);
-                m_traValuep = new AstSel{flp, m_traValuep, itemp->lsb(), subtypep->width()};
-                m_traValuep->dtypep(subtypep);
-                iterate(subtypep);
-                VL_DO_DANGLING(m_traValuep->deleteTree(), m_traValuep);
-            }
-            addToSubFunc(new AstTracePopPrefix{flp});
+        // Only create sub functions for top-level structs, i.e. don't have struct funcs
+        // call other struct funcs for child types.  This could easily be done for decl funcs
+        // but full / chg funcs would require copying / aligning data for child types or more
+        // complicated / wonky / generalized data access.
+        if (!(m_skipDtypeFunc || m_dtypeDeclp)) {
+            VL_RESTORER(m_offset);
+            newDeclFunc(nodep);
         }
+        declStruct(nodep, false);
     }
     void visit(AstUnionDType* nodep) override {
         if (!m_traVscp) return;
+
+        VL_RESTORER(m_skipDtypeFunc);
+        m_skipDtypeFunc = true;
 
         if (nodep->packed() && !v3Global.opt.traceStructs()) {
             // Everything downstream is packed, so deal with as one trace unit
@@ -625,10 +884,14 @@ class TraceDeclVisitor final : public VNVisitor {
         VL_RESTORER(m_traName);
         FileLine* const flp = nodep->fileline();
 
+        int nMembers = 0;
+        for (AstNode* mp = nodep->membersp(); mp; mp = mp->nextp()) ++nMembers;
+
         if (!nodep->packed()) {
             addIgnore("Unsupported: Unpacked union");
         } else {
-            addToSubFunc(new AstTracePushPrefix{flp, m_traName, VTracePrefixType::UNION_PACKED});
+            addToSubFunc(new AstTracePushPrefix{flp, m_traName,  //
+                                                VTracePrefixType::UNION_PACKED, nMembers});
             for (const AstMemberDType *itemp = nodep->membersp(), *nextp; itemp; itemp = nextp) {
                 nextp = VN_AS(itemp->nextp(), MemberDType);
                 AstNodeDType* const subtypep = itemp->subDTypep()->skipRefToEnump();
@@ -672,7 +935,7 @@ public:
         // Now that we have everything ready, remove redundant pushPrefix/popPrefix
         // pairs. While functionally this is not really necessary (the trace files
         // might have some empty scope declarations), we do it to preserve previous
-        // behaviour. Note: unfortunately generating these without the redundant
+        // behavior. Note: unfortunately generating these without the redundant
         // push/pop pairs is a bit hard. It is cleaner to remove them.
         removeRedundantPrefixPushPop();
 
@@ -716,7 +979,7 @@ public:
 // Trace class functions
 
 void V3TraceDecl::traceDeclAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { TraceDeclVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("tracedecl", 0, dumpTreeEitherLevel() >= 3);
 }

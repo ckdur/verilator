@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -43,7 +43,7 @@ class InstVisitor final : public VNVisitor {
 
     // VISITORS
     void visit(AstCell* nodep) override {
-        UINFO(4, "  CELL   " << nodep << endl);
+        UINFO(4, "  CELL   " << nodep);
         VL_RESTORER(m_cellp);
         m_cellp = nodep;
         // VV*****  We reset user1p() on each cell!!!
@@ -53,14 +53,15 @@ class InstVisitor final : public VNVisitor {
     void visit(AstPin* nodep) override {
         // PIN(p,expr) -> ASSIGNW(VARXREF(p),expr)    (if sub's input)
         //            or  ASSIGNW(expr,VARXREF(p))    (if sub's output)
-        UINFO(4, "   PIN  " << nodep << endl);
+        UINFO(4, "   PIN  " << nodep);
         if (!nodep->user1()) {
             // Simplify it
             V3Inst::pinReconnectSimple(nodep, m_cellp, false);
         }
+        UINFOTREE(9, nodep, "", "Pin_oldb");
         if (!nodep->exprp()) return;  // No-connect
-        if (debug() >= 9) nodep->dumpTree("-  Pin_oldb: ");
         V3Inst::checkOutputShort(nodep);
+        if (!nodep->exprp()) return;  // Connection removed by checkOutputShort
         // Use user1p on the PIN to indicate we created an assign for this pin
         if (!nodep->user1SetOnce()) {
             // Make an ASSIGNW (expr, pin)
@@ -73,23 +74,24 @@ class InstVisitor final : public VNVisitor {
                 AstNodeExpr* const rhsp = new AstVarXRef{exprp->fileline(), nodep->modVarp(),
                                                          m_cellp->name(), VAccess::READ};
                 AstAssignW* const assp = new AstAssignW{exprp->fileline(), exprp, rhsp};
-                m_cellp->addNextHere(assp);
+                m_cellp->addNextHere(new AstAlways{assp});
             } else if (nodep->modVarp()->isNonOutput()) {
                 // Don't bother moving constants now,
                 // we'll be pushing the const down to the cell soon enough.
-                AstNode* const assp
+                AstAssignW* const assp
                     = new AstAssignW{exprp->fileline(),
                                      new AstVarXRef{exprp->fileline(), nodep->modVarp(),
                                                     m_cellp->name(), VAccess::WRITE},
                                      exprp};
-                m_cellp->addNextHere(assp);
-                if (debug() >= 9) assp->dumpTree("-     _new: ");
+                m_cellp->addNextHere(new AstAlways{assp});
+                UINFOTREE(9, assp, "", "_new");
             } else if (nodep->modVarp()->isIfaceRef()
-                       || (VN_IS(nodep->modVarp()->subDTypep(), UnpackArrayDType)
-                           && VN_IS(
-                               VN_AS(nodep->modVarp()->subDTypep(), UnpackArrayDType)->subDTypep(),
-                               IfaceRefDType))) {
-                // Create an AstAssignVarScope for Vars to Cells so we can
+                       || (VN_IS(nodep->modVarp()->dtypep()->skipRefp(), UnpackArrayDType)
+                           && VN_IS(VN_AS(nodep->modVarp()->dtypep()->skipRefp(), UnpackArrayDType)
+                                        ->subDTypep()
+                                        ->skipRefp(),
+                                    IfaceRefDType))) {
+                // Create an AstAliasScope for Vars to Cells so we can
                 // link with their scope later
                 AstNodeExpr* const lhsp = new AstVarXRef{exprp->fileline(), nodep->modVarp(),
                                                          m_cellp->name(), VAccess::READ};
@@ -97,9 +99,7 @@ class InstVisitor final : public VNVisitor {
                 const AstVarXRef* const xrefp = VN_CAST(exprp, VarXRef);
                 UASSERT_OBJ(refp || xrefp, exprp,
                             "Interfaces: Pin is not connected to a VarRef or VarXRef");
-                AstAssignVarScope* const assp
-                    = new AstAssignVarScope{exprp->fileline(), lhsp, exprp};
-                m_cellp->addNextHere(assp);
+                m_cellp->addNextHere(new AstAliasScope{exprp->fileline(), lhsp, exprp});
             } else {
                 nodep->v3error("Assigned pin is neither input nor output");
             }
@@ -133,8 +133,8 @@ private:
 
     // VISITORS
     void visit(AstVar* nodep) override {
-        if (VN_IS(nodep->dtypep(), IfaceRefDType)) {
-            UINFO(8, "   dm-1-VAR    " << nodep << endl);
+        if (VN_IS(nodep->dtypep()->skipRefp(), IfaceRefDType)) {
+            UINFO(8, "   dm-1-VAR    " << nodep);
             insert(nodep);
         }
         iterateChildrenConst(nodep);
@@ -145,7 +145,7 @@ private:
 public:
     // METHODS
     void insert(AstVar* nodep) {
-        UINFO(8, "    dmINSERT    " << nodep << endl);
+        UINFO(8, "    dmINSERT    " << nodep);
         m_modVarNameMap.emplace(nodep->name(), nodep);
     }
     AstVar* find(const string& name) {
@@ -158,7 +158,7 @@ public:
     }
     void dump() {
         for (const auto& itr : m_modVarNameMap) {
-            cout << "-namemap: " << itr.first << " -> " << itr.second << endl;
+            cout << "-namemap: " << itr.first << " -> " << itr.second << '\n';
         }
     }
 
@@ -166,7 +166,7 @@ public:
     InstDeModVarVisitor() = default;
     ~InstDeModVarVisitor() override = default;
     void main(AstNodeModule* nodep) {
-        UINFO(8, "  dmMODULE    " << nodep << endl);
+        UINFO(8, "  dmMODULE    " << nodep);
         m_modVarNameMap.clear();
         iterateConst(nodep);
     }
@@ -178,27 +178,29 @@ class InstDeVisitor final : public VNVisitor {
     // Find all cells with arrays, and convert to non-arrayed
 private:
     // STATE
-    // Range for arrayed instantiations, nullptr for normal instantiations
-    const AstRange* m_cellRangep = nullptr;
-    int m_instSelNum = 0;  // Current instantiation count 0..N-1
+    const AstRange* m_cellRangep = nullptr;  // Outer range; nullptr for non-arrayed cells
+    int m_instSelNum = 0;  // Row-major flat index for 1D-compat pin expansion
     InstDeModVarVisitor m_deModVars;  // State of variables for current cell module
 
     // VISITORS
     void visit(AstVar* nodep) override {
-        if (VN_IS(nodep->dtypep(), UnpackArrayDType)
-            && VN_IS(VN_AS(nodep->dtypep(), UnpackArrayDType)->subDTypep(), IfaceRefDType)) {
-            if (VN_AS(VN_AS(nodep->dtypep(), UnpackArrayDType)->subDTypep(), IfaceRefDType)
+        // cppcheck-suppress constVariablePointer
+        AstNode* const dtp = nodep->dtypep()->skipRefp();
+        if (VN_IS(dtp, UnpackArrayDType)
+            && VN_IS(VN_AS(dtp, UnpackArrayDType)->subDTypep()->skipRefp(), IfaceRefDType)) {
+            if (VN_AS(VN_AS(dtp, UnpackArrayDType)->subDTypep()->skipRefp(), IfaceRefDType)
                     ->isVirtual())
                 return;
-            UINFO(8, "   dv-vec-VAR    " << nodep << endl);
-            AstUnpackArrayDType* const arrdtype = VN_AS(nodep->dtypep(), UnpackArrayDType);
+            UINFO(8, "   dv-vec-VAR    " << nodep);
+            AstUnpackArrayDType* const arrdtype = VN_AS(dtp, UnpackArrayDType);
             AstNode* prevp = nullptr;
             for (int i = arrdtype->lo(); i <= arrdtype->hi(); ++i) {
                 const string varNewName = nodep->name() + "__BRA__" + cvtToStr(i) + "__KET__";
-                UINFO(8, "VAR name insert " << varNewName << "  " << nodep << endl);
+                UINFO(8, "VAR name insert " << varNewName << "  " << nodep);
                 if (!m_deModVars.find(varNewName)) {
                     AstIfaceRefDType* const ifaceRefp
-                        = VN_AS(arrdtype->subDTypep(), IfaceRefDType)->cloneTree(false);
+                        = VN_AS(arrdtype->subDTypep()->skipRefp(), IfaceRefDType)
+                              ->cloneTree(false);
                     arrdtype->addNextHere(ifaceRefp);
                     ifaceRefp->cellp(nullptr);
 
@@ -217,75 +219,97 @@ private:
             if (prevp) nodep->addNextHere(prevp);
             if (prevp && debug() == 9) {
                 prevp->dumpTree("-  newintf: ");
-                cout << endl;
+                cout << '\n';
             }
         }
         iterateChildren(nodep);
     }
 
     void visit(AstCell* nodep) override {
-        UINFO(4, "  CELL   " << nodep << endl);
+        UINFO(4, "  CELL   " << nodep);
         // Find submodule vars
         UASSERT_OBJ(nodep->modp(), nodep, "Unlinked");
         m_deModVars.main(nodep->modp());
         //
         if (nodep->rangep()) {
-            m_cellRangep = nodep->rangep();
+            // Collect the full range chain (outer first).
+            std::vector<const AstRange*> rangesp;
+            for (AstRange* rp = nodep->rangep(); rp; rp = VN_CAST(rp->nextp(), Range)) {
+                rangesp.push_back(rp);
+            }
+            m_cellRangep = rangesp.front();
+            const int ndim = static_cast<int>(rangesp.size());
+            std::vector<int> sizes(ndim);
+            int totalElems = 1;
+            for (int d = 0; d < ndim; ++d) {
+                sizes[d] = rangesp[d]->elementsConst();
+                totalElems *= sizes[d];
+            }
 
             AstVar* const ifaceVarp = VN_CAST(nodep->nextp(), Var);
-            const bool isIface
-                = ifaceVarp && VN_IS(ifaceVarp->dtypep(), UnpackArrayDType)
-                  && VN_IS(VN_AS(ifaceVarp->dtypep(), UnpackArrayDType)->subDTypep(),
-                           IfaceRefDType)
-                  && !VN_AS(VN_AS(ifaceVarp->dtypep(), UnpackArrayDType)->subDTypep(),
-                            IfaceRefDType)
-                          ->isVirtual();
+            // Peel all UnpackArrayDType layers to reach the bottom IfaceRefDType.
+            AstIfaceRefDType* origIfaceRefp = nullptr;
+            AstUnpackArrayDType* innermostArrp = nullptr;
+            for (AstNodeDType* dp = ifaceVarp ? ifaceVarp->dtypep()->skipRefp() : nullptr; dp;) {
+                if (AstUnpackArrayDType* const arrp = VN_CAST(dp, UnpackArrayDType)) {
+                    innermostArrp = arrp;
+                    dp = arrp->subDTypep()->skipRefp();
+                } else {
+                    origIfaceRefp = VN_CAST(dp, IfaceRefDType);
+                    break;
+                }
+            }
+            const bool isIface = origIfaceRefp && !origIfaceRefp->isVirtual();
 
-            // Make all of the required clones
-            for (int i = 0; i < m_cellRangep->elementsConst(); i++) {
-                m_instSelNum
-                    = m_cellRangep->ascending() ? (m_cellRangep->elementsConst() - 1 - i) : i;
-                const int instNum = m_cellRangep->loConst() + i;
+            std::vector<int> idx(ndim, 0);
+            for (int n = 0; n < totalElems; ++n) {
+                // Unflatten n into a row-major cartesian index; outer dim most significant.
+                int rem = n;
+                for (int d = ndim - 1; d >= 0; --d) {
+                    idx[d] = rem % sizes[d];
+                    rem /= sizes[d];
+                }
+                // Flat select number for 1D-compat pin expansion; ascending dims invert.
+                // Also build the "__BRA__i__KET__..." suffix (encodeNumber for negative idx).
+                int flatSel = 0;
+                string suffix;
+                for (int d = 0; d < ndim; ++d) {
+                    const int sel = rangesp[d]->ascending() ? (sizes[d] - 1 - idx[d]) : idx[d];
+                    flatSel = flatSel * sizes[d] + sel;
+                    suffix += "__BRA__" + AstNode::encodeNumber(rangesp[d]->loConst() + idx[d])
+                              + "__KET__";
+                }
+                m_instSelNum = flatSel;
 
                 AstCell* const newp = nodep->cloneTree(false);
                 nodep->addNextHere(newp);
-                // Remove ranging and fix name
-                newp->rangep()->unlinkFrBack()->deleteTree();
-                // Somewhat illogically, we need to rename the original name of the cell too.
-                // as that is the name users expect for dotting
-                // The spec says we add [x], but that won't work in C...
-                newp->name(newp->name() + "__BRA__" + cvtToStr(instNum) + "__KET__");
-                newp->origName(newp->origName() + "__BRA__" + cvtToStr(instNum) + "__KET__");
-                UINFO(8, "    CELL loop  " << newp << endl);
+                while (newp->rangep()) newp->rangep()->unlinkFrBack()->deleteTree();
+                newp->name(newp->name() + suffix);
+                newp->origName(newp->origName() + suffix);
+                UINFO(8, "    CELL loop  " << newp);
 
-                // If this AstCell is actually an interface instantiation, also clone the IfaceRef
-                // within the same parent module as the cell
+                // Interface instantiation: also clone the IfaceRef in the parent module.
                 if (isIface) {
-                    AstUnpackArrayDType* const arrdtype
-                        = VN_AS(ifaceVarp->dtypep(), UnpackArrayDType);
-                    AstIfaceRefDType* const origIfaceRefp
-                        = VN_AS(arrdtype->subDTypep(), IfaceRefDType);
                     origIfaceRefp->cellp(nullptr);
                     AstVar* const varNewp = ifaceVarp->cloneTree(false);
                     AstIfaceRefDType* const ifaceRefp = origIfaceRefp->cloneTree(false);
-                    arrdtype->addNextHere(ifaceRefp);
+                    innermostArrp->addNextHere(ifaceRefp);
                     ifaceRefp->cellp(newp);
                     ifaceRefp->cellName(newp->name());
-                    varNewp->name(varNewp->name() + "__BRA__" + cvtToStr(instNum) + "__KET__");
-                    varNewp->origName(varNewp->origName() + "__BRA__" + cvtToStr(instNum)
-                                      + "__KET__");
+                    varNewp->name(varNewp->name() + suffix);
+                    varNewp->origName(varNewp->origName() + suffix);
                     varNewp->dtypep(ifaceRefp);
                     newp->addNextHere(varNewp);
                     if (debug() == 9) {
                         varNewp->dumpTree("-  newintf: ");
-                        cout << endl;
+                        cout << '\n';
                     }
                 }
                 // Fixup pins
                 iterateAndNextNull(newp->pinsp());
                 if (debug() == 9) {
                     newp->dumpTree("-  newcell: ");
-                    cout << endl;
+                    cout << '\n';
                 }
             }
 
@@ -306,24 +330,22 @@ private:
     void visit(AstPin* nodep) override {
         // Any non-direct pins need reconnection with a part-select
         if (!nodep->exprp()) return;  // No-connect
+        const AstNodeDType* expDtp = nodep->exprp()->dtypep()->skipRefp();
         if (m_cellRangep) {
-            UINFO(4, "   PIN  " << nodep << endl);
+            UINFO(4, "   PIN  " << nodep);
             const int modwidth = nodep->modVarp()->width();
             const int expwidth = nodep->exprp()->width();
             const std::pair<uint32_t, uint32_t> pinDim
-                = nodep->modVarp()->dtypep()->dimensions(false);
-            const std::pair<uint32_t, uint32_t> expDim
-                = nodep->exprp()->dtypep()->dimensions(false);
-            UINFO(4, "   PINVAR  " << nodep->modVarp() << endl);
-            UINFO(4, "   EXP     " << nodep->exprp() << endl);
+                = nodep->modVarp()->dtypep()->skipRefp()->dimensions(false);
+            const std::pair<uint32_t, uint32_t> expDim = expDtp->dimensions(false);
+            UINFO(4, "   PINVAR  " << nodep->modVarp());
+            UINFO(4, "   EXP     " << nodep->exprp());
             UINFO(4, "   expwidth=" << expwidth << " modwidth=" << modwidth
                                     << "  expDim(p,u)=" << expDim.first << "," << expDim.second
-                                    << "  pinDim(p,u)=" << pinDim.first << "," << pinDim.second
-                                    << endl);
+                                    << "  pinDim(p,u)=" << pinDim.first << "," << pinDim.second);
             if (expDim.second == pinDim.second + 1) {
                 // Connection to array, where array dimensions match the instant dimension
-                const AstRange* const rangep
-                    = VN_AS(nodep->exprp()->dtypep(), UnpackArrayDType)->rangep();
+                const AstRange* const rangep = VN_AS(expDtp, UnpackArrayDType)->rangep();
                 const int arraySelNum = rangep->ascending()
                                             ? (rangep->elementsConst() - 1 - m_instSelNum)
                                             : m_instSelNum;
@@ -359,9 +381,9 @@ private:
         }  // end expanding ranged cell
         else if (AstArraySel* const arrselp = VN_CAST(nodep->exprp(), ArraySel)) {
             if (const AstUnpackArrayDType* const arrp
-                = VN_CAST(arrselp->fromp()->dtypep(), UnpackArrayDType)) {
-                if (!VN_IS(arrp->subDTypep(), IfaceRefDType)) return;
-                if (VN_AS(arrp->subDTypep(), IfaceRefDType)->isVirtual()) return;
+                = VN_CAST(arrselp->fromp()->dtypep()->skipRefp(), UnpackArrayDType)) {
+                if (!VN_IS(arrp->subDTypep()->skipRefp(), IfaceRefDType)) return;
+                if (VN_AS(arrp->subDTypep()->skipRefp(), IfaceRefDType)->isVirtual()) return;
                 // Interface pin attaches to one element of arrayed interface
                 V3Const::constifyParamsEdit(arrselp->bitp());
                 const AstConst* const constp = VN_CAST(arrselp->bitp(), Const);
@@ -371,9 +393,9 @@ private:
                         "Unsupported: Non-constant index when passing interface to module");
                     return;
                 }
-                const string index = AstNode::encodeNumber(constp->toSInt());
+                const string index = AstNode::encodeNumber(constp->toSInt() + arrp->lo());
                 if (VN_IS(arrselp->fromp(), SliceSel))
-                    arrselp->fromp()->v3error("Unsupported: interface slices");
+                    arrselp->fromp()->v3warn(E_UNSUPPORTED, "Unsupported: interface slices");
                 const AstVarRef* const varrefp = VN_CAST(arrselp->fromp(), VarRef);
                 UASSERT_OBJ(varrefp, arrselp, "No interface varref under array");
                 AstVarXRef* const newp = new AstVarXRef{
@@ -386,10 +408,109 @@ private:
             }
         } else {
             AstVar* const pinVarp = nodep->modVarp();
+            // Multi-dim whole-array iface pin fanout: cartesian-product the port's
+            // nested UnpackArrayDType layers and emit one pin + per-element var per cell.
+            // For 1-dim falls through to the original code below.
+            std::vector<const AstUnpackArrayDType*> portArrs;
+            for (AstNodeDType* d = pinVarp->dtypep()->skipRefp(); d;) {
+                if (const AstUnpackArrayDType* const arrp = VN_CAST(d, UnpackArrayDType)) {
+                    portArrs.push_back(arrp);
+                    d = arrp->subDTypep()->skipRefp();
+                } else {
+                    break;
+                }
+            }
+            if (portArrs.size() >= 2) {
+                AstIfaceRefDType* const portIrp
+                    = VN_CAST(portArrs.back()->subDTypep()->skipRefp(), IfaceRefDType);
+                if (!portIrp || portIrp->isVirtual()) return;
+                const int ndim = static_cast<int>(portArrs.size());
+                std::vector<int> sizes(ndim);
+                int totalElems = 1;
+                for (int d = 0; d < ndim; ++d) {
+                    sizes[d] = portArrs[d]->elementsConst();
+                    totalElems *= sizes[d];
+                }
+                // V3Width should have already rejected non-VarRef and rank-mismatch pins;
+                // these are defensive internal-invariant guards.
+                const AstVarRef* const varrefp = VN_CAST(nodep->exprp(), VarRef);
+                UASSERT_OBJ(varrefp, nodep->exprp(), "Unexpected connection to arrayed port");
+                std::vector<const AstUnpackArrayDType*> exprArrs;
+                for (AstNodeDType* d = varrefp->dtypep()->skipRefp(); d;) {
+                    if (const AstUnpackArrayDType* const arrp = VN_CAST(d, UnpackArrayDType)) {
+                        exprArrs.push_back(arrp);
+                        d = arrp->subDTypep()->skipRefp();
+                    } else {
+                        break;
+                    }
+                }
+                UASSERT_OBJ(exprArrs.size() == static_cast<size_t>(ndim), nodep->exprp(),
+                            "Multi-dim iface pin expression rank does not match port");
+                AstNode* prevp = nullptr;
+                AstNode* prevPinp = nullptr;
+                std::vector<int> idx(ndim, 0);
+                for (int n = 0; n < totalElems; ++n) {
+                    int rem = n;
+                    for (int d = ndim - 1; d >= 0; --d) {
+                        idx[d] = rem % sizes[d];
+                        rem /= sizes[d];
+                    }
+                    string portSuffix;
+                    string exprSuffix;
+                    for (int d = 0; d < ndim; ++d) {
+                        portSuffix += "__BRA__" + AstNode::encodeNumber(portArrs[d]->lo() + idx[d])
+                                      + "__KET__";
+                        exprSuffix += "__BRA__" + AstNode::encodeNumber(exprArrs[d]->lo() + idx[d])
+                                      + "__KET__";
+                    }
+                    const string varNewName = pinVarp->name() + portSuffix;
+                    AstVar* varNewp = nullptr;
+                    if (!pinVarp->backp()) {
+                        varNewp = m_deModVars.find(varNewName);
+                    } else {
+                        portIrp->cellp(nullptr);
+                        varNewp = pinVarp->cloneTree(false);
+                        varNewp->name(varNewName);
+                        varNewp->origName(varNewp->origName() + portSuffix);
+                        varNewp->dtypep(portIrp);
+                        m_deModVars.insert(varNewp);
+                        if (!prevp) {
+                            prevp = varNewp;
+                        } else {
+                            prevp->addNextHere(varNewp);
+                        }
+                    }
+                    if (!varNewp) {
+                        if (debug() >= 9) m_deModVars.dump();  // LCOV_EXCL_LINE
+                        nodep->v3fatalSrc("Module dearray failed for "
+                                          << AstNode::prettyNameQ(varNewName));
+                    }
+                    AstPin* const newp = nodep->cloneTree(false);
+                    newp->modVarp(varNewp);
+                    newp->name(newp->name() + portSuffix);
+                    AstVarXRef* const newVarXRefp = new AstVarXRef{
+                        nodep->fileline(), varrefp->name() + exprSuffix, "", VAccess::WRITE};
+                    newVarXRefp->varp(newp->modVarp());
+                    newp->exprp()->unlinkFrBack()->deleteTree();
+                    newp->exprp(newVarXRefp);
+                    if (!prevPinp) {
+                        prevPinp = newp;
+                    } else {
+                        prevPinp->addNextHere(newp);
+                    }
+                }
+                if (prevp) {
+                    pinVarp->replaceWith(prevp);
+                    pushDeletep(pinVarp);
+                }
+                nodep->replaceWith(prevPinp);
+                VL_DO_DANGLING(pushDeletep(nodep), nodep);
+                return;
+            }
             const AstUnpackArrayDType* const pinArrp
-                = VN_CAST(pinVarp->dtypep(), UnpackArrayDType);
-            if (!pinArrp || !VN_IS(pinArrp->subDTypep(), IfaceRefDType)) return;
-            if (VN_AS(pinArrp->subDTypep(), IfaceRefDType)->isVirtual()) return;
+                = VN_CAST(pinVarp->dtypep()->skipRefp(), UnpackArrayDType);
+            if (!pinArrp || !VN_IS(pinArrp->subDTypep()->skipRefp(), IfaceRefDType)) return;
+            if (VN_AS(pinArrp->subDTypep()->skipRefp(), IfaceRefDType)->isVirtual()) return;
             // Arrayed pin/var attaches to arrayed submodule lower port/var, expand it
             AstNode* prevp = nullptr;
             AstNode* prevPinp = nullptr;
@@ -404,7 +525,8 @@ private:
                 if (!pinVarp->backp()) {
                     varNewp = m_deModVars.find(varNewName);
                 } else {
-                    AstIfaceRefDType* const ifaceRefp = VN_AS(pinArrp->subDTypep(), IfaceRefDType);
+                    AstIfaceRefDType* const ifaceRefp
+                        = VN_AS(pinArrp->subDTypep()->skipRefp(), IfaceRefDType);
                     ifaceRefp->cellp(nullptr);
                     varNewp = pinVarp->cloneTree(false);
                     varNewp->name(varNewName);
@@ -436,13 +558,14 @@ private:
                     UASSERT_OBJ(VN_IS(slicep->rhsp(), Const), slicep, "Slices should be constant");
                     const int slice_index
                         = slicep->declRange().left() + in * slicep->declRange().leftToRightInc();
-                    const auto* const exprArrp = VN_AS(varrefp->dtypep(), UnpackArrayDType);
+                    const auto* const exprArrp
+                        = VN_AS(varrefp->dtypep()->skipRefp(), UnpackArrayDType);
                     UASSERT_OBJ(exprArrp, slicep, "Slice of non-array");
                     expr_i = slice_index + exprArrp->lo();
                 } else if (!varrefp) {
                     newp->exprp()->v3error("Unexpected connection to arrayed port");
                 } else if (const auto* const exprArrp
-                           = VN_CAST(varrefp->dtypep(), UnpackArrayDType)) {
+                           = VN_CAST(varrefp->dtypep()->skipRefp(), UnpackArrayDType)) {
                     expr_i = exprArrp->left() + in * exprArrp->declRange().leftToRightInc();
                 }
 
@@ -466,50 +589,76 @@ private:
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
         }
     }
-
+    void visit(AstArraySel* nodep) override {
+        // If a parent is also an ArraySel into the same iface array, let it handle the chain.
+        if (VN_IS(nodep->backp(), ArraySel) && nodep->backp()->op1p() == nodep) return;
+        // Collect nested ArraySels top-down (nodep is outermost in AST, innermost dim index).
+        std::vector<AstArraySel*> sels;
+        AstNode* curp = nodep;
+        while (AstArraySel* const asp = VN_CAST(curp, ArraySel)) {
+            sels.push_back(asp);
+            curp = asp->fromp();
+        }
+        const AstVarRef* const varrefp = VN_CAST(curp, VarRef);
+        if (!varrefp) return;
+        // Confirm base is a (possibly nested) UnpackArray wrapping an IfaceRefDType.
+        std::vector<AstUnpackArrayDType*> arrs;  // outer dim first
+        AstNodeDType* dtp = varrefp->dtypep()->skipRefp();
+        while (AstUnpackArrayDType* const ap = VN_CAST(dtp, UnpackArrayDType)) {
+            arrs.push_back(ap);
+            dtp = ap->subDTypep()->skipRefp();
+        }
+        if (arrs.empty() || sels.size() != arrs.size()) return;
+        AstIfaceRefDType* const irp = VN_CAST(dtp, IfaceRefDType);
+        if (!irp || irp->isVirtual()) return;
+        // Constify bitps and collect indices in outer-dim-first order (sels is inner-first).
+        std::vector<int> indices(sels.size());
+        for (size_t i = 0; i < sels.size(); ++i) {
+            AstArraySel* const asp = sels[i];
+            V3Const::constifyParamsEdit(asp->bitp());
+            const AstConst* const constp = VN_CAST(asp->bitp(), Const);
+            if (!constp) {
+                asp->bitp()->v3warn(E_UNSUPPORTED,
+                                    "Non-constant index in RHS interface array selection");
+                return;
+            }
+            indices[sels.size() - 1 - i] = constp->toSInt();
+        }
+        string indexStr;
+        for (size_t i = 0; i < indices.size(); ++i) {
+            indexStr += "__BRA__" + AstNode::encodeNumber(indices[i] + arrs[i]->lo()) + "__KET__";
+        }
+        AstVarXRef* const newp
+            = new AstVarXRef{nodep->fileline(), varrefp->name() + indexStr, "", VAccess::READ};
+        newp->dtypep(irp);
+        newp->classOrPackagep(varrefp->classOrPackagep());
+        nodep->addNextHere(newp);
+        VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
+    }
     void visit(AstNodeAssign* nodep) override {
-        if (AstArraySel* const arrselp = VN_CAST(nodep->rhsp(), ArraySel)) {
-            // handle single element selection from RHS array
+        if (AstSliceSel* const arrslicep = VN_CAST(nodep->rhsp(), SliceSel)) {
             if (const AstUnpackArrayDType* const arrp
-                = VN_CAST(arrselp->fromp()->dtypep()->skipRefp(), UnpackArrayDType)) {
+                = VN_CAST(arrslicep->fromp()->dtypep()->skipRefp(), UnpackArrayDType)) {
                 if (!VN_IS(arrp->subDTypep()->skipRefp(), IfaceRefDType)) return;
                 if (VN_AS(arrp->subDTypep()->skipRefp(), IfaceRefDType)->isVirtual()) return;
-                V3Const::constifyParamsEdit(arrselp->bitp());
-                const AstConst* const constp = VN_CAST(arrselp->bitp(), Const);
-                if (!constp) {
-                    arrselp->bitp()->v3warn(E_UNSUPPORTED,
-                                            "Non-constant index in RHS interface array selection");
-                    return;
-                }
-                const string index = AstNode::encodeNumber(constp->toSInt());
-                const AstVarRef* const varrefp = VN_CAST(arrselp->fromp(), VarRef);
-                UASSERT_OBJ(varrefp, arrselp, "No interface varref under array");
-                AstVarXRef* const newp = new AstVarXRef{
-                    nodep->fileline(), varrefp->name() + "__BRA__" + index + "__KET__", "",
-                    VAccess::READ};
-                newp->dtypep(arrp->subDTypep());
-                newp->classOrPackagep(varrefp->classOrPackagep());
-                arrselp->addNextHere(newp);
-                VL_DO_DANGLING(arrselp->unlinkFrBack()->deleteTree(), arrselp);
-            }
-        } else if (AstSliceSel* const arrslicep = VN_CAST(nodep->rhsp(), SliceSel)) {
-            if (const AstUnpackArrayDType* const arrp
-                = VN_CAST(arrslicep->fromp()->dtypep(), UnpackArrayDType)) {
-                if (!VN_IS(arrp->subDTypep(), IfaceRefDType)) return;
-                if (VN_AS(arrp->subDTypep(), IfaceRefDType)->isVirtual()) return;
                 arrslicep->v3warn(E_UNSUPPORTED, "Interface slices unsupported");
                 return;
             }
         } else {
-            if (const AstUnpackArrayDType* const lhsarrp
-                = VN_CAST(nodep->lhsp()->dtypep()->skipRefp(), UnpackArrayDType)) {
-                if (const AstUnpackArrayDType* const rhsarrp
-                    = VN_CAST(nodep->rhsp()->dtypep()->skipRefp(), UnpackArrayDType)) {
+            if (const AstUnpackArrayDType* const rhsarrp
+                = VN_CAST(nodep->rhsp()->dtypep()->skipRefp(), UnpackArrayDType)) {
+                if (const AstUnpackArrayDType* const lhsarrp
+                    = VN_CAST(nodep->lhsp()->dtypep()->skipRefp(), UnpackArrayDType)) {
                     // copy between arrays
                     if (!VN_IS(lhsarrp->subDTypep()->skipRefp(), IfaceRefDType)) return;
                     if (!VN_IS(rhsarrp->subDTypep()->skipRefp(), IfaceRefDType)) return;
                     if (VN_AS(rhsarrp->subDTypep()->skipRefp(), IfaceRefDType)->isVirtual())
                         return;
+                    if (!VN_AS(lhsarrp->subDTypep()->skipRefp(), IfaceRefDType)->isVirtual()) {
+                        nodep->v3warn(E_UNSUPPORTED, "Unexpected target of interface assignment ["
+                                                         << rhsarrp->prettyDTypeNameQ() << "]");
+                        return;
+                    }
                     if (lhsarrp->elementsConst() != rhsarrp->elementsConst()) {
                         nodep->v3warn(E_UNSUPPORTED,
                                       "Array size mismatch in interface assignment");
@@ -519,34 +668,21 @@ private:
                         const string index = AstNode::encodeNumber(i);
                         AstNodeExpr* lhsp = nullptr;
                         if (AstVarRef* const varrefp = VN_CAST(nodep->lhsp(), VarRef)) {
-                            if (VN_AS(lhsarrp->subDTypep()->skipRefp(), IfaceRefDType)
-                                    ->isVirtual()) {
-                                AstVarRef* const newvarp = varrefp->cloneTree(false);
-                                AstArraySel* newarrselp = new AstArraySel(
-                                    nodep->fileline(), newvarp,
-                                    new AstConst(nodep->fileline(),
-                                                 V3Number(nodep->fileline(), 32, i)));
-                                lhsp = newarrselp;
-                            } else {
-                                AstVarXRef* const newvarrefp = new AstVarXRef{
-                                    nodep->fileline(),
-                                    varrefp->name() + "__BRA__" + index + "__KET__", "",
-                                    VAccess::WRITE};
-                                newvarrefp->dtypep(lhsarrp->subDTypep()->skipRefp());
-                                newvarrefp->classOrPackagep(varrefp->classOrPackagep());
-                                lhsp = newvarrefp;
-                            }
+                            AstVarRef* const newvarp = varrefp->cloneTree(false);
+                            AstArraySel* newarrselp = new AstArraySel{
+                                nodep->fileline(), newvarp,
+                                new AstConst{nodep->fileline(), static_cast<uint32_t>(i)}};
+                            lhsp = newarrselp;
                         } else if (AstMemberSel* const prevselp
                                    = VN_CAST(nodep->lhsp(), MemberSel)) {
                             AstMemberSel* membselp = prevselp->cloneTree(false);
-                            AstArraySel* newarrselp = new AstArraySel(
+                            AstArraySel* newarrselp = new AstArraySel{
                                 nodep->fileline(), membselp,
-                                new AstConst(nodep->fileline(),
-                                             V3Number(nodep->fileline(), 32, i)));
+                                new AstConst{nodep->fileline(), static_cast<uint32_t>(i)}};
                             lhsp = newarrselp;
                         } else {
                             nodep->v3warn(E_UNSUPPORTED,
-                                          "Unsupported lhs node type in array assignment");
+                                          "Unsupported LHS node type in array assignment");
                             return;
                         }
                         const AstVarRef* const rhsrefp = VN_CAST(nodep->rhsp(), VarRef);
@@ -555,18 +691,21 @@ private:
                             VAccess::READ};
                         rhsp->dtypep(rhsarrp->subDTypep()->skipRefp());
                         rhsp->classOrPackagep(rhsrefp->classOrPackagep());
-                        AstAssign* const assignp = new AstAssign(nodep->fileline(), lhsp, rhsp);
+                        AstAssign* const assignp = new AstAssign{nodep->fileline(), lhsp, rhsp};
                         nodep->addNextHere(assignp);
                     }
-                    VL_DO_DANGLING(nodep->unlinkFrBack()->deleteTree(), nodep);
+                    VL_DO_DANGLING(pushDeletep(nodep->unlinkFrBack()), nodep);
+                    return;
                 }
             }
         }
+        iterateChildren(nodep);
     }
 
     //--------------------
-    void visit(AstNodeExpr*) override {}  // Accelerate
     void visit(AstNode* nodep) override { iterateChildren(nodep); }
+    void visit(AstNew* nodep) override { iterateChildren(nodep); }
+    void visit(AstMethodCall* nodep) override { iterateChildren(nodep); }
 
 public:
     // CONSTRUCTORS
@@ -580,7 +719,7 @@ public:
 class InstStatic final {
     InstStatic() = default;  // Static class
 
-    static AstNodeExpr* extendOrSel(FileLine* fl, AstNodeExpr* rhsp, AstNode* cmpWidthp) {
+    static AstNodeExpr* extendOrSel(FileLine* fl, AstNodeExpr* rhsp, const AstNode* cmpWidthp) {
         if (cmpWidthp->width() > rhsp->width()) {
             rhsp = (rhsp->isSigned() ? static_cast<AstNodeExpr*>(new AstExtendS{fl, rhsp})
                                      : static_cast<AstNodeExpr*>(new AstExtend{fl, rhsp}));
@@ -643,9 +782,13 @@ public:
             // Done. Constant.
         } else {
             // Make a new temp wire
-            // if (1 || debug() >= 9) pinp->dumpTree("-  in_pin: ");
+            // UINFOTREE(9, pinp, "", "in_pin");
             V3Inst::checkOutputShort(pinp);
-            AstNodeExpr* const pinexprp = VN_AS(pinp->exprp(), NodeExpr)->unlinkFrBack();
+            if (!pinp->exprp()) return nullptr;
+            // Simplify, so stuff like '{a[0], b[0]}[1]' produced during
+            // instance array expansion are brought to normal 'a[0]'
+            AstNodeExpr* const pinexprp
+                = V3Const::constifyEdit(VN_AS(pinp->exprp(), NodeExpr)->unlinkFrBack());
             const string newvarname
                 = (string{pinVarp->isWritable() ? "__Vcellout" : "__Vcellinp"}
                    // Prevent name conflict if both tri & non-tri add signals
@@ -658,11 +801,12 @@ public:
             if (pinVarp->isInout()) {
                 pinVarp->v3fatalSrc("Unsupported: Inout connections to pins must be"
                                     " direct one-to-one connection (without any expression)");
+                // V3Tristate should have cleared up before this point
             } else if (pinVarp->isWritable()) {
                 // See also V3Inst
                 AstNodeExpr* rhsp = new AstVarRef{pinp->fileline(), newvarp, VAccess::READ};
                 UINFO(5, "pinRecon width " << pinVarp->width() << " >? " << rhsp->width() << " >? "
-                                           << pinexprp->width() << endl);
+                                           << pinexprp->width());
                 rhsp = extendOrSel(pinp->fileline(), rhsp, pinVarp);
                 pinp->exprp(new AstVarRef{newvarp->fileline(), newvarp, VAccess::WRITE});
                 AstNodeExpr* const rhsSelp = extendOrSel(pinp->fileline(), rhsp, pinexprp);
@@ -674,9 +818,9 @@ public:
                                          pinexprp};
                 pinp->exprp(new AstVarRef{pinexprp->fileline(), newvarp, VAccess::READ});
             }
-            if (assignp) cellp->addNextHere(assignp);
-            // if (debug()) pinp->dumpTree("-  out: ");
-            // if (debug()) assignp->dumpTree("-  aout: ");
+            if (assignp) cellp->addNextHere(new AstAlways{assignp});
+            // UINFOTREE(1, pinp, "", "out");
+            // UINFOTREE(1, assignp, "", "aout");
         }
         return assignp;
     }
@@ -690,7 +834,7 @@ AstAssignW* V3Inst::pinReconnectSimple(AstPin* pinp, AstCell* cellp, bool forTri
     return InstStatic::pinReconnectSimple(pinp, cellp, forTristate, alwaysCvt);
 }
 
-void V3Inst::checkOutputShort(AstPin* nodep) {
+void V3Inst::checkOutputShort(const AstPin* nodep) {
     if (nodep->modVarp()->direction() == VDirection::OUTPUT) {
         if (VN_IS(nodep->exprp(), Const) || VN_IS(nodep->exprp(), Extend)
             || (VN_IS(nodep->exprp(), Concat)
@@ -698,6 +842,8 @@ void V3Inst::checkOutputShort(AstPin* nodep) {
             // Uses v3warn for error, as might be found multiple times
             nodep->v3warn(E_PORTSHORT, "Output port is connected to a constant pin,"
                                        " electrical short");
+            // Delete so we don't create a 'CONST = ...' assignment
+            nodep->exprp()->unlinkFrBack()->deleteTree();
         }
     }
 }
@@ -706,13 +852,13 @@ void V3Inst::checkOutputShort(AstPin* nodep) {
 // Inst class visitor
 
 void V3Inst::instAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { InstVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("inst", 0, dumpTreeEitherLevel() >= 3);
 }
 
 void V3Inst::dearrayAll(AstNetlist* nodep) {
-    UINFO(2, __FUNCTION__ << ": " << endl);
+    UINFO(2, __FUNCTION__ << ":");
     { InstDeVisitor{nodep}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("dearray", 0, dumpTreeEitherLevel() >= 6);
 }

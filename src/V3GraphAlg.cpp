@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <list>
 #include <map>
+#include <numeric>
 #include <vector>
 
 VL_DEFINE_DEBUG_FUNCTIONS;
@@ -39,7 +40,7 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 // Changes user() and weight()
 
 class GraphRemoveRedundant final : GraphAlg<> {
-    const bool m_sumWeights;  ///< Sum, rather then maximize weights
+    const bool m_sumWeights;  // Sum, rather then maximize weights
 private:
     void main() {
         for (V3GraphVertex& vertex : m_graphp->vertices()) vertexIterate(&vertex);
@@ -270,19 +271,15 @@ class GraphAlgRank final : GraphAlg<> {
             vertex.user(0);
         }
         for (V3GraphVertex& vertex : m_graphp->vertices()) {
-            if (!vertex.user()) {  //
-                vertexIterate(&vertex, 1);
-            }
+            if (!vertex.user()) vertexIterate(&vertex, 1);
         }
     }
-
     void vertexIterate(V3GraphVertex* vertexp, uint32_t currentRank) {
         // Assign rank to each unvisited node
         // If larger rank is found, assign it and loop back through
         // If we hit a back node make a list of all loops
         if (vertexp->user() == 1) {
-            m_graphp->reportLoops(m_edgeFuncp, vertexp);
-            m_graphp->loopsMessageCb(vertexp);
+            m_graphp->loopsMessageCb(vertexp, m_edgeFuncp);
             return;  // LCOV_EXCL_LINE  // gcc gprof bug misses this return
         }
         if (vertexp->rank() >= currentRank) return;  // Already processed it
@@ -302,9 +299,62 @@ public:
     ~GraphAlgRank() = default;
 };
 
-void V3Graph::rank() { GraphAlgRank{this, &V3GraphEdge::followAlwaysTrue}; }
-
+void V3Graph::rank() { rank(&V3GraphEdge::followAlwaysTrue); }
 void V3Graph::rank(V3EdgeFuncP edgeFuncp) { GraphAlgRank{this, edgeFuncp}; }
+
+//######################################################################
+//######################################################################
+// Algorithms - ranking min
+// Changes user() and rank()
+
+class GraphAlgRankMin final : GraphAlg<> {
+    void main() {
+        // Rank each vertex, ignoring cutable edges
+        // Vertex::m_user begin: 1 indicates processing, 2 indicates completed
+        // Clear existing ranks
+        for (V3GraphVertex& vertex : m_graphp->vertices()) {
+            vertex.rank(0);
+            vertex.user(0);
+        }
+        for (V3GraphVertex& vertex : m_graphp->vertices()) {
+            if (!vertex.user()) vertexIterate(&vertex);
+        }
+    }
+    uint32_t vertexIterate(V3GraphVertex* vertexp) {
+        // Assign rank to each unvisited node
+        // If we hit a back node make a list of all loops
+        if (vertexp->user() == 1) {
+            m_graphp->loopsMessageCb(vertexp, m_edgeFuncp);
+            return vertexp->rank();
+        }
+        if (vertexp->user()) return vertexp->rank();  // Done earlier
+        vertexp->user(1);
+        vertexp->rank(1);  // In case loop
+        // If no input edges, then rank 1 (+ adder)
+        // Otherwise, get minimum from following all inputs.
+        uint32_t minrank = ~0U;
+        for (V3GraphEdge& edge : vertexp->inEdges()) {
+            if (followEdge(&edge)) {
+                const uint32_t nrank = vertexIterate(edge.fromp());
+                minrank = std::min(minrank, nrank);
+            }
+        }
+        if (minrank == ~0U) minrank = 0;
+        vertexp->rank(minrank + vertexp->rankAdder());
+        vertexp->user(2);
+        return vertexp->rank();
+    }
+
+public:
+    GraphAlgRankMin(V3Graph* graphp, V3EdgeFuncP edgeFuncp)
+        : GraphAlg<>{graphp, edgeFuncp} {
+        main();
+    }
+    ~GraphAlgRankMin() = default;
+};
+
+void V3Graph::rankMin() { rankMin(&V3GraphEdge::followAlwaysTrue); }
+void V3Graph::rankMin(V3EdgeFuncP edgeFuncp) { GraphAlgRankMin{this, edgeFuncp}; }
 
 //######################################################################
 //######################################################################
@@ -313,6 +363,7 @@ void V3Graph::rank(V3EdgeFuncP edgeFuncp) { GraphAlgRank{this, edgeFuncp}; }
 
 class GraphAlgRLoops final : GraphAlg<> {
     std::vector<V3GraphVertex*> m_callTrace;  // List of everything we hit processing so far
+    std::vector<string> m_msgs;  // Output messages
     bool m_done = false;  // Exit algorithm
 
     void main(V3GraphVertex* vertexp) {
@@ -333,9 +384,8 @@ class GraphAlgRLoops final : GraphAlg<> {
         m_callTrace[currentRank++] = vertexp;
 
         if (vertexp->user() == 1) {
-            for (unsigned i = 0; i < currentRank; i++) {  //
-                m_graphp->loopsVertexCb(m_callTrace[i]);
-            }
+            for (unsigned i = 0; i < currentRank; i++)
+                m_msgs.emplace_back(m_graphp->loopsVertexCb(m_callTrace[i]));
             m_done = true;
             return;
         }
@@ -353,10 +403,13 @@ public:
         main(vertexp);
     }
     ~GraphAlgRLoops() = default;
+    string message() const {
+        return std::accumulate(m_msgs.begin(), m_msgs.end(), std::string{""});
+    }
 };
 
-void V3Graph::reportLoops(V3EdgeFuncP edgeFuncp, V3GraphVertex* vertexp) {
-    GraphAlgRLoops{this, edgeFuncp, vertexp};
+string V3Graph::reportLoops(V3EdgeFuncP edgeFuncp, V3GraphVertex* vertexp) {
+    return GraphAlgRLoops{this, edgeFuncp, vertexp}.message();
 }
 
 //######################################################################
@@ -412,26 +465,18 @@ void V3Graph::subtreeLoops(V3EdgeFuncP edgeFuncp, V3GraphVertex* vertexp, V3Grap
 //######################################################################
 // Algorithms - sorting
 
-struct GraphSortVertexCmp final {
-    bool operator()(const V3GraphVertex* lhsp, const V3GraphVertex* rhsp) const {
-        return lhsp->sortCmp(rhsp) < 0;
-    }
-};
-struct GraphSortEdgeCmp final {
-    bool operator()(const V3GraphEdge* lhsp, const V3GraphEdge* rhsp) const {
-        return lhsp->sortCmp(rhsp) < 0;
-    }
-};
-
 void V3Graph::sortVertices() {
     // Sort list of vertices by rank, then fanout
-    std::vector<V3GraphVertex*> vertices;
-    for (V3GraphVertex& vertex : m_vertices) vertices.push_back(&vertex);
-    std::stable_sort(vertices.begin(), vertices.end(), GraphSortVertexCmp());
+    std::vector<V3GraphVertex*> vertexps;
+    for (V3GraphVertex& vertex : m_vertices) vertexps.push_back(&vertex);
+    std::stable_sort(vertexps.begin(), vertexps.end(),
+                     [](const V3GraphVertex* lhsp, const V3GraphVertex* rhsp) {  //
+                         return lhsp->sortCmp(rhsp) < 0;
+                     });
     // Re-insert in sorted order
-    for (V3GraphVertex* const ip : vertices) {
-        m_vertices.unlink(ip);
-        m_vertices.linkBack(ip);
+    for (V3GraphVertex* const vertexp : vertexps) {
+        m_vertices.unlink(vertexp);
+        m_vertices.linkBack(vertexp);
     }
 }
 
@@ -442,7 +487,10 @@ void V3Graph::sortEdges() {
         // Make a vector
         for (V3GraphEdge& edge : vertex.outEdges()) edges.push_back(&edge);
         // Sort
-        std::stable_sort(edges.begin(), edges.end(), GraphSortEdgeCmp());
+        std::stable_sort(edges.begin(), edges.end(),
+                         [](const V3GraphEdge* lhsp, const V3GraphEdge* rhsp) {  //
+                             return lhsp->sortCmp(rhsp) < 0;
+                         });
         // Relink edges in specified order
         for (V3GraphEdge* const edgep : edges) edgep->relinkFromp(&vertex);
         // Prep for next
@@ -459,7 +507,7 @@ void V3Graph::sortEdges() {
 //              (Results in better dcache packing.)
 
 void V3Graph::order() {
-    UINFO(2, "Order:\n");
+    UINFO(2, "Order:");
 
     // Compute rankings again
     rank(&V3GraphEdge::followAlwaysTrue);

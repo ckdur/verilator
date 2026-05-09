@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2009-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2009-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=========================================================================
@@ -363,7 +363,7 @@ private:
     VerilatedFpList fdToFpList(IData fdi) VL_REQUIRES(m_fdMutex) {
         VerilatedFpList fp;
         // cppverilator-suppress integerOverflow shiftTooManyBitsSigned
-        if ((fdi & (1 << 31)) != 0) {
+        if (VL_BITISSET_I(fdi, 31)) {
             // Non-MCD case
             const IData idx = fdi & VL_MASK_I(31);
             switch (idx) {
@@ -378,7 +378,7 @@ private:
             // MCD Case
             if (fdi & 1) fp.push_back(stdout);
             fdi >>= 1;
-            for (size_t i = 1; (fdi != 0) && (i < fp.capacity()); ++i, fdi >>= 1) {
+            for (size_t i = 1; (fdi != 0) && (i < VerilatedFpList::capacity()); ++i, fdi >>= 1) {
                 if (fdi & VL_MASK_I(1)) fp.push_back(m_fdps[i]);
             }
         }
@@ -432,6 +432,10 @@ protected:
     // Export numbers same across all contexts as just a string-to-number conversion
     ExportNameMap m_exportMap VL_GUARDED_BY(m_exportMutex);
     int m_exportNext VL_GUARDED_BY(m_exportMutex) = 0;  // Next export funcnum
+
+    // No guard, as init-time loaded
+    std::vector<void*> m_exportFlatCbs;  // Exports when only single scope registered
+    std::vector<bool> m_exportFlatMulti;  // Multiple scopes registerd; cannot use m_exportScopes
 
     // CONSTRUCTORS
     VerilatedImpData() = default;
@@ -524,6 +528,11 @@ public:
         const auto it = find(scopes.begin(), scopes.end(), top);
         if (it != scopes.end()) scopes.erase(it);
     }
+    static void hierarchyClear() VL_MT_SAFE {
+        const VerilatedLockGuard lock{s().m_hierMapMutex};
+        VerilatedHierarchyMap& map = s().m_hierMap;
+        map.clear();
+    }
     static const VerilatedHierarchyMap* hierarchyMap() VL_MT_SAFE_POSTINIT {
         // Thread save only assuming this is called only after model construction completed
         return &s().m_hierMap;
@@ -537,26 +546,47 @@ public:
     // in the design that also happen to have our same callback function.
     // Rather than a 2D map, the integer scheme saves 500ish ns on a likely
     // miss at the cost of a multiply, and all lookups move to slowpath.
-    static int exportInsert(const char* namep) VL_MT_SAFE {
-        // Slow ok - called once/function at creation
+private:
+    static int exportInsertName(const char* namep) VL_MT_SAFE {
         const VerilatedLockGuard lock{s().m_exportMutex};
         const auto it = s().m_exportMap.find(namep);
         if (it == s().m_exportMap.end()) {
             s().m_exportMap.emplace(namep, s().m_exportNext++);
             return s().m_exportNext++;
-        } else {
-            return it->second;
         }
+        return it->second;
     }
-    static int exportFind(const char* namep) VL_MT_SAFE {
+
+public:
+    static int exportInsert(const char* namep, void* cb) VL_MT_SAFE {
+        const int funcnum = VerilatedImp::exportInsertName(namep);
+        const VerilatedLockGuard lock{s().m_exportMutex};
+        // Slow ok - called once/function at creation
+        if (funcnum >= s().m_exportFlatCbs.size()) {
+            s().m_exportFlatCbs.resize(funcnum + 1);
+            s().m_exportFlatMulti.resize(funcnum + 1);
+        }
+        if (!s().m_exportFlatMulti[funcnum]) {
+            if (s().m_exportFlatCbs[funcnum] == cb) {  // Duplicate
+            } else if (!s().m_exportFlatCbs[funcnum]) {  // First
+                s().m_exportFlatCbs[funcnum] = cb;
+            } else {  // Multiple registrants
+                s().m_exportFlatCbs[funcnum] = nullptr;
+                s().m_exportFlatMulti[funcnum] = true;
+            }
+        }
+        return funcnum;
+    }
+    static int exportFindNum(const char* namep) VL_MT_SAFE {
         const VerilatedLockGuard lock{s().m_exportMutex};
         const auto& it = s().m_exportMap.find(namep);
         if (VL_LIKELY(it != s().m_exportMap.end())) return it->second;
-        const std::string msg = ("%Error: Testbench C called "s + namep
-                                 + " but no such DPI export function name exists in ANY model");
+        const std::string msg = "%Error: Testbench C called "s + namep
+                                + " but no such DPI export function name exists in ANY model";
         VL_FATAL_MT("unknown", 0, "", msg.c_str());
         return -1;
     }
+    static const std::vector<void*>& exportFlatCbs() VL_MT_SAFE { return s().m_exportFlatCbs; }
     static const char* exportName(int funcnum) VL_MT_SAFE {
         // Slowpath; find name for given export; errors only so no map to reverse-map it
         const VerilatedLockGuard lock{s().m_exportMutex};

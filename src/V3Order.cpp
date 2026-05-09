@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -21,7 +21,7 @@
 //      For seq logic
 //          Add logic_sensitive_vertex for this list of SenItems
 //              Add edge for each sensitive_var->logic_sensitive_vertex
-//          For AssignPre's
+//          For AlwaysPre's
 //              Add vertex for this logic
 //                  Add edge logic_sensitive_vertex->logic_vertex
 //                  Add edge logic_consumed_var_PREVAR->logic_vertex
@@ -38,11 +38,11 @@
 //              Add vertex for this logic
 //                  Add edge logic_sensitive_vertex->logic_vertex
 //                  Add edge logic_generated_var_PREORDER->logic_vertex
-//                      This ensures the AssignPre gets scheduled before this logic
+//                      This ensures the AlwaysPre gets scheduled before this logic
 //                  Add edge logic_vertex->consumed_var_PREVAR
 //                  Add edge logic_vertex->consumed_var_POSTVAR
 //                  Add edge logic_vertex->logic_generated_var (same as if comb)
-//          For AssignPost's
+//          For AlwaysPost's
 //              Add vertex for this logic
 //                  Add edge logic_sensitive_vertex->logic_vertex
 //                  Add edge logic_consumed_var->logic_vertex (same as if comb)
@@ -106,9 +106,41 @@ AstCFunc* V3Order::order(AstNetlist* netlistp,  //
                          bool parallel,  //
                          bool slow,  //
                          const ExternalDomainsProvider& externalDomains) {
-    FileLine* const flp = netlistp->fileline();
+    // Build the OrderGraph
+    const std::unique_ptr<OrderGraph> graph = buildOrderGraph(netlistp, logic, trigToSen);
+    // Order it
+    orderOrderGraph(*graph, tag);
+    // Assign sensitivity domains to combinational logic
+    processDomains(netlistp, *graph, tag, externalDomains);
+    // Build the move graph
+    OrderMoveDomScope::clear();
+    const std::unique_ptr<OrderMoveGraph> moveGraphp = OrderMoveGraph::build(*graph, trigToSen);
+    if (dumpGraphLevel() >= 9) moveGraphp->dumpDotFilePrefixed(tag + "_ordermv");
+
+    // The ordered statements, if there are any
+    AstNodeStmt* stmtsp = nullptr;
+    if (!moveGraphp->empty()) {
+        if (parallel) {
+            stmtsp = createParallel(*graph, *moveGraphp, tag, slow);
+        } else {
+            stmtsp = createSerial(*moveGraphp, tag, slow);
+        }
+        // Should have consumed all vertices
+        UASSERT(moveGraphp->empty(), "Unconsumed vertices remain in OrderMoveGraph");
+    }
+    OrderMoveDomScope::clear();
+
+    // Dump data
+    if (dumpGraphLevel()) graph->dumpDotFilePrefixed(tag + "_orderg_done");
+
+    // Dispose of the remnants of the inputs
+    for (auto* const lbsp : logic) lbsp->deleteActives();
+
+    // If there is no resulting logic, then don't create an empty function
+    if (!stmtsp) return nullptr;
 
     // Create the result function
+    FileLine* const flp = netlistp->fileline();
     AstCFunc* const funcp = [&]() {
         AstScope* const scopeTopp = netlistp->topScopep()->scopep();
         AstCFunc* const resp = new AstCFunc{flp, "_eval_" + tag, scopeTopp, ""};
@@ -122,40 +154,13 @@ AstCFunc* V3Order::order(AstNetlist* netlistp,  //
         return resp;
     }();
 
+    // Assemble the body
     if (v3Global.opt.profExec()) {
-        const string name
-            = (v3Global.opt.hierChild() ? (v3Global.opt.topModule() + " ") : "") + "func " + tag;
-        funcp->addStmtsp(new AstCStmt{flp, "VL_EXEC_TRACE_ADD_RECORD(vlSymsp).sectionPush(\""
-                                               + name + "\");\n"});
+        funcp->addStmtsp(AstCStmt::profExecSectionPush(flp, "func " + tag));
     }
-
-    // Build the OrderGraph
-    const std::unique_ptr<OrderGraph> graph = buildOrderGraph(netlistp, logic, trigToSen);
-    // Order it
-    orderOrderGraph(*graph, tag);
-    // Assign sensitivity domains to combinational logic
-    processDomains(netlistp, *graph, tag, externalDomains);
-
-    if (parallel) {
-        // Construct the parallel ExecGraph
-        AstExecGraph* const execGraphp = createParallel(*graph, tag, trigToSen, slow);
-        // Add the ExecGraph to the result function.
-        funcp->addStmtsp(execGraphp);
-    } else {
-        // Construct the serial code
-        const std::vector<AstActive*> activeps = createSerial(*graph, tag, trigToSen, slow);
-        // Add the resulting Active blocks to the result function
-        for (AstNode* const nodep : activeps) funcp->addStmtsp(nodep);
-    }
-
-    // Dump data
-    if (dumpGraphLevel()) graph->dumpDotFilePrefixed(tag + "_orderg_done");
-
-    // Dispose of the remnants of the inputs
-    for (auto* const lbsp : logic) lbsp->deleteActives();
-
-    if (v3Global.opt.profExec()) {
-        funcp->addStmtsp(new AstCStmt{flp, "VL_EXEC_TRACE_ADD_RECORD(vlSymsp).sectionPop();\n"});
+    funcp->addStmtsp(stmtsp);
+    if (v3Global.opt.profExec()) {  //
+        funcp->addStmtsp(AstCStmt::profExecSectionPop(flp, "func " + tag));
     }
 
     // Done

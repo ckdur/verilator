@@ -1,10 +1,10 @@
 // -*- mode: C++; c-file-style: "cc-mode" -*-
 //*************************************************************************
 //
-// Copyright 2010-2011 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2010-2011 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -140,7 +140,7 @@ void _mem_check(const char* name, int size, int left, int right, int words) {
         TEST_CHECK_EQ(std::string{value.value.str}, binStr);
     }
 
-    // don't care for non verilator
+    // don't care for non-Verilator
     // (crashes on Icarus)
     if (TestSimulator::is_icarus()) {
         vpi_printf((PLI_BYTE8*)"Skipping property checks for simulator %s\n",

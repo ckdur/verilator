@@ -3,10 +3,10 @@
 //
 // Code available from: https://verilator.org
 //
-// Copyright 2012-2025 by Wilson Snyder. This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2012-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //=============================================================================
@@ -31,6 +31,10 @@
 #include <memory>
 #include <string>
 
+#ifdef __FreeBSD__
+#include <pthread_np.h>
+#endif
+
 //=============================================================================
 // Globals
 
@@ -52,12 +56,38 @@ VlMTaskVertex::VlMTaskVertex(uint32_t upstreamDepCount)
 
 VlWorkerThread::VlWorkerThread(VerilatedContext* contextp)
     : m_ready_size{0}
-    , m_cthread{startWorker, this, contextp} {}
+    , m_contextp{contextp} {
+#ifdef VL_USE_PTHREADS
+    // Init attributes
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    // Attempt to use the same stack size as the current (main) thread if possible
+    const size_t stacksize = pthread_get_stacksize_np(pthread_self());
+    if (!stacksize || pthread_attr_setstacksize(&attr, stacksize)) {
+        // Fall back on default atributes if failed to get/set stack size
+        pthread_attr_destroy(&attr);
+        pthread_attr_init(&attr);
+    }
+    // Create thread
+    if (pthread_create(&m_pthread, &attr, &VlWorkerThread::start, this)) {
+        std::cerr << "pthread_create failed" << std::endl;
+        std::abort();
+    }
+    // Destroy attributes
+    pthread_attr_destroy(&attr);
+#else
+    m_cthread = std::thread(start, this);
+#endif
+}
 
 VlWorkerThread::~VlWorkerThread() {
     shutdown();
     // The thread should exit; join it.
+#ifdef VL_USE_PTHREADS
+    pthread_join(m_pthread, nullptr);
+#else
     m_cthread.join();
+#endif
 }
 
 static void shutdownTask(void*, bool) {  // LCOV_EXCL_LINE
@@ -79,23 +109,24 @@ void VlWorkerThread::wait() {
     while (!flag.load()) std::this_thread::yield();
 }
 
-void VlWorkerThread::workerLoop() {
+void VlWorkerThread::main() {
+    // Initialize thread_locals
+    Verilated::threadContextp(m_contextp);
+    // One work item
     ExecRec work;
-
     // Wait for the first task without spinning, in case the thread is never actually used.
     dequeWork</* SpinWait: */ false>(&work);
-
-    while (true) {
-        if (VL_UNLIKELY(work.m_fnp == shutdownTask)) break;
+    // Loop until shutdown task is received
+    while (VL_UNLIKELY(work.m_fnp != shutdownTask)) {
         work.m_fnp(work.m_selfp, work.m_evenCycle);
         // Wait for next task with spinning.
         dequeWork</* SpinWait: */ true>(&work);
     }
 }
 
-void VlWorkerThread::startWorker(VlWorkerThread* workerp, VerilatedContext* contextp) {
-    Verilated::threadContextp(contextp);
-    workerp->workerLoop();
+void* VlWorkerThread::start(void* argp) {
+    reinterpret_cast<VlWorkerThread*>(argp)->main();
+    return nullptr;
 }
 
 //=============================================================================
@@ -106,7 +137,7 @@ VlThreadPool::VlThreadPool(VerilatedContext* contextp, unsigned nThreads) {
         m_workers.push_back(new VlWorkerThread{contextp});
         m_unassignedWorkers.push(i);
     }
-    m_numaStatus = numaAssign();
+    m_numaStatus = numaAssign(contextp);
 }
 
 VlThreadPool::~VlThreadPool() {
@@ -114,30 +145,24 @@ VlThreadPool::~VlThreadPool() {
     for (auto& i : m_workers) delete i;
 }
 
-bool VlThreadPool::isNumactlRunning() {
-    // We assume if current thread is CPU-masked, then under numactl, otherwise not.
-    // This shows that numactl is visible through the affinity mask
-#if defined(__linux) || defined(CPU_ZERO)  // Linux-like; assume we have pthreads etc
-    const unsigned num_cpus = std::thread::hardware_concurrency();
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    const int rc = pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-    if (rc != 0) return true;  // Error; assuming returning true is the least-damage option
-    for (unsigned c = 0; c < std::min(num_cpus, static_cast<unsigned>(CPU_SETSIZE)); ++c) {
-        if (!CPU_ISSET(c, &cpuset)) return true;
-    }
-#endif
-    return false;
-}
+std::string VlThreadPool::numaAssign(VerilatedContext* contextp) {
+#if defined(__linux) || defined(CPU_ZERO) || defined(VL_CPPCHECK)  // Linux-like pthreads
+    if (contextp && !contextp->useNumaAssign()) { return "NUMA assignment not requested"; }
+    const std::string numa_strategy = VlOs::getenvStr("VERILATOR_NUMA_STRATEGY", "default");
+    if (numa_strategy == "none") return "no NUMA assignment requested";
+    if (numa_strategy != "default" && numa_strategy != "")
+        return "%Warning: unknown VERILATOR_NUMA_STRATEGY value '" + numa_strategy + "'";
 
-std::string VlThreadPool::numaAssign() {
-#if defined(__linux) || defined(CPU_ZERO)  // Linux-like; assume we have pthreads etc
-    // If not under numactl, make a reasonable processor affinity selection
-    if (isNumactlRunning()) return "running under numactl";  // User presumably set affinity
+    // Get number of processor available to the current process
+    const unsigned num_proc = VlOs::getProcessAvailableParallelism();
+    if (!num_proc) return "Can't determine number of available threads";
+    // If fewer than hardware threads in the host, user presumably set affinity
+    if (num_proc < std::thread::hardware_concurrency()) return "processor affinity already set";
+
+    // Make a reasonable processor affinity selection
     const int num_threads = static_cast<int>(m_workers.size());
-    const int num_proc = static_cast<int>(std::thread::hardware_concurrency());
     if (num_threads < 2) return "too few threads";
-    if (num_threads > num_proc) return "too many threads";
+    if (static_cast<unsigned>(num_threads) > num_proc) return "too many threads";
 
     // Read CPU info.
     // Uncertain if any modern system has gaps in the processor id (Solaris
@@ -153,24 +178,25 @@ std::string VlThreadPool::numaAssign() {
     std::map<int, int> processor_core;
     std::multimap<int, int> core_processors;
     std::set<int> cores;
-    int processor = -1;
-    int core = -1;
-    while (!is.eof()) {
-        std::string line;
-        std::getline(is, line);
-        static std::string::size_type pos = line.find(":");
-        int number = -1;
-        if (pos != std::string::npos) number = atoi(line.c_str() + pos + 1);
-        if (line.compare(0, std::strlen("processor"), "processor") == 0) {
-            processor = number;
-            core = -1;
-        } else if (line.compare(0, std::strlen("core id"), "core id") == 0) {
-            core = number;
-            // std::cout << "p" << processor << " socket " << socket << " c" << core << std::endl;
-            cores.emplace(core);
-            processor_core[processor] = core;
-            core_processors.emplace(core, processor);
-            unassigned_processors.push_back(processor);
+    {
+        int processor = -1;
+        while (!is.eof()) {
+            std::string line;
+            std::getline(is, line);
+            const std::string::size_type pos = line.find(':');
+            int number = -1;
+            if (pos != std::string::npos) number = atoi(line.c_str() + pos + 1);
+            if (line.compare(0, std::strlen("processor"), "processor") == 0) {
+                processor = number;
+            } else if (line.compare(0, std::strlen("core id"), "core id") == 0) {
+                const int core = number;
+                // std::cout << "p" << processor << " socket " << socket << " c" << core <<
+                // std::endl;
+                cores.emplace(core);
+                processor_core[processor] = core;
+                core_processors.emplace(core, processor);
+                unassigned_processors.push_back(processor);
+            }
         }
     }
 

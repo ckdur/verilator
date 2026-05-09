@@ -1,23 +1,23 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under The Creative Commons Public Domain, for
-// any use, without warranty, 2021 by Wilson Snyder.
+// This file ONLY is placed under The Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2021 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 `timescale 1ns/1ns
 module t;
-   p p ();
+  p p ();
 
-   // Also check not-found modules
-   localparam NOT = 0;
-   if (NOT) begin
-      NotFound not_found(.*);
-   end
+  // Also check not-found modules
+  localparam NOT = 0;
+  if (NOT) begin
+    NotFound not_found(.*);
+  end
 
-   initial begin
-      $write("*-* All Finished *-*\n");
-      $finish;
-   end
+  initial begin
+    $write("*-* All Finished *-*\n");
+    $finish;
+  end
 
 endmodule
 
@@ -34,10 +34,10 @@ input in;
 reg out;
 
 table
-0       :   1;
-1       :   0;
-?       :   ?;
-x       :   x;
+0     :  1;
+1     :  0;
+?     :  ?;
+x     :  x;
 endtable
 endprimitive
 `endcelldefine

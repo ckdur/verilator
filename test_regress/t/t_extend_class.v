@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2003-2007 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2003-2007 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 // Although strange, Verilog defines are expanded inside the C blocks
@@ -43,18 +43,18 @@ inline void `systemc_class_name::my_inline_function() {}
 
 endclass
 
-module t (/*AUTOARG*/);
+module t;
 
-   int i;
+  int i;
 
-   initial begin
-      Cls c;
-      c = new;
-      i = $c(c, "->my_function()");
-      $c(c, "->my_imp_function();");
-      $c(c, "->my_inline_function();");
-      c = null;  // Causes destruction and All Finished
-      $finish;
-   end
+  initial begin
+    Cls c;
+    c = new;
+    i = $c(c, "->my_function()");
+    $c(c, "->my_imp_function();");
+    $c(c, "->my_inline_function();");
+    c = null;  // Causes destruction and All Finished
+    $finish;
+  end
 
 endmodule

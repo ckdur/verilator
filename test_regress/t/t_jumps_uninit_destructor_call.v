@@ -1,7 +1,7 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2023 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2023 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 class Foo;
   string arra[2];
@@ -26,14 +26,14 @@ class Foo;
     // without having it initialized first.
   endtask
   task automatic return_before_select(bit b, int idx);
-    if (b) return; // goto
+    if (b) return;  // goto
     // This will create two temporary strings used to select from `arrb` and assign to it.
     arrb[arra[idx]] = #10 "yah!";
     // jump here
   endtask
 endclass
 
-module t();
+module t;
   initial begin
     Foo foo;
     foo = new;

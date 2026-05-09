@@ -1,9 +1,10 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2022 by Antmicro Ltd.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2022 Antmicro Ltd
 // SPDX-License-Identifier: CC0-1.0
 
+// verilog_format: off
 `ifdef TEST_VERBOSE
  `define WRITE_VERBOSE(args) $write args
 `else
@@ -18,24 +19,25 @@
 //
 `define EXPR_TEST(name, test_edges, inputs, expr) \
 module t_``name inputs; \
-   logic[$bits(expr)-1:0] last = 0; \
-   always @(expr) begin \
-       if ($bits(expr) > 1) begin \
-           `WRITE_VERBOSE(("[%0t] %s [changed] %s=%0x, last=%0x\n", $time, `STRINGIFY(name), `STRINGIFY(expr), expr, last)); \
-       end \
-       if ($time > 0 && (expr) == last) $stop; \
-       last <= expr; \
-   end \
-   generate if (test_edges) begin \
-       always @(posedge expr) begin \
-           `WRITE_VERBOSE(("[%0t] %s [posedge] %s=%0x, last=%0x\n", $time, `STRINGIFY(name), `STRINGIFY(expr), expr, last)); \
-           if ($time > 0 && ({1'b0, ~(expr)}[0] || last[0])) $stop; \
-       end \
-       always @(negedge expr) begin \
-           `WRITE_VERBOSE(("[%0t] %s [negedge] %s=%0x, last=%0x\n", $time, `STRINGIFY(name), `STRINGIFY(expr), expr, last)); \
-           if ($time > 0 && ({1'b0, expr}[0] || ~last[0])) $stop; \
-       end \
-   end endgenerate \
+  logic[$bits(expr)-1:0] last = 0; \
+  always @(expr) begin \
+    if ($bits(expr) > 1) begin \
+      `WRITE_VERBOSE(("[%0t] %s [changed] %s=%0x, last=%0x\n", $time, `STRINGIFY(name), `STRINGIFY(expr), expr, last)); \
+    end \
+    if ($time > 0 && (expr) == last) $stop; \
+    last <= expr; \
+  end \
+  generate if (test_edges) begin \
+    always @(posedge expr) begin \
+      `WRITE_VERBOSE(("[%0t] %s [posedge] %s=%0x, last=%0x\n", $time, `STRINGIFY(name), `STRINGIFY(expr), expr, last)); \
+      if ($time > 0 && ({1'b0, ~(expr)}[0] || last[0])) $stop; \
+    end \
+    always @(negedge expr) begin \
+      `WRITE_VERBOSE(("[%0t] %s [negedge] %s=%0x, last=%0x\n", $time, `STRINGIFY(name), `STRINGIFY(expr), expr, last)); \
+      if ($time > 0 && ({1'b0, expr}[0] || ~last[0])) $stop; \
+    end \
+  end \
+  endgenerate \
 endmodule
 
 `EXPR_TEST(xor, 1, (input a, b), b^a)
@@ -50,10 +52,8 @@ endmodule
 `EXPR_TEST(queue, 0, (input int q[$]), q[0])
 `EXPR_TEST(queue_mul, 0, (input int q[$], int i), q[0]*i)
 
-`ifdef UNSUP
 function int id(int x); return x; endfunction
 `EXPR_TEST(func, 0, (input int cyc), id(cyc))
-`endif
 
 //========================================================================
 // Class tests (special case as V3Width doesn't always properly handle
@@ -62,25 +62,23 @@ function int id(int x); return x; endfunction
 `ifndef NO_CLASS
 `define CLASS_TEST(name, expr) \
 module t_``name(input int k); \
-   class Cls; \
-       int k; \
-       function int get_k(); return k; endfunction \
-   endclass \
-   Cls obj = new; \
-   assign obj.k = k; \
-   int last = 0; \
-   always @(expr) begin \
-       `WRITE_VERBOSE(("[%0t] %s [changed] %s=%0x, last=%0x\n", $time, `STRINGIFY(name), `STRINGIFY(expr), expr, last)); \
-       if ($time > 0 && expr == last) $stop; \
-       last <= expr; \
-   end \
+  class Cls; \
+    static int k; \
+    function int get_k(); return k; endfunction \
+  endclass \
+  Cls obj = new; \
+  assign obj.k = k; \
+  int last = 0; \
+  always @(expr) begin \
+    `WRITE_VERBOSE(("[%0t] %s [changed] %s=%0x, last=%0x\n", $time, `STRINGIFY(name), `STRINGIFY(expr), expr, last)); \
+    if ($time > 0 && expr == last) $stop; \
+    last <= expr; \
+  end \
 endmodule
 
 `CLASS_TEST(class, obj.k)
 
-`ifdef UNSUP
 `CLASS_TEST(method, obj.get_k())
-`endif
 `endif
 
 //========================================================================
@@ -88,87 +86,81 @@ endmodule
 //
 module t_cstmt;
    logic last = 0;
-   always @($c("vlSelf->clk")) begin
-       if ($time > 0 && logic'($c("vlSelf->clk")) == last) $stop;
-       last <= logic'($c("vlSelf->clk"));
+   always @($c("vlSymsp->TOP.clk")) begin
+       if ($time > 0 && logic'($c("vlSymsp->TOP.clk")) == last) $stop;
+       last <= logic'($c("vlSymsp->TOP.clk"));
    end
-   always @(posedge $c("vlSelf->clk")) begin
-       `WRITE_VERBOSE(("[%0t] cstmt [posedge] $c(\"vlSelf->clk\")=%0b, last=%b\n", $time, $c("vlSelf->clk"), last));
-       if ($time > 0 && (~logic'($c("vlSelf->clk")) || last)) $stop;
+   always @(posedge $c("vlSymsp->TOP.clk")) begin
+       `WRITE_VERBOSE(("[%0t] cstmt [posedge] $c(\"vlSymsp->TOP.clk\")=%0b, last=%b\n", $time, $c("vlSymsp->TOP.clk"), last));
+       if ($time > 0 && (~logic'($c("vlSymsp->TOP.clk")) || last)) $stop;
    end
-   always @(negedge $c("vlSelf->clk")) begin
-       `WRITE_VERBOSE(("[%0t] cstmt [negedge] $c(\"vlSelf->clk\")=%0b, last=%b\n", $time, $c("vlSelf->clk"), last));
-       if ($time > 0 && (logic'($c("vlSelf->clk")) || !last)) $stop;
+   always @(negedge $c("vlSymsp->TOP.clk")) begin
+       `WRITE_VERBOSE(("[%0t] cstmt [negedge] $c(\"vlSymsp->TOP.clk\")=%0b, last=%b\n", $time, $c("vlSymsp->TOP.clk"), last));
+       if ($time > 0 && (logic'($c("vlSymsp->TOP.clk")) || !last)) $stop;
    end
 endmodule
 
-module t(/*AUTOARG*/
-   // Inputs
-   clk
+module t(
+  input clk
    );
-   input clk;
 
-   logic a = 0, b = 0, c = 0;
-   t_xor u_xor(.*);
-   t_nand u_nand(.*);
-   t_concat1 u_concat1(.*);
+  logic a = 0, b = 0, c = 0;
+  t_xor u_xor(.*);
+  t_nand u_nand(.*);
+  t_concat1 u_concat1(.*);
 
-   logic[3:0] v = '0;
-   t_reduce u_reduce(.*);
-   t_concat2 u_concat2(.*);
+  logic[3:0] v = '0;
+  t_reduce u_reduce(.*);
+  t_concat2 u_concat2(.*);
 
-   int i = 0, j = 0;
-   t_add u_add(.*);
-   t_lt u_lt(.*);
+  int i = 0, j = 0;
+  t_add u_add(.*);
+  t_lt u_lt(.*);
 
-   int t[5] = {0, 1, 2, 3, 4};
-   t_array u_array(.*);
-   t_array_complex u_array_complex(.*);
+  int t[5] = {0, 1, 2, 3, 4};
+  t_array u_array(.*);
+  t_array_complex u_array_complex(.*);
 
-   int q[$];
-   t_queue u_queue(.*);
-   t_queue_mul u_queue_mul(.*);
+  int q[$];
+  t_queue u_queue(.*);
+  t_queue_mul u_queue_mul(.*);
 
-`ifdef UNSUP
-   t_func u_func(.*);
-`endif
+  t_func u_func(.*);
 
-   int k;
-   assign k = i + j;
-   `ifndef NO_CLASS
-   t_class u_class(.*);
-`ifdef UNSUP
-   t_method u_method(.*);
-`endif
-   `endif
+  int k;
+  assign k = i + j;
+  `ifndef NO_CLASS
+  t_class u_class(.*);
+  t_method u_method(.*);
+  `endif
 
-   t_cstmt u_cstmt();
+  t_cstmt u_cstmt();
 
-   int cyc = 0;
+  int cyc = 0;
 
-   always @(posedge clk) begin
-      cyc <= cyc + 1;
-      // a, b, c
-      a <= ~a;
-      if (cyc % 2 == 0) b <= ~b;
-      else c <= ~c;
-      // v
-      if (cyc % 3 == 0) v[0] <= 1;
-      else v <= v << 1;
-      // i, j
-      i <= i + 2;
-      if (cyc % 2 == 0) j <= j + 4;
-      // t
-      t[cyc % 5] <= t[cyc % 5] + cyc;
-      // q
-      q.push_front(cyc);
-      `WRITE_VERBOSE(("[%0t] values: clk=%b, cyc=%0d, a=%b, b=%b, v=%b, i=%0x, j=%0x, t=[%0x, %0x, %0x, %0x, %0x], obj.k=%0x\n",
-                      $time, clk, cyc, a, b, v, i, j, t[0], t[1], t[2], t[3], t[4], k));
-      `WRITE_VERBOSE(("              q=%p\n", q));
-      if (cyc == 20) begin
-          $write("*-* All Finished *-*\n");
-          $finish;
-      end
-   end
+  always @(posedge clk) begin
+    cyc <= cyc + 1;
+    // a, b, c
+    a <= ~a;
+    if (cyc % 2 == 0) b <= ~b;
+    else c <= ~c;
+    // v
+    if (cyc % 3 == 0) v[0] <= 1;
+    else v <= v << 1;
+    // i, j
+    i <= i + 2;
+    if (cyc % 2 == 0) j <= j + 4;
+    // t
+    t[cyc % 5] <= t[cyc % 5] + cyc;
+    // q
+    q.push_front(cyc);
+    `WRITE_VERBOSE(("[%0t] values: clk=%b, cyc=%0d, a=%b, b=%b, v=%b, i=%0x, j=%0x, t=[%0x, %0x, %0x, %0x, %0x], obj.k=%0x\n",
+      $time, clk, cyc, a, b, v, i, j, t[0], t[1], t[2], t[3], t[4], k));
+    `WRITE_VERBOSE(("          q=%p\n", q));
+    if (cyc == 20) begin
+      $write("*-* All Finished *-*\n");
+      $finish;
+    end
+  end
 
 endmodule

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -39,6 +39,7 @@ class LinkLValueVisitor final : public VNVisitor {
     bool m_setStrengthSpecified = false;  // Set that var has assignment with strength specified.
     bool m_inFunc = false;  // Set if inside AstNodeFTask
     bool m_inInitialStatic = false;  // Set if inside AstInitialStatic
+    bool m_inInitialStaticStmt = false;  // Set if inside AstInitialStaticStmt
     VAccess m_setRefLvalue;  // Set VarRefs to lvalues for pin assignments
 
     // VISITORS
@@ -63,11 +64,18 @@ class LinkLValueVisitor final : public VNVisitor {
             }
             if (const AstClockingItem* const itemp
                 = VN_CAST(nodep->varp()->backp(), ClockingItem)) {
-                UINFO(5, "ClkOut " << nodep << endl);
+                UINFO(5, "ClkOut " << nodep);
                 if (itemp->outputp()) nodep->varp(itemp->outputp()->varp());
             }
             if (m_setForcedByCode) {
                 nodep->varp()->setForcedByCode();
+                // If a public signal is being forced in SystemVerilog and VPI
+                // is enabled, mark it as forceable to ensure that the VPI
+                // functions read the forced value correctly
+                if (v3Global.opt.vpi()
+                    && (nodep->varp()->isSigPublic() || nodep->varp()->isSigModPublic())) {
+                    nodep->varp()->setForceable();
+                }
             } else if (!nodep->varp()->isFuncLocal() && nodep->varp()->isReadOnly()) {
                 // This is allowed with IEEE 1800-2009 module input with default value.
                 // the checking now happens in V3Width::visit(AstNodeVarRef*)
@@ -98,8 +106,8 @@ class LinkLValueVisitor final : public VNVisitor {
         VL_RESTORER(m_setStrengthSpecified);
         {
             m_setRefLvalue = VAccess::WRITE;
-            m_setContinuously = VN_IS(nodep, AssignW) || VN_IS(nodep, AssignAlias);
-            if (AstAssignW* assignwp = VN_CAST(nodep, AssignW)) {
+            m_setContinuously = VN_IS(nodep, AssignW);
+            if (const AstAssignW* const assignwp = VN_CAST(nodep, AssignW)) {
                 if (assignwp->strengthSpecp()) m_setStrengthSpecified = true;
             }
             {
@@ -113,7 +121,7 @@ class LinkLValueVisitor final : public VNVisitor {
             iterateAndNextNull(nodep->rhsp());
         }
 
-        if (m_inInitialStatic && m_inFunc) {
+        if ((m_inInitialStatic || m_inInitialStaticStmt) && m_inFunc) {
             const bool rhsHasIO = nodep->rhsp()->exists([](const AstNodeVarRef* const refp) {
                 // Exclude module I/O referenced from a function/task.
                 return refp->varp() && refp->varp()->isIO()
@@ -127,7 +135,7 @@ class LinkLValueVisitor final : public VNVisitor {
             } else {
                 const bool rhsHasAutomatic
                     = nodep->rhsp()->exists([](const AstNodeVarRef* const refp) {
-                          return refp->varp() && refp->varp()->lifetime() == VLifetime::AUTOMATIC;
+                          return refp->varp() && refp->varp()->lifetime().isAutomatic();
                       });
                 if (rhsHasAutomatic) {
                     nodep->rhsp()->v3error("Static variable initializer\n"
@@ -137,9 +145,19 @@ class LinkLValueVisitor final : public VNVisitor {
             }
         }
     }
+    void visit(AstAlias* nodep) override {
+        VL_RESTORER(m_setRefLvalue);
+        m_setRefLvalue = VAccess::READWRITE;
+        iterateChildren(nodep);
+    }
     void visit(AstInitialStatic* nodep) override {
         VL_RESTORER(m_inInitialStatic);
         m_inInitialStatic = true;
+        iterateChildren(nodep);
+    }
+    void visit(AstInitialStaticStmt* nodep) override {
+        VL_RESTORER(m_inInitialStaticStmt);
+        m_inInitialStaticStmt = true;
         iterateChildren(nodep);
     }
     void visit(AstRelease* nodep) override {
@@ -149,6 +167,13 @@ class LinkLValueVisitor final : public VNVisitor {
         m_setRefLvalue = VAccess::WRITE;
         m_setContinuously = false;
         m_setForcedByCode = true;
+        iterateAndNextNull(nodep->lhsp());
+    }
+    void visit(AstDeassign* nodep) override {
+        VL_RESTORER(m_setRefLvalue);
+        VL_RESTORER(m_setContinuously);
+        m_setRefLvalue = VAccess::WRITE;
+        m_setContinuously = false;
         iterateAndNextNull(nodep->lhsp());
     }
     void visit(AstFireEvent* nodep) override {
@@ -250,18 +275,16 @@ class LinkLValueVisitor final : public VNVisitor {
         iterateAndNextNull(nodep->rhsp());
         iterateAndNextNull(nodep->thsp());
     }
-    void prepost_visit(AstNodeTriop* nodep) {
+    // cppcheck-suppress constParameterPointer
+    void prepost_visit(AstNodeUniop* nodep) {
         VL_RESTORER(m_setRefLvalue);
-        m_setRefLvalue = VAccess::NOCHANGE;
-        iterateAndNextNull(nodep->lhsp());
-        iterateAndNextNull(nodep->rhsp());
         m_setRefLvalue = VAccess::WRITE;
-        iterateAndNextNull(nodep->thsp());
+        iterateAndNextNull(nodep->lhsp());
     }
-    void visit(AstPreAdd* nodep) override { prepost_visit(nodep); }
-    void visit(AstPostAdd* nodep) override { prepost_visit(nodep); }
-    void visit(AstPreSub* nodep) override { prepost_visit(nodep); }
-    void visit(AstPostSub* nodep) override { prepost_visit(nodep); }
+    void visit(AstPreInc* nodep) override { prepost_visit(nodep); }
+    void visit(AstPostInc* nodep) override { prepost_visit(nodep); }
+    void visit(AstPreDec* nodep) override { prepost_visit(nodep); }
+    void visit(AstPostDec* nodep) override { prepost_visit(nodep); }
 
     // Nodes that change LValue state
     void visit(AstSel* nodep) override {
@@ -270,7 +293,6 @@ class LinkLValueVisitor final : public VNVisitor {
         // Only set lvalues on the from
         m_setRefLvalue = VAccess::NOCHANGE;
         iterateAndNextNull(nodep->lsbp());
-        iterateAndNextNull(nodep->widthp());
     }
     void visit(AstNodeSel* nodep) override {
         VL_RESTORER(m_setRefLvalue);
@@ -300,7 +322,7 @@ class LinkLValueVisitor final : public VNVisitor {
             if (nodep->varp() && nodep->access().isWriteOrRW()) {
                 if (const AstClockingItem* const itemp
                     = VN_CAST(nodep->varp()->backp(), ClockingItem)) {
-                    UINFO(5, "ClkOut " << nodep << endl);
+                    UINFO(5, "ClkOut " << nodep);
                     if (itemp->outputp()) nodep->varp(itemp->outputp()->varp());
                 }
             }
@@ -331,6 +353,7 @@ class LinkLValueVisitor final : public VNVisitor {
                 iterate(pinp);
             }
         }
+        if (nodep->withp()) iterate(nodep->withp());
     }
     void visit(AstConstraint* nodep) override {
         VL_RESTORER(m_setIfRand);
@@ -358,13 +381,13 @@ public:
 // Link class functions
 
 void V3LinkLValue::linkLValue(AstNetlist* nodep) {
-    UINFO(4, __FUNCTION__ << ": " << endl);
+    UINFO(4, __FUNCTION__ << ": ");
     { LinkLValueVisitor{nodep, VAccess::NOCHANGE}; }  // Destruct before checking
     V3Global::dumpCheckGlobalTree("linklvalue", 0, dumpTreeEitherLevel() >= 6);
 }
-void V3LinkLValue::linkLValueSet(AstNode* nodep) {
+void V3LinkLValue::linkLValueSet(AstNode* const nodep, const bool isLValue) {
     // Called by later link functions when it is known a node needs
     // to be converted to a lvalue.
-    UINFO(9, __FUNCTION__ << ": " << endl);
-    { LinkLValueVisitor{nodep, VAccess::WRITE}; }
+    UINFO(9, __FUNCTION__ << ": ");
+    { LinkLValueVisitor{nodep, isLValue ? VAccess::WRITE : VAccess::READ}; }
 }

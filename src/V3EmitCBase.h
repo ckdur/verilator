@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -45,9 +45,9 @@ public:
 };
 
 //######################################################################
-// Base Visitor class -- holds output file pointer
+// EmitC-related utility functions
 
-class EmitCBase VL_NOT_FINAL {
+class EmitCUtil final {
 public:
     static string voidSelfAssign(const AstNodeModule* modp) {
         const string className = prefixNameProtect(modp);
@@ -81,41 +81,93 @@ public:
     }
 };
 
-class EmitCBaseVisitorConst VL_NOT_FINAL : public VNVisitorConst, public EmitCBase {
-public:
+//######################################################################
+// Base Visitor class -- holds output file pointer
+
+class EmitCBaseVisitorConst VL_NOT_FINAL : public VNVisitorConst {
     // STATE
-    V3OutCFile* m_ofp = nullptr;
-    AstCFile* m_outFileNodep = nullptr;
-    int m_splitSize = 0;  // # of cfunc nodes placed into output file
-    bool m_trackText = false;  // Always track AstText nodes
+    V3OutCFile* m_ofp = nullptr;  // File handle to emit to
+    AstCFile* m_cfilep = nullptr;  // Current AstCFile being emitted
+    std::vector<AstCFile*> m_newCfileps;  // AstCFiles created
+    size_t m_splitSize = 0;  // Complexity of this file
+    const size_t m_splitLimit = v3Global.opt.outputSplit()
+                                    ? static_cast<size_t>(v3Global.opt.outputSplit())
+                                    : std::numeric_limits<size_t>::max();
+
     // METHODS
+
+    // Create new AstCFile and open it for writing
+    void openNewOutputFile(const std::string& baseName, bool slow, bool support, bool source,
+                           const char* const descriptionp) {
+        std::string fileName = v3Global.opt.makeDir() + "/" + baseName;
+        if (source) {
+            if (slow) fileName += "__Slow";
+            fileName += ".cpp";
+        } else {
+            fileName += ".h";
+        }
+        AstCFile* const cfilep = new AstCFile{v3Global.rootp()->fileline(), fileName};
+        cfilep->slow(slow);
+        cfilep->source(source);
+        cfilep->support(support);
+        m_newCfileps.emplace_back(cfilep);
+        openOutputFile(cfilep, descriptionp);
+    }
+
+public:
+    // Create new source AstCFile and open it for writing
+    void openNewOutputSourceFile(const std::string& baseName, bool slow, bool support,
+                                 const char* descriptionp) {
+        V3Stats::addStatSum(V3Stats::STAT_CPP_FILES, 1);
+        openNewOutputFile(baseName, slow, support, true, descriptionp);
+    }
+
+    // Create new header AstCFile and open it for writing
+    void openNewOutputHeaderFile(const std::string& baseName, const char* descriptionp) {
+        openNewOutputFile(baseName, false, false, false, descriptionp);
+    }
+
+    // Open exisitng AstCFile for writing
+    void openOutputFile(AstCFile* cfilep, const char* descriptionp) {
+        UASSERT(!m_ofp, "Output file is already open");
+        m_cfilep = cfilep;
+        m_splitSize = 0;
+        if (v3Global.opt.lintOnly()) {
+            // Unfortunately we have some lint checks in EmitCImp, so we can't
+            // just skip processing. TODO: Move them to an earlier stage.
+            m_ofp = new V3OutCFile{VL_DEV_NULL};
+            return;
+        }
+        m_ofp = new V3OutCFile{cfilep->name()};
+        putsHeader();
+        // Emit description
+        m_ofp->putsNoTracking("// DESCR" /* keep this comment */ "IPTION: Verilator output: ");
+        m_ofp->putsNoTracking(descriptionp);
+        m_ofp->putsNoTracking("\n");
+    }
+
+    // Close current output file. Sets ofp() and outFileNodep() to nullptr.
+    void closeOutputFile() {
+        UASSERT(m_ofp, "No currently open output file");
+        VL_DO_CLEAR(delete m_ofp, m_ofp = nullptr);
+        m_cfilep->complexityScore(m_splitSize);
+        m_cfilep = nullptr;
+    }
+
+    std::vector<AstCFile*> getAndClearCfileps() {
+        UASSERT(!m_ofp, "Output file is open");
+        return std::move(m_newCfileps);
+    }
+
+    void splitSizeInc(size_t count) { m_splitSize += count; }
+    void splitSizeInc(const AstNode* nodep) {
+        splitSizeInc(static_cast<size_t>(nodep->nodeCount()));
+    }
+    bool splitNeeded(size_t splitLimit) const { return m_splitSize >= splitLimit; }
+    bool splitNeeded() const { return splitNeeded(m_splitLimit); }
 
     // Returns pointer to current output file object.
     V3OutCFile* ofp() const VL_MT_SAFE { return m_ofp; }
-    // Returns pointer to the AST node that represents the output file (`ofp()`)
-    AstCFile* outFileNodep() const VL_MT_SAFE { return m_outFileNodep; }
-
-    // Sets ofp() and outFileNodep() to the given pointers, without closing a file these pointers
-    // currently point to.
-    void setOutputFile(V3OutCFile* ofp, AstCFile* nodep) {
-        m_ofp = ofp;
-        m_outFileNodep = nodep;
-    }
-
-    // Sets ofp() and outFileNodep() to null, without closing a file these pointers currently point
-    // to. NOTE: Dummy nullptr argument is taken to make function calls more explicit.
-    void setOutputFile(std::nullptr_t nullp) {
-        UASSERT(nullp == nullptr, "Expected nullptr as the argument");
-        m_ofp = nullp;
-        m_outFileNodep = nullp;
-    }
-
-    // Closes current output file. Sets ofp() and outFileNodep() to nullptr.
-    void closeOutputFile() {
-        VL_DO_CLEAR(delete m_ofp, m_ofp = nullptr);
-        m_outFileNodep->complexityScore(m_splitSize);
-        m_outFileNodep = nullptr;
-    }
 
     void puts(const string& str) { ofp()->puts(str); }
     void putns(const AstNode* nodep, const string& str) { ofp()->putns(nodep, str); }
@@ -129,46 +181,41 @@ public:
     void ensureNewLine() { ofp()->ensureNewLine(); }
     bool optSystemC() { return v3Global.opt.systemC(); }
     static string protect(const string& name) VL_MT_SAFE { return VIdProtect::protect(name); }
-    static string protectIf(const string& name, bool doIt) {
-        return VIdProtect::protectIf(name, doIt);
-    }
-    static string protectWordsIf(const string& name, bool doIt) {
-        return VIdProtect::protectWordsIf(name, doIt);
-    }
-    static string ifNoProtect(const string& in) VL_MT_SAFE {
-        return v3Global.opt.protectIds() ? "" : in;
-    }
     static string funcNameProtect(const AstCFunc* nodep, const AstNodeModule* modp = nullptr);
-    static AstCFile* newCFile(const string& filename, bool slow, bool source);
-    static AstCFile* createCFile(const string& filename, bool slow, bool source) VL_MT_SAFE;
     string cFuncArgs(const AstCFunc* nodep);
+    void emitCDefaultConstructor(const AstNodeModule* modp);
     void emitCFuncHeader(const AstCFunc* funcp, const AstNodeModule* modp, bool withScope);
     void emitCFuncDecl(const AstCFunc* funcp, const AstNodeModule* modp, bool cLinkage = false);
     void emitVarDecl(const AstVar* nodep, bool asRef = false);
     void emitVarAccessors(const AstVar* nodep);
     template <typename T_Callable>
     static void forModCUse(const AstNodeModule* modp, VUseType useType, T_Callable action) {
-        for (AstNode* itemp = modp->stmtsp(); itemp; itemp = itemp->nextp()) {
-            if (AstCUse* const usep = VN_CAST(itemp, CUse)) {
+        for (const AstNode* itemp = modp->stmtsp(); itemp; itemp = itemp->nextp()) {
+            if (const AstCUse* const usep = VN_CAST(itemp, CUse)) {
                 if (usep->useType().containsAny(useType)) {
                     if (usep->useType().containsAny(VUseType::INT_INCLUDE)) {
-                        action("#include \"" + prefixNameProtect(usep) + ".h\"\n");
+                        action("#include \"" + EmitCUtil::prefixNameProtect(usep) + ".h\"\n");
                         continue;  // Forward declaration is not necessary
                     }
                     if (usep->useType().containsAny(VUseType::INT_FWD_CLASS)) {
-                        action("class " + prefixNameProtect(usep) + ";\n");
+                        action("class " + EmitCUtil::prefixNameProtect(usep) + ";\n");
                     }
                 }
             }
         }
     }
     void emitModCUse(const AstNodeModule* modp, VUseType useType);
-    void emitTextSection(const AstNodeModule* modp, VNType type);
-    static std::pair<string, FileLine*> textSection(const AstNodeModule* modp, VNType type);
+    void emitSystemCSection(const AstNodeModule* modp, VSystemCSectionType type);
+    static std::pair<string, FileLine*> scSection(const AstNodeModule* modp,
+                                                  VSystemCSectionType type);
 
     // CONSTRUCTORS
     EmitCBaseVisitorConst() = default;
-    ~EmitCBaseVisitorConst() override = default;
+    ~EmitCBaseVisitorConst() override {
+        UASSERT(!m_ofp, "Did not close output file");
+        // Add files cerated to the netlist (unless retrieved before destruction)
+        for (AstCFile* const cfilep : m_newCfileps) v3Global.rootp()->addFilesp(cfilep);
+    }
 };
 
 #endif  // guard

@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2003-2025 by Wilson Snyder. This program is free software; you
-// can redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -37,6 +37,7 @@ class V3LinkLevel final {
 public:
     static void modSortByLevel() VL_MT_DISABLED;
     static void wrapTop(AstNetlist* rootp) VL_MT_DISABLED;
+    static void nonWrapTop(AstNetlist* rootp) VL_MT_DISABLED;
 };
 
 #endif  // Guard

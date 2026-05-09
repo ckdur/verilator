@@ -1,4 +1,4 @@
-.. Copyright 2003-2025 by Wilson Snyder.
+.. SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 .. SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 **********
@@ -8,43 +8,42 @@ Verilating
 Verilator may be used in five major ways:
 
 * With the :vlopt:`--binary` option, Verilator will translate the design
-  into an executable, via generating C++ and compiling it.  See
+  into an executable, via generating C++ and compiling it. See
   :ref:`Binary, C++ and SystemC Generation`.
 
 * With the :vlopt:`--cc` or :vlopt:`--sc` options, Verilator will translate
-  the design into C++ or SystemC code, respectively.  See :ref:`Binary, C++
+  the design into C++ or SystemC code, respectively. See :ref:`Binary, C++
   and SystemC Generation`.
 
 * With the :vlopt:`--lint-only` option, Verilator will lint the design to
   check for warnings but will not typically create any output files.
 
-* With the :vlopt:`--xml-only` option, Verilator will create XML output
-  that may be used to feed into other user-designed tools.  See
-  :file:`docs/xml.rst` in the distribution.
+* With the :vlopt:`--json-only` option, Verilator will create JSON output
+  that may be used to feed into other user-designed tools.
 
 * With the :vlopt:`-E` option, Verilator will preprocess the code according
-  to IEEE preprocessing rules and write the output to standard out. This
-  is useful to feed other tools and to debug how "\`define" statements are
+  to IEEE preprocessing rules and write the output to standard out. This is
+  useful to feed other tools and to debug how "\`define" statements are
   expanded.
 
 
-.. _Binary, C++ and SystemC Generation:
+.. _binary, c++ and systemc generation:
 
 Binary, C++ and SystemC Generation
 ==================================
 
 Verilator will translate a SystemVerilog design into C++ with the
-:vlopt:`--cc` option, or into SystemC with the :vlopt:`--sc` option.  It
+:vlopt:`--cc` option, or into SystemC with the :vlopt:`--sc` option. It
 will translate into C++ and compile it into an executable binary with the
 :vlopt:`--binary` option.
 
 When using these options:
 
-#. Verilator reads the input Verilog code and determines all "top modules", that
-   is, modules or programs that are not used as instances under other cells.
-   If :vlopt:`--top-module` is used, then that determines the top module, and
-   all other top modules are removed; otherwise a :vlopt:`MULTITOP` warning
-   is given.
+#. Verilator reads the input Verilog code and determines all "top modules",
+   that is, modules or programs that are not used as instances under other
+   cells. If :vlopt:`--top-module` is used, then that determines the top
+   module, and all other top modules are removed; otherwise a
+   :vlopt:`MULTITOP` warning is given.
 
 #. Verilator writes the C++/SystemC code to output files into the
    :vlopt:`--Mdir` option-specified directory, or defaults to "obj_dir".
@@ -60,25 +59,61 @@ When using these options:
    makefiles to generate an archive (.a) containing the objects.
 
 #. If :vlopt:`--binary` or :vlopt:`--build` is used, it calls :ref:`GNU
-   Make` or :ref:`CMake` to build the model.
+   Make` to build the model.
 
 Once a model is built, the next step is typically for the user to run it,
 see :ref:`Simulating`.
 
 
-.. _Hierarchical Verilation:
+.. _finding and binding modules:
+
+Finding and Binding Modules
+===========================
+
+Verilator provides several mechanisms to find the source code containing a
+module, primitive, interface, or program ("module" in this section) and
+bind them to an instantiation. These capabilities are similar to the
+"Precompiling in a single-pass" use model described in IEEE 1800-2023
+33.5.1.
+
+Verilator first reads all files provided on the command line and
+:vlopt:`-f` files, and parses all modules within. Each module is assigned
+to the most recent library specified with :vlopt:`-work`, thus `-work liba
+a.v -work libb b.v` will assign modules in `a.v` to `liba` and modules in
+`b.v` to `libb`. In the absence of a `-work` mapping, each module is
+optionally assigned to a library based on mappings provided by
+:vlopt:`-libmap`.
+
+If a module is not defined from a file on the command-line, Verilator
+attempts to find a filename constructed from the module name using
+:vlopt:`-y` and `+libext`.
+
+Binding begins with the :vlopt:`--top` module, if provided. If not provided
+Verilator attempts to figure out the top module itself, and if multiple
+tops result a :option:`MULTITOP` warning is issued which may be suppressed
+(see details in :option:`MULTITOP`).
+
+Verilator will attempt to bind lower unresolved instances based first on
+IEEE `config` specifications, second based on using the same library name
+as the parent's instantiation library, and finally search globally across
+all libraries in the order modules were declared. This allows otherwise
+conflicting duplicate module names between libraries to coexist uniquely
+within each library name.
+
+
+.. _hierarchical verilation:
 
 Hierarchical Verilation
 =======================
 
 Large designs may take long (e.g., 10+ minutes) and huge memory (e.g., 100+
-GB) to Verilate.  In hierarchical mode, the user manually selects some
-large lower-level hierarchy blocks to separate from the larger design. For
+GB) to Verilate. In hierarchical mode, the user manually selects some large
+lower-level hierarchy blocks to separate from the larger design. For
 example, a core may be the hierarchy block separated out of a multi-core
 SoC design.
 
-Verilator is run in hierarchical mode on the whole SoC.  Verilator will
-make two models, one for the CPU hierarchy block and one for the SoC.  The
+Verilator is run in hierarchical mode on the whole SoC. Verilator will make
+two models, one for the CPU hierarchy block and one for the SoC. The
 Verilated code for the SoC will automatically call the CPU Verilated model.
 
 The current hierarchical Verilation is based on :vlopt:`--lib-create`. Each
@@ -94,7 +129,7 @@ There are two ways to mark a module:
 
 * Write :option:`/*verilator&32;hier_block*/` metacomment in HDL code.
 
-* Add a :option:`hier_block` line in the :ref:`Configuration Files`.
+* Add a :option:`hier_block` line in the :ref:`Verilator Control Files`.
 
 Then pass the :vlopt:`--hierarchical` option to Verilator.
 
@@ -102,7 +137,7 @@ The compilation is the same as when not using hierarchical mode.
 
 .. code-block:: bash
 
-    make -C obj_dir -f Vtop_module_name.mk
+   make -C obj_dir -f Vtop_module_name.mk
 
 
 Limitations
@@ -110,10 +145,11 @@ Limitations
 
 Hierarchy blocks have some limitations, including:
 
-* The hierarchy block cannot be accessed using dot (.) from the upper
-  module(s) or other hierarchy blocks.
-
-* Signals in the block cannot be traced.
+* Internals of the hierarchy block cannot be accessed using dot (.) from
+  the upper module(s) or other hierarchy blocks, except that ports of a
+  hierarchy block instance can be accessed from the directly enclosing
+  nested hierarchy block, or from the top level non-hierarchical portions
+  of the design if not a nested hierarchy block.
 
 * Modport cannot be used at the hierarchical block boundary.
 
@@ -131,20 +167,20 @@ But, the following usage is supported:
   hierarchy blocks.
 
 * Parameterized hierarchy block. Parameters of a hierarchy block can be
-  overridden using :code:`#(.param_name(value))` construct.
+  overridden using ``#(.param_name(value))`` construct.
 
 
-.. _Overlapping Verilation and Compilation:
+.. _overlapping verilation and compilation:
 
 Overlapping Verilation and Compilation
 --------------------------------------
 
 Verilator needs to run 2 + *N* times in hierarchical Verilation, where *N*
 is the number of hierarchy blocks. One of the two is for the top module,
-which refers to the wrappers of all other hierarchy blocks.  The second of the
-two is the initial run that searches modules marked with
+which refers to the wrappers of all other hierarchy blocks. The second of
+the two is the initial run that searches modules marked with
 :option:`/*verilator&32;hier_block*/` metacomment and creates a plan and
-write in :file:`{prefix}_hier.mk`.  This initial run internally invokes
+write in :file:`{prefix}_hier.mk`. This initial run internally invokes
 other *N* + 1 runs, so you don't have to care about these *N* + 1 times of
 run. The additional *N* is the Verilator run for each hierarchical block.
 
@@ -159,25 +195,25 @@ hierarchy blocks run simultaneously.
 Cross Compilation
 =================
 
-Verilator supports cross-compiling Verilated code.  This is generally used
-to run Verilator on a Linux system and produce C++ code that is then compiled
-on Windows.
+Verilator supports cross-compiling Verilated code. This is generally used
+to run Verilator on a Linux system and produce C++ code that is then
+compiled on Windows.
 
-Cross-compilation involves up to three different OSes.  The build system is
+Cross-compilation involves up to three different OSes. The build system is
 where you configure and compile Verilator, the host system is where you run
 Verilator, and the target system is where you compile the Verilated code
 and run the simulation.
 
-Verilator requires the build and host system types to be the
-same, though the target system type may be different.  To support this,
-:command:`./configure` and make Verilator on the build system.  Then, run
-Verilator on the host system.  Finally, the output of Verilator may be
+Verilator requires the build and host system types to be the same, though
+the target system type may be different. To support this,
+:command:`./configure` and make Verilator on the build system. Then, run
+Verilator on the host system. Finally, the output of Verilator may be
 compiled on the different target system.
 
 To support this, none of the files that Verilator produces will reference
 any configure-generated build-system-specific files, such as
 :file:`config.h` (which is renamed in Verilator to :file:`config_package.h`
-to reduce confusion.)  The disadvantage of this approach is that
+to reduce confusion.) The disadvantage of this approach is that
 :file:`include/verilatedos.h` must self-detect the requirements of the
 target system, rather than using configure.
 
@@ -186,7 +222,7 @@ Makefiles produced by Verilator presume the target system is the same type
 as the build system.
 
 
-.. _Multithreading:
+.. _multithreading:
 
 Multithreading
 ==============
@@ -209,7 +245,7 @@ however, you can expect performance to be far worse than it would be with
 the proper ratio of threads and CPU cores.
 
 The thread used for constructing a model must be the same thread that calls
-:code:`eval()` into the model; this is called the "eval thread". The thread
+``eval()`` into the model; this is called the "eval thread". The thread
 used to perform certain global operations, such as saving and tracing, must
 be done by a "main thread". In most cases, the eval thread and main thread
 are the same thread (i.e. the user's top C++ testbench runs on a single
@@ -223,24 +259,8 @@ time of DPI imports.
 
 When using :vlopt:`--trace-vcd` to perform VCD tracing, the VCD trace
 construction is parallelized using the same number of threads as specified
-with :vlopt:`--threads`, and is executed on the same thread pool as the model.
-
-The :vlopt:`--trace-threads` options can be used with :vlopt:`--trace-fst`
-to offload FST tracing using multiple threads. If :vlopt:`--trace-threads` is
-given without :vlopt:`--threads`, then :vlopt:`--trace-threads` will imply
-:vlopt:`--threads 1 <--threads>`, i.e., the support libraries will be
-thread safe.
-
-With :vlopt:`--trace-threads 0 <--trace-threads>`, trace dumps are produced
-on the main thread. This again gives the highest single-thread performance.
-
-With :vlopt:`--trace-threads {N} <--trace-threads>`, where N is at least 1,
-up to N additional threads will be created and managed by the trace files
-(e.g., VerilatedFstC), to offload construction of the trace dump. The main
-thread will be released to proceed with execution as soon as possible, though
-some main thread blocking is still necessary while capturing the
-trace. FST tracing can utilize up to 2 offload threads, so there is no use
-of setting :vlopt:`--trace-threads` higher than 2 at the moment.
+with :vlopt:`--threads`, and is executed on the same thread pool as the
+model.
 
 When running a multithreaded model, the default Linux task scheduler often
 works against the model by assuming short-lived threads and thus it often
@@ -248,38 +268,53 @@ schedules threads using multiple hyperthreads within the same physical
 core. If there is no affinity already set, on Linux only, Verilator
 attempts to set thread-to-processor affinity in a reasonable way.
 
-For best performance, use the :command:`numactl` program to (when the
-threading count fits) select unique physical cores on the same socket. The
-same applies for :vlopt:`--trace-threads` as well.
+Some newer Linux kernels handle thread assignment well. If running
+Verilator on such a system, automatic thread affinity may not be beneficial
+and may even reduce performance. In this case, environment variable
+:vlopt:`VERILATOR_NUMA_STRATEGY` may be set to ``none`` to disable
+automatic thread affinity. For more information, refer to
+:ref:`Environment`.
 
-As an example, if a model was Verilated with
-:vlopt:`--threads 4 <--threads>`, we consult:
+For best performance, use the :command:`numactl` program to (when the
+threading count fits) select unique physical cores on the same socket.
+
+As an example, if a model was Verilated with :vlopt:`--threads 4
+<--threads>`, we consult:
 
 .. code-block:: bash
 
-    egrep 'processor|physical id|core id' /proc/cpuinfo
+   egrep 'processor|physical id|core id' /proc/cpuinfo
 
 To select cores 0, 1, 2, and 3 that are all located on the same socket (0)
-but have different physical cores.  (Also useful is
-:command:`numactl --hardware`, or :command:`lscpu`, but those don't show
-hyperthreading cores.)  Then we execute:
+but have different physical cores. (Also useful is :command:`numactl
+--hardware`, or :command:`lscpu`, but those don't show hyperthreading
+cores.) Then we execute:
 
 .. code-block:: bash
 
-    numactl -m 0 -C 0,1,2,3 -- verilated_executable_name
+   numactl -m 0 -C 0,1,2,3 -- verilated_executable_name
 
 This will limit memory to socket 0, and threads to cores 0, 1, 2, 3,
-(presumably on socket 0), optimizing performance.  Of course, this must be
+(presumably on socket 0), optimizing performance. Of course, this must be
 adjusted if you want another simulator to use, e.g., socket 1, or if you
-Verilated with a different number of threads.  To see what CPUs are
-actually used, use :vlopt:`--prof-exec`.
+Verilated with a different number of threads. To see what CPUs are actually
+used, use :vlopt:`--prof-exec`.
 
+On Systems with multiple L3 clusters per socket (e.g., AMD EPYC or Ryzen),
+consider using :command:`lstopo` to determine the L3 cluster topology of
+the current system and :command:`numactl` to bind CPUs within a single L3
+cluster. This can improve performance for minimal communication latency
+between threads. Sometimes, for model's thread counts that are more than
+the core count per L3 cluster, using SMTs (hyperthreads) within a single L3
+cluster can have better performance than spreading across multiple L3
+clusters using physical cores only. Experimentation is recommended to find
+the best settings for underlying hardware and model characteristics.
 
 Multithreaded Verilog and Library Support
 -----------------------------------------
 
-$display/$stop/$finish are delayed until the end of an eval() call
-to maintain ordering between threads. This may result in additional tasks
+$display/$stop/$finish are delayed until the end of an eval() call to
+maintain ordering between threads. This may result in additional tasks
 completing after the $stop or $finish.
 
 If using :vlopt:`--coverage`, the coverage routines are fully thread-safe.
@@ -301,19 +336,19 @@ IEEE to be multithreaded, Verilator requires all VPI calls are only made
 from the main thread.
 
 
-.. _GNU Make:
+.. _gnu make:
 
 GNU Make
 ========
 
-Verilator defaults to creating GNU Make makefiles for the model.  Verilator
+Verilator defaults to creating GNU Make makefiles for the model. Verilator
 will call make automatically when the :vlopt:`--build` option is used.
 
 If calling Verilator from a makefile, the :vlopt:`--MMD` option will create
 a dependency file, allowing Make to only run Verilator if input Verilog
 files change.
 
-.. _CMake:
+.. _cmake:
 
 CMake
 =====
@@ -325,13 +360,13 @@ would build the code listed in :ref:`Example C++ Execution`
 
 .. code-block:: CMake
 
-     project(cmake_example)
-     find_package(verilator HINTS $ENV{VERILATOR_ROOT})
-     add_executable(Vour sim_main.cpp)
-     verilate(Vour SOURCES our.v)
+   project(cmake_example)
+   find_package(verilator HINTS $ENV{VERILATOR_ROOT})
+   add_executable(Vour sim_main.cpp)
+   verilate(Vour SOURCES our.v)
 
-:code:`find_package` will automatically find an installed copy of
-Verilator, or use a local build if VERILATOR_ROOT is set.
+``find_package`` will automatically find an installed copy of Verilator, or
+use a local build if VERILATOR_ROOT is set.
 
 Using CMake >= 3.12 and the Ninja generator is recommended, though other
 combinations should work. To build with CMake, change to the folder
@@ -339,42 +374,42 @@ containing CMakeLists.txt and run:
 
 .. code-block:: bash
 
-     mkdir build
-     cd build
-     cmake -GNinja ..
-     ninja
+   mkdir build
+   cd build
+   cmake -GNinja ..
+   ninja
 
 Or to build with your system default generator:
 
 .. code-block:: bash
 
-     mkdir build
-     cd build
-     cmake ..
-     cmake --build .
+   mkdir build
+   cd build
+   cmake ..
+   cmake --build .
 
 If you're building the example, you should have an executable to run:
 
 .. code-block:: bash
 
-     ./Vour
+   ./Vour
 
-The package sets the CMake variables verilator_FOUND, VERILATOR_ROOT,
-and VERILATOR_BIN to the appropriate values and creates a verilate()
-function. verilate() will automatically create custom commands to run
-Verilator and add the generated C++ sources to the target specified.
+The package sets the CMake variables verilator_FOUND, VERILATOR_ROOT, and
+VERILATOR_BIN to the appropriate values and creates a verilate() function.
+verilate() will automatically create custom commands to run Verilator and
+add the generated C++ sources to the target specified.
 
 Verilate in CMake
 -----------------
 
 .. code-block:: CMake
 
-     verilate(target SOURCES source ... [TOP_MODULE top] [PREFIX name]
-              [COVERAGE] [SYSTEMC]
-              [TRACE_FST] [TRACE_SAIF] [TRACE_VCD] [TRACE_THREADS num]
-              [INCLUDE_DIRS dir ...] [OPT_SLOW ...] [OPT_FAST ...]
-              [OPT_GLOBAL ..] [DIRECTORY dir] [THREADS num]
-              [VERILATOR_ARGS ...])
+   verilate(target SOURCES source ... [TOP_MODULE top] [PREFIX name]
+            [COVERAGE] [SYSTEMC]
+            [TRACE_FST] [TRACE_SAIF] [TRACE_VCD] [TRACE_THREADS num]
+            [INCLUDE_DIRS dir ...] [OPT_SLOW ...] [OPT_FAST ...]
+            [OPT_GLOBAL ..] [DIRECTORY dir] [THREADS num]
+            [VERILATOR_ARGS ...])
 
 Lowercase and ... should be replaced with arguments; the uppercase parts
 delimit the arguments and can be passed in any order or left out entirely
@@ -383,8 +418,8 @@ if optional.
 verilate(target ...) can be called multiple times to add other Verilog
 modules to an executable or library target.
 
-When generating Verilated SystemC sources, you should list the
-SystemC include directories and link to the SystemC libraries.
+When generating Verilated SystemC sources, you should list the SystemC
+include directories and link to the SystemC libraries.
 
 .. describe:: target
 
@@ -468,7 +503,10 @@ SystemC include directories and link to the SystemC libraries.
 
 .. describe:: TRACE_THREADS
 
-   Optional. Enable multithreaded FST trace; see :vlopt:`--trace-threads`.
+   Deprecated and has no effect.
+
+   In versions before 5.048: Optional. Enable multithreaded FST trace; see
+   :vlopt:`--trace-threads`.
 
 .. describe:: TRACE_VCD
 
@@ -485,11 +523,11 @@ SystemC Link in CMake
 ---------------------
 
 Verilator's CMake support provides a convenience function to automatically
-find and link to the SystemC library.  It can be used as:
+find and link to the SystemC library. It can be used as:
 
 .. code-block:: CMake
 
-     verilator_link_systemc(target)
+   verilator_link_systemc(target)
 
 where target is the name of your target.
 
@@ -513,7 +551,7 @@ The search paths can be configured by setting some variables:
    SYSTEMC_ROOT).
 
 
-.. _Verilation Summary Report:
+.. _verilation summary report:
 
 Verilation Summary Report
 =========================
@@ -523,11 +561,11 @@ will print a report to stdout summarizing the build. For example:
 
 .. code-block::
 
-    - V e r i l a t i o n   R e p o r t: Verilator ....
-    - Verilator: Built from 354 MB sources in 247 modules,
-        into 74 MB in 89 C++ files needing 0.192 MB
-    - Verilator: Walltime 26.580 s (elab=2.096, cvt=18.268,
-        bld=2.100); cpu 26.548 s on 1 threads; alloced 2894.672 MB
+   - V e r i l a t i o n   R e p o r t: Verilator ....
+   - Verilator: Built from 354 MB sources in 247 modules,
+       into 74 MB in 89 C++ files needing 0.192 MB
+   - Verilator: Walltime 26.580 s (elab=2.096, cvt=18.268,
+       bld=2.100); cpu 26.548 s on 1 threads; allocated 2894.672 MB
 
 The information in this report is:
 
@@ -582,7 +620,7 @@ The information in this report is:
 
    Number of simultaneous threads used.
 
-.. describe:: "alloced 123 MB"
+.. describe:: "allocated 123 MB"
 
    Total memory used during build by Verilator executable (excludes
    :vlopt:`--build` compiler's usage) in megabytes.

@@ -1,11 +1,12 @@
 // DESCRIPTION: Verilator: Verilog Test module
 //
-// This file ONLY is placed under the Creative Commons Public Domain, for
-// any use, without warranty, 2021 by Wilson Snyder.
+// This file ONLY is placed under the Creative Commons Public Domain.
+// SPDX-FileCopyrightText: 2021 Wilson Snyder
 // SPDX-License-Identifier: CC0-1.0
 
 // This part should pass OK
 
+// verilog_format: off
 module t_lint_pragma_protected;
 
 `pragma protect begin_protected

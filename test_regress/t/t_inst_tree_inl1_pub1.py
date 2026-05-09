@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
@@ -15,8 +15,7 @@ test.top_filename = "t/t_inst_tree.v"
 out_filename = test.obj_dir + "/V" + test.name + ".tree.json"
 
 test.compile(v_flags2=[
-    "--no-json-edit-nums", "-fno-dfg-post-inline", "t/" + test.name +
-    ".vlt", test.wno_unopthreads_for_few_cores
+    "--no-json-edit-nums", "t/" + test.name + ".vlt", test.wno_unopthreads_for_few_cores
 ])
 
 if test.vlt_all:

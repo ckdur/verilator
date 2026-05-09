@@ -6,10 +6,10 @@
 //
 //*************************************************************************
 //
-// Copyright 2005-2025 by Wilson Snyder.  This program is free software; you can
-// redistribute it and/or modify it under the terms of either the GNU
-// Lesser General Public License Version 3 or the Perl Artistic License
-// Version 2.0.
+// This program is free software; you can redistribute it and/or modify it
+// under the terms of either the GNU Lesser General Public License Version 3
+// or the Perl Artistic License Version 2.0.
+// SPDX-FileCopyrightText: 2003-2026 Wilson Snyder
 // SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 //
 //*************************************************************************
@@ -104,17 +104,17 @@ void V3ThreadPool::selfTest() {
     auto secondJob = [&](int sleep) -> void {
         commonMutex.lock();
         commonMutex.unlock();
-        V3LockGuard lock{commonMutex};
+        const V3LockGuard lock{commonMutex};
         std::this_thread::sleep_for(std::chrono::milliseconds{sleep});
         commonValue = 1000;
     };
     auto thirdJob = [&](int sleep) -> void {
         {
-            V3LockGuard lock{commonMutex};
+            const V3LockGuard lock{commonMutex};
             std::this_thread::sleep_for(std::chrono::milliseconds{sleep});
         }
         firstJob(sleep);
-        V3LockGuard lock{commonMutex};
+        const V3LockGuard lock{commonMutex};
         commonValue = 100;
     };
     {

@@ -1,12 +1,12 @@
 # DESCRIPTION: Dockerfile for image to run Verilator inside
 #
-# Copyright 2020 by Stefan Wallentowitz. This program is free software; you
-# can redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2020 Stefan Wallentowitz
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive \
@@ -22,7 +22,7 @@ RUN apt-get update \
                         help2man \
                         libfl2 \
                         libfl-dev \
-                        libgoogle-perftools-dev \
+                        libjemalloc-dev \
                         numactl \
                         perl \
                         perl-doc \
@@ -48,7 +48,8 @@ RUN git clone "${REPO}" verilator && \
     make && \
     make install && \
     cd .. && \
-    rm -r verilator
+    rm -r verilator && \
+    ccache -C
 
 COPY verilator-wrap.sh /usr/local/bin/verilator-wrap.sh
 

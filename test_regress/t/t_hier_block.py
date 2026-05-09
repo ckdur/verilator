@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # DESCRIPTION: Verilator: Verilog Test driver/expect definition
 #
-# Copyright 2024 by Wilson Snyder. This program is free software; you can
-# redistribute it and/or modify it under the terms of either the GNU
-# Lesser General Public License Version 3 or the Perl Artistic License
-# Version 2.0.
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of either the GNU Lesser General Public License Version 3
+# or the Perl Artistic License Version 2.0.
+# SPDX-FileCopyrightText: 2024 Wilson Snyder
 # SPDX-License-Identifier: LGPL-3.0-only OR Artistic-2.0
 
 import vltest_bootstrap
 
+test.priority(30)
 test.scenarios('vlt_all')
 
 # stats will be deleted but generation will be skipped if libs of hierarchical blocks exist.
@@ -18,12 +19,19 @@ test.clean_objs()
 # %Warning-UNOPTTHREADS: Thread scheduler is unable to provide requested parallelism; consider asking for fewer threads.
 # So use 6 threads here though it's not optimal in performance, but ok.
 
-test.compile(v_flags2=['t/t_hier_block.cpp'],
-             verilator_flags2=[
-                 '--stats', '--hierarchical', '--Wno-TIMESCALEMOD', '--CFLAGS',
-                 '"-pipe -DCPP_MACRO=cplusplus"'
-             ],
-             threads=(6 if test.vltmt else 1))
+test.compile(
+    v_flags2=['t/t_hier_block.cpp'],
+    verilator_flags2=[
+        '--stats',
+        '--hierarchical',
+        '--Wno-TIMESCALEMOD',  #
+        '-GPARAM_A=100',
+        '-pvalue+PARAM_B=200',
+        '-DPARAM_OVERRIDE',  #
+        '--CFLAGS',
+        '"-O0 -pipe -DCPP_MACRO=cplusplus"'
+    ],
+    threads=(6 if test.vltmt else 1))
 
 test.execute()
 
