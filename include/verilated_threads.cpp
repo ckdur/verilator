@@ -268,11 +268,11 @@ std::string VlThreadPool::numaAssign(VerilatedContext* contextp) {
         }
         status += ";";
 
-        #ifndef __EMSCRIPTEN__ // We do not need affinity in emscripten
+#ifndef __EMSCRIPTEN__  // We do not need affinity in emscripten
         const int rc = pthread_setaffinity_np(m_workers[thread]->m_cthread.native_handle(),
                                               sizeof(cpu_set_t), &cpuset);
         if (rc != 0) return "%Warning: pthread_setaffinity_np failed";
-        #endif
+#endif
     }
     // std::cout << "Status: " << status << std::endl;
     return status;
